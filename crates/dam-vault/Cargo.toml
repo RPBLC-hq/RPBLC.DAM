@@ -1,0 +1,23 @@
+[package]
+name = "dam-vault"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dam-core = { workspace = true }
+rusqlite = { workspace = true }
+aes-gcm = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }
+argon2 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+keyring = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
