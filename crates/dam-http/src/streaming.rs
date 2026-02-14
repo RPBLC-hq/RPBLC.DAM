@@ -62,9 +62,10 @@ impl StreamingResolver {
     /// of the buffer. Returns `Some(pos)` if there's an unmatched `[`
     /// near the end, `None` if everything is complete.
     fn find_partial_ref_start(&self) -> Option<usize> {
-        // Max reference is `[custom:aaaaaaaaaaaaaaaa]` = 25 chars.
-        // We only need to look at the tail.
-        let search_window = 30;
+        // Longest possible reference: `[custom:aaaaaaaaaaaaaaaa]` = 25 chars
+        // (longest tag "custom" = 6 + colon + 16 hex + brackets).
+        // Use a wider window for safety margin.
+        let search_window = 35;
         let start = self.buffer.len().saturating_sub(search_window);
         let tail = &self.buffer[start..];
 

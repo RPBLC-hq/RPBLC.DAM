@@ -19,7 +19,6 @@ reqwest = { workspace = true }
 futures-util = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
-chrono = { workspace = true }
 async-stream = { workspace = true }
 
 [dev-dependencies]

@@ -56,6 +56,9 @@ async fn handle_messages(
         }
     }
 
+    // Always ensure Content-Type is set (upstream requires JSON)
+    upstream_req = upstream_req.header("content-type", "application/json");
+
     let upstream_body =
         serde_json::to_string(&request).map_err(|e| AppError::Proxy(e.to_string()))?;
 
@@ -63,14 +66,32 @@ async fn handle_messages(
 
     let status = upstream_resp.status();
 
-    // If upstream returned an error, pass it through
+    // If upstream returned an error, pass it through preserving headers
     if !status.is_success() {
-        let body = upstream_resp.text().await.unwrap_or_default();
-        return Ok((
-            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-            body,
-        )
-            .into_response());
+        let upstream_status =
+            StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        let mut builder = Response::builder().status(upstream_status);
+
+        // Forward headers clients may rely on
+        for name in &[
+            "content-type",
+            "x-request-id",
+            "request-id",
+            "retry-after",
+        ] {
+            if let Some(value) = upstream_resp.headers().get(*name) {
+                builder = builder.header(*name, value);
+            }
+        }
+
+        let body_bytes = upstream_resp.bytes().await.unwrap_or_default();
+        let response = builder.body(Body::from(body_bytes)).unwrap_or_else(|_| {
+            Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .body(Body::empty())
+                .unwrap()
+        });
+        return Ok(response);
     }
 
     if is_streaming {
@@ -123,6 +144,22 @@ async fn handle_streaming(
                     yield Err(std::io::Error::other(e.to_string()));
                     break;
                 }
+            }
+        }
+
+        // Flush any remaining buffered SSE bytes (stream ended without final \n\n)
+        if !sse_state.raw_buf.is_empty() {
+            if let Ok(s) = std::str::from_utf8(&sse_state.raw_buf) {
+                yield Ok::<_, std::io::Error>(axum::body::Bytes::from(s.to_owned()));
+            }
+            sse_state.raw_buf.clear();
+        }
+
+        // Flush any remaining resolver buffers (stream ended without content_block_stop)
+        for (_, mut resolver) in sse_state.resolvers.drain() {
+            let remaining = resolver.finish();
+            if !remaining.is_empty() {
+                yield Ok::<_, std::io::Error>(axum::body::Bytes::from(remaining));
             }
         }
     };
