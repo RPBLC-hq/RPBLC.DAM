@@ -14,7 +14,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/rpblc/dam"
+repository = "https://github.com/alexyboyer/RPBLC.DAM"
 
 [workspace.dependencies]
 # Internal crates
@@ -58,6 +58,10 @@ rmcp = { version = "0.1.5", features = ["server", "transport-io", "macros"] }
 axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }
+reqwest = { version = "0.12", features = ["stream", "json"] }
+futures-util = "0.3"
+bytes = "1"
+async-stream = "0.3"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

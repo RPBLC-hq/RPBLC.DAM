@@ -9,7 +9,7 @@ use rmcp::{Error as McpError, ServerHandler, tool};
 use std::sync::Arc;
 
 const SERVER_INSTRUCTIONS: &str = "\
-RPBLC DAM protects PII in conversations. \
+DAM protects PII in conversations. \
 ALWAYS use dam_scan on user input and external data before processing. \
 Work with typed references like [email:a3f71bc9] instead of raw PII values. \
 Use dam_resolve only when executing actions that require real values (e.g., sending an email, making a call). \
@@ -310,7 +310,7 @@ impl ServerHandler for DamMcpServer {
             instructions: Some(SERVER_INSTRUCTIONS.into()),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation {
-                name: "rpblc-dam".into(),
+                name: "dam".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
             },
             ..Default::default()

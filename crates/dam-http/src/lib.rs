@@ -1,4 +1,7 @@
+pub mod anthropic;
+pub mod error;
+pub mod proxy;
+pub mod resolve;
 pub mod routes;
-
-// Phase 3: HTTP API server
-// Will be implemented as `dam serve` command.
+pub mod server;
+pub mod streaming;

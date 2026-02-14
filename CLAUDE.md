@@ -1,4 +1,4 @@
-# RPBLC DAM — Development Guide
+# DAM — Development Guide
 
 ## What is DAM?
 
@@ -23,7 +23,7 @@ Cargo workspace with focused crates:
 - **dam-detect** — PII detection pipeline (regex, user rules, NER stub, xref stub)
 - **dam-resolve** — Outbound resolution with consent check
 - **dam-mcp** — MCP server with 7 tools
-- **dam-http** — HTTP API (Phase 3 stub)
+- **dam-http** — HTTP proxy, streaming SSE resolver, Anthropic API types
 - **dam-cli** — CLI binary (`dam` command)
 
 ## Key Design Decisions

@@ -493,7 +493,10 @@ mod tests {
             Err(rusqlite::Error::SqliteFailure(err, _)) => {
                 assert_eq!(err.code, rusqlite::ErrorCode::ConstraintViolation);
                 // NOT NULL extended code — must NOT be treated as a collision
-                assert_ne!(err.extended_code, rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY);
+                assert_ne!(
+                    err.extended_code,
+                    rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                );
                 assert_ne!(err.extended_code, rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE);
             }
             other => panic!("expected ConstraintViolation, got {:?}", other),
