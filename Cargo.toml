@@ -45,7 +45,7 @@ hex = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 
 # Keychain
-keyring = { version = "3" }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 # Detection
 regex = "1"
