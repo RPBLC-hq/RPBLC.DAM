@@ -114,9 +114,8 @@ impl VaultStore {
                     } else {
                         // Other constraint violations (NOT NULL, CHECK, FK, etc.) should fail immediately
                         return Err(DamError::Database(format!(
-                            "constraint violation (extended code {}): {:?}",
-                            err.extended_code,
-                            err.code
+                            "Database constraint violation: {:?} (extended code: {})",
+                            err.code, err.extended_code
                         )));
                     }
                 }
