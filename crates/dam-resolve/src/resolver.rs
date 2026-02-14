@@ -239,8 +239,7 @@ mod tests {
         let _ = resolver.resolve(&pii_ref, "claude", "send_email");
 
         // Check that a "denied" audit entry was created
-        let entries =
-            dam_vault::AuditLog::query(vault.conn(), Some(&pii_ref.key()), 100).unwrap();
+        let entries = dam_vault::AuditLog::query(vault.conn(), Some(&pii_ref.key()), 100).unwrap();
         assert!(entries.iter().any(|e| e.action == "denied" && !e.granted));
     }
 
@@ -256,8 +255,7 @@ mod tests {
 
         resolver.resolve(&pii_ref, "claude", "send_email").unwrap();
 
-        let entries =
-            dam_vault::AuditLog::query(vault.conn(), Some(&pii_ref.key()), 100).unwrap();
+        let entries = dam_vault::AuditLog::query(vault.conn(), Some(&pii_ref.key()), 100).unwrap();
         assert!(entries.iter().any(|e| e.action == "resolve" && e.granted));
     }
 
@@ -270,8 +268,7 @@ mod tests {
 
         resolver.reveal(&pii_ref, "emergency access").unwrap();
 
-        let entries =
-            dam_vault::AuditLog::query(vault.conn(), Some(&pii_ref.key()), 100).unwrap();
+        let entries = dam_vault::AuditLog::query(vault.conn(), Some(&pii_ref.key()), 100).unwrap();
         assert!(entries.iter().any(|e| {
             e.action == "reveal"
                 && e.accessor == "dam:reveal"

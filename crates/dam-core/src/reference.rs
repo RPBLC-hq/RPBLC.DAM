@@ -73,8 +73,9 @@ impl FromStr for PiiRef {
 /// Regex that matches `[type:hex]` references in text.
 /// Accepts 4-16 hex chars to support locally-generated IDs (8 chars)
 /// and future remote-generated IDs of varying length.
-static REF_PATTERN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\[([a-z_]+):([a-f0-9]{4,16})\]").expect("ref pattern should compile"));
+static REF_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\[([a-z_]+):([a-f0-9]{4,16})\]").expect("ref pattern should compile")
+});
 
 /// Extract all PII references from a string.
 pub fn extract_refs(text: &str) -> Vec<PiiRef> {

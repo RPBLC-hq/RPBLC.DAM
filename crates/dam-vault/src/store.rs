@@ -6,6 +6,14 @@ use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
 
+/// SQLite extended error code for PRIMARY KEY constraint violation.
+/// See: https://www.sqlite.org/rescode.html#constraint_primarykey
+const SQLITE_CONSTRAINT_PRIMARYKEY: i32 = 1555;
+
+/// SQLite extended error code for UNIQUE constraint violation.
+/// See: https://www.sqlite.org/rescode.html#constraint_unique
+const SQLITE_CONSTRAINT_UNIQUE: i32 = 2067;
+
 /// Metadata about a vault entry (no decrypted values).
 #[derive(Debug, Clone)]
 pub struct VaultEntry {
@@ -93,9 +101,7 @@ impl VaultStore {
                     // Only retry on PRIMARY KEY or UNIQUE constraint violations.
                     // Other constraint violations (NOT NULL, CHECK, FK) won't be fixed by
                     // regenerating the ref_id and should be returned immediately.
-                    const SQLITE_CONSTRAINT_PRIMARYKEY: i32 = 1555;
-                    const SQLITE_CONSTRAINT_UNIQUE: i32 = 2067;
-                    
+
                     if err.extended_code == SQLITE_CONSTRAINT_PRIMARYKEY
                         || err.extended_code == SQLITE_CONSTRAINT_UNIQUE
                     {

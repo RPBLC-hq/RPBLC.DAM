@@ -197,7 +197,11 @@ mod tests {
 
         let encrypted = crypto.encrypt(b"").unwrap();
         let decrypted = crypto
-            .decrypt(&encrypted.ciphertext, &encrypted.dek_encrypted, &encrypted.iv)
+            .decrypt(
+                &encrypted.ciphertext,
+                &encrypted.dek_encrypted,
+                &encrypted.iv,
+            )
             .unwrap();
         assert!(decrypted.is_empty());
     }
@@ -210,7 +214,11 @@ mod tests {
         let large = vec![b'x'; 100_000];
         let encrypted = crypto.encrypt(&large).unwrap();
         let decrypted = crypto
-            .decrypt(&encrypted.ciphertext, &encrypted.dek_encrypted, &encrypted.iv)
+            .decrypt(
+                &encrypted.ciphertext,
+                &encrypted.dek_encrypted,
+                &encrypted.iv,
+            )
             .unwrap();
         assert_eq!(decrypted, large);
     }
@@ -237,7 +245,11 @@ mod tests {
         let mut tampered_iv = encrypted.iv.clone();
         tampered_iv[0] ^= 0xff;
 
-        let result = crypto.decrypt(&encrypted.ciphertext, &encrypted.dek_encrypted, &tampered_iv);
+        let result = crypto.decrypt(
+            &encrypted.ciphertext,
+            &encrypted.dek_encrypted,
+            &tampered_iv,
+        );
         assert!(result.is_err());
     }
 
