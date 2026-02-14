@@ -7,7 +7,7 @@ mod commands;
 #[command(
     name = "dam",
     version,
-    about = "RPBLC DAM — PII firewall for AI agents"
+    about = "DAM — PII firewall for AI agents"
 )]
 struct Cli {
     #[command(subcommand)]

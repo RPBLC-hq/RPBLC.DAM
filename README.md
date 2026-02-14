@@ -1,4 +1,4 @@
-# RPBLC DAM
+# DAM - Data Access Mediator
 
 **Data Access Mediator — a PII firewall for AI agents.**
 
@@ -40,8 +40,8 @@ User input           LLM context            Action execution
 ### Build from source
 
 ```bash
-git clone https://github.com/rpblc/dam.git
-cd dam
+git clone https://github.com/alexyboyer/RPBLC.DAM.git
+cd RPBLC.DAM
 cargo install --path crates/dam-cli
 ```
 
@@ -383,4 +383,4 @@ cargo fmt --check                # format check
 
 ## License
 
-RPBLC
+MIT

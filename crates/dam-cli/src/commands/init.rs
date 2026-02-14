@@ -7,7 +7,7 @@ pub async fn run() -> Result<()> {
     let home = DamConfig::default_home();
     let config_path = DamConfig::default_config_path();
 
-    println!("{}", "RPBLC DAM — Initializing".bold());
+    println!("{}", "DAM — Initializing".bold());
     println!();
 
     // 1. Create home directory
