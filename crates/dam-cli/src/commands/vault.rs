@@ -15,13 +15,13 @@ pub enum VaultAction {
 
     /// Show (decrypt) a specific entry
     Show {
-        /// Reference key, e.g. "email:a3f7"
+        /// Reference key, e.g. "email:a3f71bc9"
         ref_id: String,
     },
 
     /// Delete a vault entry
     Delete {
-        /// Reference key, e.g. "email:a3f7"
+        /// Reference key, e.g. "email:a3f71bc9"
         ref_id: String,
     },
 }

@@ -226,4 +226,103 @@ mod tests {
         let detections = detect(text);
         assert!(detections.len() >= 2);
     }
+
+    // --- SSN edge cases ---
+
+    #[test]
+    fn ssn_space_separated() {
+        let detections = detect("SSN: 123 45 6789");
+        assert!(detections.iter().any(|d| d.pii_type == PiiType::Ssn));
+    }
+
+    #[test]
+    fn ssn_no_separators_not_detected() {
+        // The regex requires dashes or spaces — bare digits should not match
+        let detections = detect("SSN: 123456789");
+        assert!(!detections.iter().any(|d| d.pii_type == PiiType::Ssn));
+    }
+
+    #[test]
+    fn reject_ssn_area_666() {
+        let detections = detect("Number: 666-12-3456");
+        assert!(!detections.iter().any(|d| d.pii_type == PiiType::Ssn));
+    }
+
+    #[test]
+    fn reject_ssn_area_900_plus() {
+        let detections = detect("Number: 900-12-3456");
+        assert!(!detections.iter().any(|d| d.pii_type == PiiType::Ssn));
+
+        let detections = detect("Number: 999-12-3456");
+        assert!(!detections.iter().any(|d| d.pii_type == PiiType::Ssn));
+    }
+
+    #[test]
+    fn reject_ssn_zero_group() {
+        let detections = detect("Number: 123-00-6789");
+        assert!(!detections.iter().any(|d| d.pii_type == PiiType::Ssn));
+    }
+
+    #[test]
+    fn reject_ssn_zero_serial() {
+        let detections = detect("Number: 123-45-0000");
+        assert!(!detections.iter().any(|d| d.pii_type == PiiType::Ssn));
+    }
+
+    // --- Credit card edge cases ---
+
+    #[test]
+    fn reject_luhn_failing_card() {
+        // 4111 1111 1111 1112 fails Luhn
+        let detections = detect("Card: 4111 1111 1111 1112");
+        assert!(!detections.iter().any(|d| d.pii_type == PiiType::CreditCard));
+    }
+
+    // --- IP edge cases ---
+
+    #[test]
+    fn reject_localhost_ip() {
+        let detections = detect("IP: 127.0.0.1");
+        assert!(!detections.iter().any(|d| d.pii_type == PiiType::IpAddress));
+    }
+
+    #[test]
+    fn reject_private_ip() {
+        let detections = detect("IP: 192.168.1.1");
+        assert!(!detections.iter().any(|d| d.pii_type == PiiType::IpAddress));
+
+        let detections = detect("IP: 10.0.0.1");
+        assert!(!detections.iter().any(|d| d.pii_type == PiiType::IpAddress));
+    }
+
+    #[test]
+    fn detect_public_ip() {
+        let detections = detect("IP: 8.8.8.8");
+        assert!(detections.iter().any(|d| d.pii_type == PiiType::IpAddress));
+    }
+
+    // --- General edge cases ---
+
+    #[test]
+    fn empty_input() {
+        let detections = detect("");
+        assert!(detections.is_empty());
+    }
+
+    #[test]
+    fn pii_at_string_boundaries() {
+        // Email at the very start
+        let detections = detect("john@example.com is here");
+        assert!(detections.iter().any(|d| d.pii_type == PiiType::Email));
+
+        // Email at the very end
+        let detections = detect("contact john@example.com");
+        assert!(detections.iter().any(|d| d.pii_type == PiiType::Email));
+    }
+
+    #[test]
+    fn no_false_positive_on_plain_text() {
+        let detections = detect("Hello, this is a normal sentence with no PII.");
+        assert!(detections.is_empty());
+    }
 }

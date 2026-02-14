@@ -202,4 +202,107 @@ mod tests {
         let value = resolver.reveal(&pii_ref, "user explicit request").unwrap();
         assert_eq!(value, "secret@test.com");
     }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn resolve_nonexistent_ref() {
+        let (resolver, _vault) = test_resolver();
+        let fake_ref = PiiRef::generate(PiiType::Email);
+
+        // No consent → ConsentDenied before we even hit the vault lookup
+        let result = resolver.resolve(&fake_ref, "claude", "send");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reveal_nonexistent_ref() {
+        let (resolver, _vault) = test_resolver();
+        let fake_ref = PiiRef::generate(PiiType::Email);
+
+        let result = resolver.reveal(&fake_ref, "reason");
+        assert!(result.is_err());
+        match result {
+            Err(DamError::ReferenceNotFound(_)) => {}
+            other => panic!("expected ReferenceNotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn resolve_creates_audit_entry_on_deny() {
+        let (resolver, vault) = test_resolver();
+        let pii_ref = vault
+            .store_pii(PiiType::Email, "test@test.com", None, None)
+            .unwrap();
+
+        // Resolve without consent — should be denied
+        let _ = resolver.resolve(&pii_ref, "claude", "send_email");
+
+        // Check that a "denied" audit entry was created
+        let entries =
+            dam_vault::AuditLog::query(vault.conn(), Some(&pii_ref.key()), 100).unwrap();
+        assert!(entries.iter().any(|e| e.action == "denied" && !e.granted));
+    }
+
+    #[test]
+    fn resolve_creates_audit_entry_on_grant() {
+        let (resolver, vault) = test_resolver();
+        let pii_ref = vault
+            .store_pii(PiiType::Email, "test@test.com", None, None)
+            .unwrap();
+
+        ConsentManager::grant_consent(vault.conn(), &pii_ref.key(), "claude", "send_email", None)
+            .unwrap();
+
+        resolver.resolve(&pii_ref, "claude", "send_email").unwrap();
+
+        let entries =
+            dam_vault::AuditLog::query(vault.conn(), Some(&pii_ref.key()), 100).unwrap();
+        assert!(entries.iter().any(|e| e.action == "resolve" && e.granted));
+    }
+
+    #[test]
+    fn reveal_creates_audit_entry() {
+        let (resolver, vault) = test_resolver();
+        let pii_ref = vault
+            .store_pii(PiiType::Email, "test@test.com", None, None)
+            .unwrap();
+
+        resolver.reveal(&pii_ref, "emergency access").unwrap();
+
+        let entries =
+            dam_vault::AuditLog::query(vault.conn(), Some(&pii_ref.key()), 100).unwrap();
+        assert!(entries.iter().any(|e| {
+            e.action == "reveal"
+                && e.accessor == "dam:reveal"
+                && e.detail.as_deref() == Some("emergency access")
+        }));
+    }
+
+    #[test]
+    fn resolve_text_no_refs() {
+        let (resolver, _vault) = test_resolver();
+        let result = resolver
+            .resolve_text("plain text with no refs", "claude", "test")
+            .unwrap();
+        assert_eq!(result.resolved_text, "plain text with no refs");
+        assert!(result.resolved.is_empty());
+        assert!(result.denied.is_empty());
+    }
+
+    #[test]
+    fn resolve_text_all_denied() {
+        let (resolver, vault) = test_resolver();
+        let pii_ref = vault
+            .store_pii(PiiType::Email, "test@test.com", None, None)
+            .unwrap();
+
+        let text = format!("Contact {}", pii_ref.display());
+        let result = resolver.resolve_text(&text, "claude", "send").unwrap();
+
+        // No consent → ref stays as-is
+        assert_eq!(result.resolved_text, text);
+        assert!(result.resolved.is_empty());
+        assert_eq!(result.denied.len(), 1);
+    }
 }

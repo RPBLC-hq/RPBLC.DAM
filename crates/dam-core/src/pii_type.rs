@@ -60,7 +60,7 @@ impl FromStr for PiiType {
 }
 
 impl PiiType {
-    /// Short tag used in reference strings like `[email:a3f7]`.
+    /// Short tag used in reference strings like `[email:a3f71bc9]`.
     pub fn tag(&self) -> &'static str {
         match self {
             Self::Email => "email",
@@ -131,5 +131,37 @@ mod tests {
         assert_eq!("cc".parse::<PiiType>().unwrap(), PiiType::CreditCard);
         assert_eq!("addr".parse::<PiiType>().unwrap(), PiiType::Address);
         assert_eq!("IP".parse::<PiiType>().unwrap(), PiiType::IpAddress);
+    }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn from_str_unknown_returns_err() {
+        assert!("garbage".parse::<PiiType>().is_err());
+    }
+
+    #[test]
+    fn from_str_empty_returns_err() {
+        assert!("".parse::<PiiType>().is_err());
+    }
+
+    #[test]
+    fn from_tag_unknown_returns_none() {
+        assert!(PiiType::from_tag("unknown").is_none());
+        assert!(PiiType::from_tag("").is_none());
+    }
+
+    #[test]
+    fn from_tag_is_case_sensitive() {
+        // from_tag uses exact match, uppercase should fail
+        assert!(PiiType::from_tag("Email").is_none());
+        assert!(PiiType::from_tag("SSN").is_none());
+    }
+
+    #[test]
+    fn from_str_is_case_insensitive() {
+        // from_str lowercases first, so these should work
+        assert_eq!("EMAIL".parse::<PiiType>().unwrap(), PiiType::Email);
+        assert_eq!("Ssn".parse::<PiiType>().unwrap(), PiiType::Ssn);
     }
 }

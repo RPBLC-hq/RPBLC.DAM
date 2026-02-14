@@ -64,26 +64,55 @@ impl VaultStore {
             return Ok(existing_ref);
         }
 
-        // Generate a new reference
-        let pii_ref = PiiRef::generate(pii_type);
+        // Generate a new reference with collision retry
         let encrypted = self.crypto.encrypt(plaintext.as_bytes())?;
         let now = chrono::Utc::now().timestamp();
 
-        conn.execute(
-            "INSERT INTO entries (ref_id, pii_type, ciphertext, dek_enc, iv, created_at, source, label)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![
-                pii_ref.key(),
-                pii_type.to_string(),
-                encrypted.ciphertext,
-                encrypted.dek_encrypted,
-                encrypted.iv,
-                now,
-                source,
-                label,
-            ],
-        )
-        .map_err(|e| DamError::Database(e.to_string()))?;
+        const MAX_RETRIES: usize = 5;
+        let mut pii_ref = PiiRef::generate(pii_type);
+
+        for attempt in 0..MAX_RETRIES {
+            match conn.execute(
+                "INSERT INTO entries (ref_id, pii_type, ciphertext, dek_enc, iv, created_at, source, label)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    pii_ref.key(),
+                    pii_type.to_string(),
+                    encrypted.ciphertext,
+                    encrypted.dek_encrypted,
+                    encrypted.iv,
+                    now,
+                    source,
+                    label,
+                ],
+            ) {
+                Ok(_) => break,
+                Err(rusqlite::Error::SqliteFailure(err, msg))
+                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    // Only retry on PRIMARY KEY or UNIQUE constraint violations —
+                    // regenerating the ref_id can fix those. Other constraint types
+                    // (NOT NULL, CHECK, FK) indicate a real bug and should fail immediately.
+                    if err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                        || err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                    {
+                        if attempt == MAX_RETRIES - 1 {
+                            return Err(DamError::Database(
+                                "ref ID collision: max retries exhausted".to_string(),
+                            ));
+                        }
+                        pii_ref = PiiRef::generate(pii_type);
+                    } else {
+                        return Err(DamError::Database(format!(
+                            "constraint violation (code {}): {}",
+                            err.extended_code,
+                            msg.as_deref().unwrap_or("unknown"),
+                        )));
+                    }
+                }
+                Err(e) => return Err(DamError::Database(e.to_string())),
+            }
+        }
 
         // Audit the creation
         AuditLog::record(
@@ -357,5 +386,117 @@ mod tests {
 
         let all = store.list_entries(None).unwrap();
         assert_eq!(all.len(), 1);
+    }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn retrieve_nonexistent_ref() {
+        let (store, _path) = test_vault();
+        let fake_ref = PiiRef::generate(PiiType::Email);
+        let result = store.retrieve_pii(&fake_ref);
+        assert!(result.is_err());
+        match result {
+            Err(DamError::ReferenceNotFound(_)) => {}
+            other => panic!("expected ReferenceNotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn delete_nonexistent_ref() {
+        let (store, _path) = test_vault();
+        let fake_ref = PiiRef::generate(PiiType::Email);
+        let result = store.delete_entry(&fake_ref);
+        assert!(result.is_err());
+        match result {
+            Err(DamError::ReferenceNotFound(_)) => {}
+            other => panic!("expected ReferenceNotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn store_empty_value() {
+        let (store, _path) = test_vault();
+        let pii_ref = store.store_pii(PiiType::Custom, "", None, None).unwrap();
+        let value = store.retrieve_pii(&pii_ref).unwrap();
+        assert_eq!(value, "");
+    }
+
+    #[test]
+    fn retrieve_after_delete_fails() {
+        let (store, _path) = test_vault();
+        let pii_ref = store
+            .store_pii(PiiType::Email, "gone@test.com", None, None)
+            .unwrap();
+        store.delete_entry(&pii_ref).unwrap();
+
+        let result = store.retrieve_pii(&pii_ref);
+        assert!(result.is_err());
+        match result {
+            Err(DamError::ReferenceNotFound(_)) => {}
+            other => panic!("expected ReferenceNotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dedup_different_types_same_value() {
+        let (store, _path) = test_vault();
+        let ref1 = store
+            .store_pii(PiiType::Email, "test@test.com", None, None)
+            .unwrap();
+        let ref2 = store
+            .store_pii(PiiType::Custom, "test@test.com", None, None)
+            .unwrap();
+        // Same value but different type — should NOT deduplicate
+        assert_ne!(ref1.key(), ref2.key());
+    }
+
+    #[test]
+    fn entry_count() {
+        let (store, _path) = test_vault();
+        assert_eq!(store.entry_count().unwrap(), 0);
+
+        store
+            .store_pii(PiiType::Email, "a@b.com", None, None)
+            .unwrap();
+        assert_eq!(store.entry_count().unwrap(), 1);
+
+        store
+            .store_pii(PiiType::Phone, "555-0000", None, None)
+            .unwrap();
+        assert_eq!(store.entry_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn list_entries_empty_vault() {
+        let (store, _path) = test_vault();
+        let entries = store.list_entries(None).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn non_unique_constraint_violation_fails_immediately() {
+        // Verify that non-PK/UNIQUE constraint violations (e.g. NOT NULL)
+        // are surfaced as errors rather than silently retried.
+        let (store, _path) = test_vault();
+        let conn = store.conn.lock().unwrap();
+
+        // Insert directly with NULL in a NOT NULL column to trigger a
+        // SQLITE_CONSTRAINT_NOTNULL error (extended code 1299).
+        let result = conn.execute(
+            "INSERT INTO entries (ref_id, pii_type, ciphertext, dek_enc, iv, created_at)
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["test:0001", b"ct", b"dek", b"iv", 0i64],
+        );
+
+        match result {
+            Err(rusqlite::Error::SqliteFailure(err, _)) => {
+                assert_eq!(err.code, rusqlite::ErrorCode::ConstraintViolation);
+                // NOT NULL extended code — must NOT be treated as a collision
+                assert_ne!(err.extended_code, rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY);
+                assert_ne!(err.extended_code, rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE);
+            }
+            other => panic!("expected ConstraintViolation, got {:?}", other),
+        }
     }
 }

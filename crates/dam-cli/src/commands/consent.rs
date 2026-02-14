@@ -15,7 +15,7 @@ pub enum ConsentAction {
 
     /// Grant consent for an accessor to resolve a reference
     Grant {
-        /// Reference key, e.g. "email:a3f7"
+        /// Reference key, e.g. "email:a3f71bc9"
         ref_id: String,
         /// Accessor (tool name), e.g. "claude", "send_email", or "*" for all
         accessor: String,
@@ -25,7 +25,7 @@ pub enum ConsentAction {
 
     /// Revoke consent
     Revoke {
-        /// Reference key, e.g. "email:a3f7"
+        /// Reference key, e.g. "email:a3f71bc9"
         ref_id: String,
         /// Accessor (tool name)
         accessor: String,
