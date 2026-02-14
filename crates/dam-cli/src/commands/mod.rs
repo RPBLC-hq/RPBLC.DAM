@@ -4,6 +4,7 @@ pub mod consent;
 pub mod init;
 pub mod mcp;
 pub mod scan;
+pub mod serve;
 pub mod vault;
 
 use anyhow::Result;

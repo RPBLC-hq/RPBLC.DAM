@@ -475,21 +475,53 @@ mod tests {
 
     #[test]
     fn compute_hash_is_deterministic() {
-        let h1 =
-            AuditLog::compute_hash(1, "email:abc1", "claude", "send", "resolve", true, 1000, None);
-        let h2 =
-            AuditLog::compute_hash(1, "email:abc1", "claude", "send", "resolve", true, 1000, None);
+        let h1 = AuditLog::compute_hash(
+            1,
+            "email:abc1",
+            "claude",
+            "send",
+            "resolve",
+            true,
+            1000,
+            None,
+        );
+        let h2 = AuditLog::compute_hash(
+            1,
+            "email:abc1",
+            "claude",
+            "send",
+            "resolve",
+            true,
+            1000,
+            None,
+        );
         assert_eq!(h1, h2);
     }
 
     #[test]
     fn compute_hash_changes_with_any_field() {
-        let base =
-            AuditLog::compute_hash(1, "email:abc1", "claude", "send", "resolve", true, 1000, None);
+        let base = AuditLog::compute_hash(
+            1,
+            "email:abc1",
+            "claude",
+            "send",
+            "resolve",
+            true,
+            1000,
+            None,
+        );
 
         // Change each field individually and verify the hash changes
-        let changed_id =
-            AuditLog::compute_hash(2, "email:abc1", "claude", "send", "resolve", true, 1000, None);
+        let changed_id = AuditLog::compute_hash(
+            2,
+            "email:abc1",
+            "claude",
+            "send",
+            "resolve",
+            true,
+            1000,
+            None,
+        );
         let changed_ref = AuditLog::compute_hash(
             1,
             "email:abc2",
@@ -500,8 +532,16 @@ mod tests {
             1000,
             None,
         );
-        let changed_accessor =
-            AuditLog::compute_hash(1, "email:abc1", "other", "send", "resolve", true, 1000, None);
+        let changed_accessor = AuditLog::compute_hash(
+            1,
+            "email:abc1",
+            "other",
+            "send",
+            "resolve",
+            true,
+            1000,
+            None,
+        );
         let changed_purpose = AuditLog::compute_hash(
             1,
             "email:abc1",
@@ -512,8 +552,16 @@ mod tests {
             1000,
             None,
         );
-        let changed_action =
-            AuditLog::compute_hash(1, "email:abc1", "claude", "send", "denied", true, 1000, None);
+        let changed_action = AuditLog::compute_hash(
+            1,
+            "email:abc1",
+            "claude",
+            "send",
+            "denied",
+            true,
+            1000,
+            None,
+        );
         let changed_granted = AuditLog::compute_hash(
             1,
             "email:abc1",
@@ -524,8 +572,16 @@ mod tests {
             1000,
             None,
         );
-        let changed_ts =
-            AuditLog::compute_hash(1, "email:abc1", "claude", "send", "resolve", true, 9999, None);
+        let changed_ts = AuditLog::compute_hash(
+            1,
+            "email:abc1",
+            "claude",
+            "send",
+            "resolve",
+            true,
+            9999,
+            None,
+        );
         let changed_prev = AuditLog::compute_hash(
             1,
             "email:abc1",

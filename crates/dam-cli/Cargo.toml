@@ -13,6 +13,8 @@ dam-vault = { workspace = true }
 dam-detect = { workspace = true }
 dam-resolve = { workspace = true }
 dam-mcp = { workspace = true }
+dam-http = { workspace = true }
+axum = { workspace = true }
 clap = { workspace = true }
 comfy-table = { workspace = true }
 colored = { workspace = true }

@@ -56,6 +56,13 @@ enum Commands {
         #[command(subcommand)]
         action: commands::config::ConfigAction,
     },
+
+    /// Start the HTTP proxy (Anthropic API passthrough with PII redaction)
+    Serve {
+        /// Port to listen on
+        #[arg(long, default_value = "7828")]
+        port: u16,
+    },
 }
 
 #[tokio::main]
@@ -83,5 +90,6 @@ async fn main() -> Result<()> {
         Commands::Consent { action } => commands::consent::run(action).await,
         Commands::Audit { r#ref, limit } => commands::audit::run(r#ref, limit).await,
         Commands::Config { action } => commands::config::run(action).await,
+        Commands::Serve { port } => commands::serve::run(port).await,
     }
 }
