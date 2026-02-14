@@ -90,12 +90,29 @@ impl VaultStore {
                 Err(rusqlite::Error::SqliteFailure(err, _))
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
-                    if attempt == MAX_RETRIES - 1 {
-                        return Err(DamError::Database(
-                            "ref ID collision: max retries exhausted".to_string(),
-                        ));
+                    // Only retry on PRIMARY KEY or UNIQUE constraint violations.
+                    // Other constraint violations (NOT NULL, CHECK, FK) won't be fixed by
+                    // regenerating the ref_id and should be returned immediately.
+                    const SQLITE_CONSTRAINT_PRIMARYKEY: i32 = 1555;
+                    const SQLITE_CONSTRAINT_UNIQUE: i32 = 2067;
+                    
+                    if err.extended_code == SQLITE_CONSTRAINT_PRIMARYKEY
+                        || err.extended_code == SQLITE_CONSTRAINT_UNIQUE
+                    {
+                        if attempt == MAX_RETRIES - 1 {
+                            return Err(DamError::Database(
+                                "ref ID collision: max retries exhausted".to_string(),
+                            ));
+                        }
+                        pii_ref = PiiRef::generate(pii_type);
+                    } else {
+                        // Other constraint violations (NOT NULL, CHECK, FK, etc.) should fail immediately
+                        return Err(DamError::Database(format!(
+                            "constraint violation (extended code {}): {:?}",
+                            err.extended_code,
+                            err.code
+                        )));
                     }
-                    pii_ref = PiiRef::generate(pii_type);
                 }
                 Err(e) => return Err(DamError::Database(e.to_string())),
             }
