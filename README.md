@@ -13,16 +13,16 @@ dam init
 
 # Scan text for PII
 dam scan "Email me at john@acme.com, SSN 123-45-6789"
-# Output: Email me at [email:a3f7], SSN [ssn:b2c8]
+# Output: Email me at [email:a3f71bc9], SSN [ssn:b2c81e4f]
 
 # View vault entries
 dam vault list
 
 # Decrypt a specific entry
-dam vault show email:a3f7
+dam vault show email:a3f71bc9
 
 # Grant consent for a tool to access PII
-dam consent grant email:a3f7 claude send_email
+dam consent grant email:a3f71bc9 claude send_email
 
 # View audit trail
 dam audit
@@ -32,7 +32,7 @@ dam audit
 
 1. **Scan**: Text is scanned for PII using regex patterns (emails, phones, SSNs, credit cards, IPs)
 2. **Encrypt**: Each detected value is encrypted with AES-256-GCM envelope encryption and stored in a local SQLite vault
-3. **Replace**: Original values are replaced with typed references like `[email:a3f7]`
+3. **Replace**: Original values are replaced with typed references like `[email:a3f71bc9]`
 4. **Resolve**: When an action needs real values, consent is checked before decryption
 5. **Audit**: Every operation is logged in a hash-chained audit trail
 

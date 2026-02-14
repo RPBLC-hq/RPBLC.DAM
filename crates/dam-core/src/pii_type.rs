@@ -60,7 +60,7 @@ impl FromStr for PiiType {
 }
 
 impl PiiType {
-    /// Short tag used in reference strings like `[email:a3f7]`.
+    /// Short tag used in reference strings like `[email:a3f71bc9]`.
     pub fn tag(&self) -> &'static str {
         match self {
             Self::Email => "email",

@@ -42,7 +42,7 @@ enum Commands {
 
     /// View audit trail
     Audit {
-        /// Filter by reference key (e.g., "email:a3f7")
+        /// Filter by reference key (e.g., "email:a3f71bc9")
         #[arg(long)]
         r#ref: Option<String>,
 

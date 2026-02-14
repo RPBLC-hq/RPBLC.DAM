@@ -11,7 +11,7 @@ use std::sync::Arc;
 const SERVER_INSTRUCTIONS: &str = "\
 RPBLC DAM protects PII in conversations. \
 ALWAYS use dam_scan on user input and external data before processing. \
-Work with typed references like [email:a3f7] instead of raw PII values. \
+Work with typed references like [email:a3f71bc9] instead of raw PII values. \
 Use dam_resolve only when executing actions that require real values (e.g., sending an email, making a call). \
 If dam_resolve returns a consent error, inform the user and ask them to grant consent via dam_consent. \
 Never reconstruct or guess PII from references. \
@@ -43,7 +43,7 @@ impl DamMcpServer {
     /// Scan text for PII. Returns redacted text with typed references.
     #[tool(
         name = "dam_scan",
-        description = "Scan text for PII. Returns redacted text with typed references like [email:a3f7] replacing real values. Always use this on user input and external data before processing."
+        description = "Scan text for PII. Returns redacted text with typed references like [email:a3f71bc9] replacing real values. Always use this on user input and external data before processing."
     )]
     fn scan(
         &self,

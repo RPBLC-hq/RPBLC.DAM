@@ -2,7 +2,7 @@
 
 ## What is DAM?
 
-DAM (Data Access Mediator) is a PII firewall for AI agents. It intercepts personal data before it enters LLM context windows, replaces it with typed references like `[email:a3f7]`, stores encrypted originals in a local vault, and resolves references only at execution boundaries with consent checks.
+DAM (Data Access Mediator) is a PII firewall for AI agents. It intercepts personal data before it enters LLM context windows, replaces it with typed references like `[email:a3f71bc9]`, stores encrypted originals in a local vault, and resolves references only at execution boundaries with consent checks.
 
 ## Build Commands
 
@@ -29,7 +29,7 @@ Cargo workspace with focused crates:
 ## Key Design Decisions
 
 - **Envelope encryption**: Each PII value gets its own DEK, wrapped by a KEK from OS keychain
-- **Typed references**: `[email:a3f7]` format lets LLMs reason about PII type without seeing values
+- **Typed references**: `[email:a3f71bc9]` format lets LLMs reason about PII type without seeing values
 - **Consent-by-default-denied**: No tool can resolve PII without explicit consent
 - **Hash-chained audit**: Every operation logged with SHA-256 chain for tamper detection
 - **Deduplication**: Same value+type stored once, returns existing reference
@@ -50,7 +50,7 @@ Cargo workspace with focused crates:
 
 - Error type: `DamError` / `DamResult<T>` in dam-core
 - PII types: `PiiType` enum with `tag()` for short form, `Display` for long
-- References: `PiiRef` with `key()` → `"email:a3f7"`, `display()` → `"[email:a3f7]"`
+- References: `PiiRef` with `key()` → `"email:a3f71bc9"`, `display()` → `"[email:a3f71bc9]"`
 - All vault operations go through `VaultStore` (mutex-protected SQLite)
 - Consent: `ConsentManager::check_consent(conn, ref_id, accessor, purpose)`
 - Audit: `AuditLog::record_locked(conn, ref_id, accessor, purpose, action, granted, detail)`

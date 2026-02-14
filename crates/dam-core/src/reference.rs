@@ -9,7 +9,7 @@ use std::str::FromStr;
 
 /// A typed reference to a PII value stored in the vault.
 ///
-/// Format: `[type:hex4]` e.g. `[email:a3f7]`
+/// Format: `[type:hex]` e.g. `[email:a3f71bc9]` (8 hex chars locally, 4-16 accepted)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PiiRef {
     pub pii_type: PiiType,
@@ -17,27 +17,27 @@ pub struct PiiRef {
 }
 
 impl PiiRef {
-    /// Generate a new reference with a random 4-character hex ID.
+    /// Generate a new reference with a random 8-character hex ID.
     pub fn generate(pii_type: PiiType) -> Self {
         let mut rng = rand::thread_rng();
-        let id: u16 = rng.r#gen();
+        let id: u32 = rng.r#gen();
         Self {
             pii_type,
-            id: format!("{id:04x}"),
+            id: format!("{id:08x}"),
         }
     }
 
-    /// The short key used in the vault: `email:a3f7`
+    /// The short key used in the vault: `email:a3f71bc9`
     pub fn key(&self) -> String {
         format!("{}:{}", self.pii_type.tag(), self.id)
     }
 
-    /// The bracketed display form: `[email:a3f7]`
+    /// The bracketed display form: `[email:a3f71bc9]`
     pub fn display(&self) -> String {
         format!("[{}]", self.key())
     }
 
-    /// Parse from the key form `email:a3f7`.
+    /// Parse from the key form `email:a3f71bc9`.
     pub fn from_key(key: &str) -> DamResult<Self> {
         let (tag, id) = key
             .split_once(':')
@@ -61,7 +61,7 @@ impl FromStr for PiiRef {
     type Err = DamError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Accept both `[email:a3f7]` and `email:a3f7`
+        // Accept both `[email:a3f71bc9]` and `email:a3f71bc9`
         let inner = s
             .strip_prefix('[')
             .and_then(|s| s.strip_suffix(']'))
@@ -71,8 +71,10 @@ impl FromStr for PiiRef {
 }
 
 /// Regex that matches `[type:hex]` references in text.
+/// Accepts 4-16 hex chars to support locally-generated IDs (8 chars)
+/// and future remote-generated IDs of varying length.
 static REF_PATTERN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\[([a-z_]+):([a-f0-9]{4})\]").expect("ref pattern should compile"));
+    Lazy::new(|| Regex::new(r"\[([a-z_]+):([a-f0-9]{4,16})\]").expect("ref pattern should compile"));
 
 /// Extract all PII references from a string.
 pub fn extract_refs(text: &str) -> Vec<PiiRef> {
@@ -132,7 +134,7 @@ mod tests {
     fn generate_and_parse() {
         let r = PiiRef::generate(PiiType::Email);
         assert_eq!(r.pii_type, PiiType::Email);
-        assert_eq!(r.id.len(), 4);
+        assert_eq!(r.id.len(), 8);
 
         let parsed: PiiRef = r.display().parse().unwrap();
         assert_eq!(parsed, r);

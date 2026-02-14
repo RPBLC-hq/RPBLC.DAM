@@ -64,26 +64,42 @@ impl VaultStore {
             return Ok(existing_ref);
         }
 
-        // Generate a new reference
-        let pii_ref = PiiRef::generate(pii_type);
+        // Generate a new reference with collision retry
         let encrypted = self.crypto.encrypt(plaintext.as_bytes())?;
         let now = chrono::Utc::now().timestamp();
 
-        conn.execute(
-            "INSERT INTO entries (ref_id, pii_type, ciphertext, dek_enc, iv, created_at, source, label)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![
-                pii_ref.key(),
-                pii_type.to_string(),
-                encrypted.ciphertext,
-                encrypted.dek_encrypted,
-                encrypted.iv,
-                now,
-                source,
-                label,
-            ],
-        )
-        .map_err(|e| DamError::Database(e.to_string()))?;
+        const MAX_RETRIES: usize = 5;
+        let mut pii_ref = PiiRef::generate(pii_type);
+
+        for attempt in 0..MAX_RETRIES {
+            match conn.execute(
+                "INSERT INTO entries (ref_id, pii_type, ciphertext, dek_enc, iv, created_at, source, label)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    pii_ref.key(),
+                    pii_type.to_string(),
+                    encrypted.ciphertext,
+                    encrypted.dek_encrypted,
+                    encrypted.iv,
+                    now,
+                    source,
+                    label,
+                ],
+            ) {
+                Ok(_) => break,
+                Err(rusqlite::Error::SqliteFailure(err, _))
+                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    if attempt == MAX_RETRIES - 1 {
+                        return Err(DamError::Database(
+                            "ref ID collision: max retries exhausted".to_string(),
+                        ));
+                    }
+                    pii_ref = PiiRef::generate(pii_type);
+                }
+                Err(e) => return Err(DamError::Database(e.to_string())),
+            }
+        }
 
         // Audit the creation
         AuditLog::record(
