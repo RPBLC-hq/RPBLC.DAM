@@ -87,15 +87,28 @@ impl VaultStore {
                 ],
             ) {
                 Ok(_) => break,
-                Err(rusqlite::Error::SqliteFailure(err, _))
+                Err(rusqlite::Error::SqliteFailure(err, msg))
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
-                    if attempt == MAX_RETRIES - 1 {
-                        return Err(DamError::Database(
-                            "ref ID collision: max retries exhausted".to_string(),
-                        ));
+                    // Only retry on PRIMARY KEY or UNIQUE constraint violations —
+                    // regenerating the ref_id can fix those. Other constraint types
+                    // (NOT NULL, CHECK, FK) indicate a real bug and should fail immediately.
+                    if err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                        || err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                    {
+                        if attempt == MAX_RETRIES - 1 {
+                            return Err(DamError::Database(
+                                "ref ID collision: max retries exhausted".to_string(),
+                            ));
+                        }
+                        pii_ref = PiiRef::generate(pii_type);
+                    } else {
+                        return Err(DamError::Database(format!(
+                            "constraint violation (code {}): {}",
+                            err.extended_code,
+                            msg.as_deref().unwrap_or("unknown"),
+                        )));
                     }
-                    pii_ref = PiiRef::generate(pii_type);
                 }
                 Err(e) => return Err(DamError::Database(e.to_string())),
             }
@@ -459,5 +472,31 @@ mod tests {
         let (store, _path) = test_vault();
         let entries = store.list_entries(None).unwrap();
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn non_unique_constraint_violation_fails_immediately() {
+        // Verify that non-PK/UNIQUE constraint violations (e.g. NOT NULL)
+        // are surfaced as errors rather than silently retried.
+        let (store, _path) = test_vault();
+        let conn = store.conn.lock().unwrap();
+
+        // Insert directly with NULL in a NOT NULL column to trigger a
+        // SQLITE_CONSTRAINT_NOTNULL error (extended code 1299).
+        let result = conn.execute(
+            "INSERT INTO entries (ref_id, pii_type, ciphertext, dek_enc, iv, created_at)
+             VALUES (?1, NULL, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["test:0001", b"ct", b"dek", b"iv", 0i64],
+        );
+
+        match result {
+            Err(rusqlite::Error::SqliteFailure(err, _)) => {
+                assert_eq!(err.code, rusqlite::ErrorCode::ConstraintViolation);
+                // NOT NULL extended code — must NOT be treated as a collision
+                assert_ne!(err.extended_code, rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY);
+                assert_ne!(err.extended_code, rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE);
+            }
+            other => panic!("expected ConstraintViolation, got {:?}", other),
+        }
     }
 }
