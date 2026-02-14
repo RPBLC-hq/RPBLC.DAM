@@ -255,3 +255,295 @@ impl AuditLog {
         hex::encode(hasher.finalize())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::encryption::generate_kek;
+    use crate::store::VaultStore;
+
+    fn test_vault() -> VaultStore {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.keep().join("test.db");
+        VaultStore::open(&path, generate_kek()).unwrap()
+    }
+
+    #[test]
+    fn record_creates_entry() {
+        let vault = test_vault();
+        let conn = vault.conn();
+
+        AuditLog::record_locked(conn, "email:abc1", "claude", "send", "resolve", true, None)
+            .unwrap();
+
+        let entries = AuditLog::query(conn, None, 100).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].ref_id, "email:abc1");
+        assert_eq!(entries[0].accessor, "claude");
+        assert_eq!(entries[0].purpose, "send");
+        assert_eq!(entries[0].action, "resolve");
+        assert!(entries[0].granted);
+        assert!(entries[0].detail.is_none());
+    }
+
+    #[test]
+    fn record_with_detail() {
+        let vault = test_vault();
+        let conn = vault.conn();
+
+        AuditLog::record_locked(
+            conn,
+            "email:abc1",
+            "claude",
+            "send",
+            "denied",
+            false,
+            Some("no consent"),
+        )
+        .unwrap();
+
+        let entries = AuditLog::query(conn, None, 100).unwrap();
+        assert_eq!(entries[0].detail.as_deref(), Some("no consent"));
+        assert!(!entries[0].granted);
+    }
+
+    #[test]
+    fn first_entry_has_no_prev_hash() {
+        let vault = test_vault();
+        let conn = vault.conn();
+
+        AuditLog::record_locked(conn, "email:abc1", "claude", "send", "resolve", true, None)
+            .unwrap();
+
+        let entries = AuditLog::query(conn, None, 100).unwrap();
+        assert!(entries[0].prev_hash.is_none());
+    }
+
+    #[test]
+    fn second_entry_has_prev_hash() {
+        let vault = test_vault();
+        let conn = vault.conn();
+
+        AuditLog::record_locked(conn, "email:abc1", "claude", "send", "resolve", true, None)
+            .unwrap();
+        AuditLog::record_locked(conn, "email:abc2", "tool_b", "read", "resolve", true, None)
+            .unwrap();
+
+        let entries = AuditLog::query(conn, None, 100).unwrap();
+        // query returns DESC order, so entries[0] is the second entry
+        assert!(entries[0].prev_hash.is_some());
+    }
+
+    #[test]
+    fn chain_is_valid_on_intact_log() {
+        let vault = test_vault();
+        let conn = vault.conn();
+
+        AuditLog::record_locked(conn, "email:abc1", "claude", "send", "resolve", true, None)
+            .unwrap();
+        AuditLog::record_locked(conn, "email:abc2", "tool_b", "read", "resolve", true, None)
+            .unwrap();
+        AuditLog::record_locked(
+            conn,
+            "phone:def3",
+            "claude",
+            "call",
+            "denied",
+            false,
+            Some("no consent"),
+        )
+        .unwrap();
+
+        let (valid, total, first_broken) = AuditLog::verify_chain(conn).unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(valid, 3);
+        assert!(first_broken.is_none());
+    }
+
+    #[test]
+    fn chain_detects_tampered_row() {
+        let vault = test_vault();
+        let conn = vault.conn();
+
+        AuditLog::record_locked(conn, "email:abc1", "claude", "send", "resolve", true, None)
+            .unwrap();
+        AuditLog::record_locked(conn, "email:abc2", "tool_b", "read", "resolve", true, None)
+            .unwrap();
+        AuditLog::record_locked(conn, "email:abc3", "tool_c", "list", "resolve", true, None)
+            .unwrap();
+
+        // Tamper: flip the granted bit on the first row
+        {
+            let c = conn.lock().unwrap();
+            c.execute("UPDATE audit SET granted = 0 WHERE id = 1", [])
+                .unwrap();
+        }
+
+        let (valid, total, first_broken) = AuditLog::verify_chain(conn).unwrap();
+        assert_eq!(total, 3);
+        // First entry is always valid (no prev_hash to check against),
+        // but entry 2's prev_hash was computed from the original entry 1 data,
+        // which no longer matches.
+        assert!(valid < total);
+        assert!(first_broken.is_some());
+    }
+
+    #[test]
+    fn chain_detects_deleted_row() {
+        let vault = test_vault();
+        let conn = vault.conn();
+
+        AuditLog::record_locked(conn, "email:abc1", "claude", "send", "resolve", true, None)
+            .unwrap();
+        AuditLog::record_locked(conn, "email:abc2", "tool_b", "read", "resolve", true, None)
+            .unwrap();
+        AuditLog::record_locked(conn, "email:abc3", "tool_c", "list", "resolve", true, None)
+            .unwrap();
+
+        // Delete the middle row — breaks the chain
+        {
+            let c = conn.lock().unwrap();
+            c.execute("DELETE FROM audit WHERE id = 2", []).unwrap();
+        }
+
+        let (valid, total, first_broken) = AuditLog::verify_chain(conn).unwrap();
+        assert_eq!(total, 2); // only 2 rows remain
+        // Entry 3 has prev_hash computed from entry 2 which is gone,
+        // so verifying against entry 1 will fail.
+        assert!(valid < total);
+        assert!(first_broken.is_some());
+    }
+
+    #[test]
+    fn query_filters_by_ref_id() {
+        let vault = test_vault();
+        let conn = vault.conn();
+
+        AuditLog::record_locked(conn, "email:abc1", "claude", "send", "resolve", true, None)
+            .unwrap();
+        AuditLog::record_locked(conn, "phone:def2", "claude", "call", "resolve", true, None)
+            .unwrap();
+        AuditLog::record_locked(conn, "email:abc1", "tool_b", "read", "denied", false, None)
+            .unwrap();
+
+        let email_entries = AuditLog::query(conn, Some("email:abc1"), 100).unwrap();
+        assert_eq!(email_entries.len(), 2);
+        assert!(email_entries.iter().all(|e| e.ref_id == "email:abc1"));
+    }
+
+    #[test]
+    fn query_respects_limit() {
+        let vault = test_vault();
+        let conn = vault.conn();
+
+        for i in 0..10 {
+            AuditLog::record_locked(
+                conn,
+                &format!("email:abc{i}"),
+                "claude",
+                "send",
+                "resolve",
+                true,
+                None,
+            )
+            .unwrap();
+        }
+
+        let entries = AuditLog::query(conn, None, 3).unwrap();
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn query_empty_log() {
+        let vault = test_vault();
+        let conn = vault.conn();
+
+        let entries = AuditLog::query(conn, None, 100).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn verify_chain_empty_log() {
+        let vault = test_vault();
+        let conn = vault.conn();
+
+        let (valid, total, first_broken) = AuditLog::verify_chain(conn).unwrap();
+        assert_eq!(valid, 0);
+        assert_eq!(total, 0);
+        assert!(first_broken.is_none());
+    }
+
+    #[test]
+    fn compute_hash_is_deterministic() {
+        let h1 =
+            AuditLog::compute_hash(1, "email:abc1", "claude", "send", "resolve", true, 1000, None);
+        let h2 =
+            AuditLog::compute_hash(1, "email:abc1", "claude", "send", "resolve", true, 1000, None);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn compute_hash_changes_with_any_field() {
+        let base =
+            AuditLog::compute_hash(1, "email:abc1", "claude", "send", "resolve", true, 1000, None);
+
+        // Change each field individually and verify the hash changes
+        let changed_id =
+            AuditLog::compute_hash(2, "email:abc1", "claude", "send", "resolve", true, 1000, None);
+        let changed_ref = AuditLog::compute_hash(
+            1,
+            "email:abc2",
+            "claude",
+            "send",
+            "resolve",
+            true,
+            1000,
+            None,
+        );
+        let changed_accessor =
+            AuditLog::compute_hash(1, "email:abc1", "other", "send", "resolve", true, 1000, None);
+        let changed_purpose = AuditLog::compute_hash(
+            1,
+            "email:abc1",
+            "claude",
+            "other",
+            "resolve",
+            true,
+            1000,
+            None,
+        );
+        let changed_action =
+            AuditLog::compute_hash(1, "email:abc1", "claude", "send", "denied", true, 1000, None);
+        let changed_granted = AuditLog::compute_hash(
+            1,
+            "email:abc1",
+            "claude",
+            "send",
+            "resolve",
+            false,
+            1000,
+            None,
+        );
+        let changed_ts =
+            AuditLog::compute_hash(1, "email:abc1", "claude", "send", "resolve", true, 9999, None);
+        let changed_prev = AuditLog::compute_hash(
+            1,
+            "email:abc1",
+            "claude",
+            "send",
+            "resolve",
+            true,
+            1000,
+            Some("prev"),
+        );
+
+        assert_ne!(base, changed_id);
+        assert_ne!(base, changed_ref);
+        assert_ne!(base, changed_accessor);
+        assert_ne!(base, changed_purpose);
+        assert_ne!(base, changed_action);
+        assert_ne!(base, changed_granted);
+        assert_ne!(base, changed_ts);
+        assert_ne!(base, changed_prev);
+    }
+}

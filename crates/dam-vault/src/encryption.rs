@@ -187,4 +187,82 @@ mod tests {
         );
         assert!(result.is_err());
     }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn encrypt_empty_plaintext() {
+        let kek = generate_kek();
+        let crypto = EnvelopeCrypto::new(kek);
+
+        let encrypted = crypto.encrypt(b"").unwrap();
+        let decrypted = crypto
+            .decrypt(&encrypted.ciphertext, &encrypted.dek_encrypted, &encrypted.iv)
+            .unwrap();
+        assert!(decrypted.is_empty());
+    }
+
+    #[test]
+    fn encrypt_large_payload() {
+        let kek = generate_kek();
+        let crypto = EnvelopeCrypto::new(kek);
+
+        let large = vec![b'x'; 100_000];
+        let encrypted = crypto.encrypt(&large).unwrap();
+        let decrypted = crypto
+            .decrypt(&encrypted.ciphertext, &encrypted.dek_encrypted, &encrypted.iv)
+            .unwrap();
+        assert_eq!(decrypted, large);
+    }
+
+    #[test]
+    fn tampered_ciphertext_fails() {
+        let kek = generate_kek();
+        let crypto = EnvelopeCrypto::new(kek);
+
+        let encrypted = crypto.encrypt(b"sensitive data").unwrap();
+        let mut tampered = encrypted.ciphertext.clone();
+        tampered[0] ^= 0xff;
+
+        let result = crypto.decrypt(&tampered, &encrypted.dek_encrypted, &encrypted.iv);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tampered_iv_fails() {
+        let kek = generate_kek();
+        let crypto = EnvelopeCrypto::new(kek);
+
+        let encrypted = crypto.encrypt(b"sensitive data").unwrap();
+        let mut tampered_iv = encrypted.iv.clone();
+        tampered_iv[0] ^= 0xff;
+
+        let result = crypto.decrypt(&encrypted.ciphertext, &encrypted.dek_encrypted, &tampered_iv);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tampered_dek_fails() {
+        let kek = generate_kek();
+        let crypto = EnvelopeCrypto::new(kek);
+
+        let encrypted = crypto.encrypt(b"sensitive data").unwrap();
+        let mut tampered_dek = encrypted.dek_encrypted.clone();
+        tampered_dek[0] ^= 0xff;
+
+        let result = crypto.decrypt(&encrypted.ciphertext, &tampered_dek, &encrypted.iv);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_iv_length_fails() {
+        let kek = generate_kek();
+        let crypto = EnvelopeCrypto::new(kek);
+
+        let encrypted = crypto.encrypt(b"test").unwrap();
+        let short_iv = vec![0u8; 10]; // should be 24
+
+        let result = crypto.decrypt(&encrypted.ciphertext, &encrypted.dek_encrypted, &short_iv);
+        assert!(result.is_err());
+    }
 }

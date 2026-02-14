@@ -374,4 +374,90 @@ mod tests {
         let all = store.list_entries(None).unwrap();
         assert_eq!(all.len(), 1);
     }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn retrieve_nonexistent_ref() {
+        let (store, _path) = test_vault();
+        let fake_ref = PiiRef::generate(PiiType::Email);
+        let result = store.retrieve_pii(&fake_ref);
+        assert!(result.is_err());
+        match result {
+            Err(DamError::ReferenceNotFound(_)) => {}
+            other => panic!("expected ReferenceNotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn delete_nonexistent_ref() {
+        let (store, _path) = test_vault();
+        let fake_ref = PiiRef::generate(PiiType::Email);
+        let result = store.delete_entry(&fake_ref);
+        assert!(result.is_err());
+        match result {
+            Err(DamError::ReferenceNotFound(_)) => {}
+            other => panic!("expected ReferenceNotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn store_empty_value() {
+        let (store, _path) = test_vault();
+        let pii_ref = store.store_pii(PiiType::Custom, "", None, None).unwrap();
+        let value = store.retrieve_pii(&pii_ref).unwrap();
+        assert_eq!(value, "");
+    }
+
+    #[test]
+    fn retrieve_after_delete_fails() {
+        let (store, _path) = test_vault();
+        let pii_ref = store
+            .store_pii(PiiType::Email, "gone@test.com", None, None)
+            .unwrap();
+        store.delete_entry(&pii_ref).unwrap();
+
+        let result = store.retrieve_pii(&pii_ref);
+        assert!(result.is_err());
+        match result {
+            Err(DamError::ReferenceNotFound(_)) => {}
+            other => panic!("expected ReferenceNotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dedup_different_types_same_value() {
+        let (store, _path) = test_vault();
+        let ref1 = store
+            .store_pii(PiiType::Email, "test@test.com", None, None)
+            .unwrap();
+        let ref2 = store
+            .store_pii(PiiType::Custom, "test@test.com", None, None)
+            .unwrap();
+        // Same value but different type — should NOT deduplicate
+        assert_ne!(ref1.key(), ref2.key());
+    }
+
+    #[test]
+    fn entry_count() {
+        let (store, _path) = test_vault();
+        assert_eq!(store.entry_count().unwrap(), 0);
+
+        store
+            .store_pii(PiiType::Email, "a@b.com", None, None)
+            .unwrap();
+        assert_eq!(store.entry_count().unwrap(), 1);
+
+        store
+            .store_pii(PiiType::Phone, "555-0000", None, None)
+            .unwrap();
+        assert_eq!(store.entry_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn list_entries_empty_vault() {
+        let (store, _path) = test_vault();
+        let entries = store.list_entries(None).unwrap();
+        assert!(entries.is_empty());
+    }
 }

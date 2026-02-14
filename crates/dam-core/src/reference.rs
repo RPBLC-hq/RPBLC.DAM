@@ -167,4 +167,131 @@ mod tests {
         assert_eq!(r.pii_type, PiiType::Ssn);
         assert_eq!(r.id, "beef");
     }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn from_key_empty_string() {
+        assert!(PiiRef::from_key("").is_err());
+    }
+
+    #[test]
+    fn from_key_no_colon() {
+        assert!(PiiRef::from_key("nocolon").is_err());
+    }
+
+    #[test]
+    fn from_key_unknown_type() {
+        assert!(PiiRef::from_key("bogus:abcd1234").is_err());
+    }
+
+    #[test]
+    fn from_key_empty_type() {
+        assert!(PiiRef::from_key(":abcd1234").is_err());
+    }
+
+    #[test]
+    fn from_key_empty_id() {
+        // from_key does not validate ID length — this should succeed
+        let r = PiiRef::from_key("email:").unwrap();
+        assert_eq!(r.id, "");
+    }
+
+    #[test]
+    fn from_key_accepts_any_id_length() {
+        // from_key is lenient — accepts 3-char ID
+        let r = PiiRef::from_key("email:abc").unwrap();
+        assert_eq!(r.id, "abc");
+
+        // and 17-char ID
+        let r = PiiRef::from_key("email:aabbccdd11223344f").unwrap();
+        assert_eq!(r.id, "aabbccdd11223344f");
+    }
+
+    #[test]
+    fn extract_refs_empty_input() {
+        assert!(extract_refs("").is_empty());
+    }
+
+    #[test]
+    fn extract_refs_no_refs_in_text() {
+        assert!(extract_refs("just some plain text").is_empty());
+    }
+
+    #[test]
+    fn extract_refs_id_too_short() {
+        // Regex requires 4-16 hex chars; 3 chars should not match
+        let refs = extract_refs("[email:abc]");
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn extract_refs_id_too_long() {
+        // 17 hex chars should not match (max is 16)
+        let refs = extract_refs("[email:aabbccdd11223344f]");
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn extract_refs_non_hex_id() {
+        // 'z' is not a hex char
+        let refs = extract_refs("[email:abcdzzzz]");
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn extract_refs_unknown_type_tag() {
+        let refs = extract_refs("[bogus:abcd1234]");
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn extract_refs_boundary_4_and_16_chars() {
+        // Exactly 4 hex chars — minimum valid
+        let refs = extract_refs("[email:abcd]");
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].id, "abcd");
+
+        // Exactly 16 hex chars — maximum valid
+        let refs = extract_refs("[email:aabbccdd11223344]");
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].id, "aabbccdd11223344");
+    }
+
+    #[test]
+    fn extract_refs_malformed_brackets() {
+        // Missing closing bracket
+        assert!(extract_refs("[email:abcd1234").is_empty());
+        // Missing opening bracket
+        assert!(extract_refs("email:abcd1234]").is_empty());
+        // No brackets at all
+        assert!(extract_refs("email:abcd1234").is_empty());
+    }
+
+    #[test]
+    fn replace_refs_unresolved_stays_intact() {
+        let text = "Contact [email:abcd1234] please";
+        let result = replace_refs(text, |_| None);
+        assert_eq!(result, text);
+    }
+
+    #[test]
+    fn replace_refs_empty_text() {
+        let result = replace_refs("", |_| None);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn parse_with_and_without_brackets() {
+        let with: PiiRef = "[email:abcd1234]".parse().unwrap();
+        let without: PiiRef = "email:abcd1234".parse().unwrap();
+        assert_eq!(with, without);
+    }
+
+    #[test]
+    fn parse_invalid_string() {
+        assert!("garbage".parse::<PiiRef>().is_err());
+        assert!("".parse::<PiiRef>().is_err());
+        assert!("[unknown:abcd]".parse::<PiiRef>().is_err());
+    }
 }
