@@ -11,15 +11,19 @@ use std::sync::Mutex;
 /// Uppercases IBANs and postal codes.
 fn normalize_pii(pii_type: PiiType, value: &str) -> String {
     match pii_type {
-        PiiType::CreditCard | PiiType::Phone | PiiType::Sin => {
-            value.chars().filter(|c| *c != ' ' && *c != '-').collect()
-        }
-        PiiType::Iban => value
-            .chars()
-            .filter(|c| *c != ' ' && *c != '-')
-            .map(|c| c.to_ascii_uppercase())
-            .collect(),
-        PiiType::PostalCode => value
+        PiiType::CreditCard
+        | PiiType::Phone
+        | PiiType::Sin
+        | PiiType::NiNumber
+        | PiiType::NhsNumber
+        | PiiType::InseeNir
+        | PiiType::TaxId => value.chars().filter(|c| *c != ' ' && *c != '-').collect(),
+        PiiType::Iban
+        | PiiType::PostalCode
+        | PiiType::NationalId
+        | PiiType::VatNumber
+        | PiiType::SwiftBic
+        | PiiType::DriversLicense => value
             .chars()
             .filter(|c| *c != ' ' && *c != '-')
             .map(|c| c.to_ascii_uppercase())
@@ -602,6 +606,94 @@ mod tests {
 
         let value = store.retrieve_pii(&ref1).unwrap();
         assert_eq!(value, "K1A0B1");
+    }
+
+    #[test]
+    fn ni_number_normalization_dedup() {
+        let (store, _path) = test_vault();
+        let ref1 = store
+            .store_pii(PiiType::NiNumber, "AB 123 456 C", None, None)
+            .unwrap();
+        let ref2 = store
+            .store_pii(PiiType::NiNumber, "AB-123-456-C", None, None)
+            .unwrap();
+        let ref3 = store
+            .store_pii(PiiType::NiNumber, "AB123456C", None, None)
+            .unwrap();
+
+        assert_eq!(ref1.key(), ref2.key());
+        assert_eq!(ref2.key(), ref3.key());
+
+        let value = store.retrieve_pii(&ref1).unwrap();
+        assert_eq!(value, "AB123456C");
+    }
+
+    #[test]
+    fn vat_number_normalization_dedup() {
+        let (store, _path) = test_vault();
+        let ref1 = store
+            .store_pii(PiiType::VatNumber, "de 123 456 789", None, None)
+            .unwrap();
+        let ref2 = store
+            .store_pii(PiiType::VatNumber, "DE123456789", None, None)
+            .unwrap();
+
+        assert_eq!(ref1.key(), ref2.key());
+
+        let value = store.retrieve_pii(&ref1).unwrap();
+        assert_eq!(value, "DE123456789");
+    }
+
+    #[test]
+    fn swift_normalization_dedup() {
+        let (store, _path) = test_vault();
+        let ref1 = store
+            .store_pii(PiiType::SwiftBic, "deut de ff", None, None)
+            .unwrap();
+        let ref2 = store
+            .store_pii(PiiType::SwiftBic, "DEUTDEFF", None, None)
+            .unwrap();
+
+        assert_eq!(ref1.key(), ref2.key());
+
+        let value = store.retrieve_pii(&ref1).unwrap();
+        assert_eq!(value, "DEUTDEFF");
+    }
+
+    #[test]
+    fn nhs_normalization_dedup() {
+        let (store, _path) = test_vault();
+        let ref1 = store
+            .store_pii(PiiType::NhsNumber, "943 476 5919", None, None)
+            .unwrap();
+        let ref2 = store
+            .store_pii(PiiType::NhsNumber, "943-476-5919", None, None)
+            .unwrap();
+        let ref3 = store
+            .store_pii(PiiType::NhsNumber, "9434765919", None, None)
+            .unwrap();
+
+        assert_eq!(ref1.key(), ref2.key());
+        assert_eq!(ref2.key(), ref3.key());
+
+        let value = store.retrieve_pii(&ref1).unwrap();
+        assert_eq!(value, "9434765919");
+    }
+
+    #[test]
+    fn drivers_license_normalization_uppercase() {
+        let (store, _path) = test_vault();
+        let ref1 = store
+            .store_pii(PiiType::DriversLicense, "morga657054sm9ij", None, None)
+            .unwrap();
+        let ref2 = store
+            .store_pii(PiiType::DriversLicense, "MORGA657054SM9IJ", None, None)
+            .unwrap();
+
+        assert_eq!(ref1.key(), ref2.key());
+
+        let value = store.retrieve_pii(&ref1).unwrap();
+        assert_eq!(value, "MORGA657054SM9IJ");
     }
 
     #[test]
