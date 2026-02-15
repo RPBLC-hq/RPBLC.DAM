@@ -65,7 +65,10 @@ impl DetectionPipeline {
     /// Scan text for PII, store detections in vault, return redacted text.
     pub fn scan(&self, text: &str, source: Option<&str>) -> DamResult<ScanResult> {
         // Stage 1: Regex detection
-        let mut detections = stage_regex::detect(text, &self.patterns);
+        // `detect` normalizes text (strips zero-width chars, NFKC, etc.) and
+        // returns offsets into the normalized form. We must use that same
+        // normalized string when building the redacted output.
+        let (normalized, mut detections) = stage_regex::detect(text, &self.patterns);
 
         // Stage 2: User-defined rules
         if !self.rules_engine.is_empty() {
@@ -103,8 +106,8 @@ impl DetectionPipeline {
             });
         }
 
-        // Build redacted text by replacing spans end-to-start (preserves offsets)
-        let mut redacted = text.to_string();
+        // Build redacted text from the normalized form (offsets are valid there)
+        let mut redacted = normalized;
         replacements.sort_by(|a, b| b.0.cmp(&a.0)); // reverse sort by start
         for (start, end, replacement) in &replacements {
             redacted.replace_range(*start..*end, replacement);

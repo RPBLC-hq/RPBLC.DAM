@@ -23,9 +23,10 @@ pub(crate) fn patterns() -> Vec<Pattern> {
             confidence: 0.85,
             validator: Some(validate_luhn_cc),
         },
-        // International phone — E.164 format (+ followed by 7-15 digits)
+        // International phone — E.164 with optional separators
+        // 7-15 digits total, first digit non-zero, separators (space/dash/dot) allowed
         Pattern {
-            regex: Regex::new(r"\+[1-9]\d{6,14}\b").unwrap(),
+            regex: Regex::new(r"\+[1-9]\d(?:[\s\-.]?\d){5,13}\b").unwrap(),
             pii_type: PiiType::Phone,
             confidence: 0.9,
             validator: None,

@@ -17,7 +17,7 @@ pub(crate) fn patterns() -> Vec<Pattern> {
         // Excludes D, F, I, O, Q, U in any position; W and Z only in second/third positions
         Pattern {
             regex: Regex::new(
-                r"\b[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z][\s-]?\d[ABCEGHJ-NPRSTV-Z]\d\b",
+                r"(?i)\b[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z][\s-]?\d[ABCEGHJ-NPRSTV-Z]\d\b",
             )
             .unwrap(),
             pii_type: PiiType::PostalCode,
@@ -41,7 +41,7 @@ mod tests {
 
     #[test]
     fn detect_sin_with_dashes() {
-        let detections = detect("SIN: 130-692-544", &ca_patterns());
+        let (_, detections) = detect("SIN: 130-692-544", &ca_patterns());
         assert!(
             detections.iter().any(|d| d.pii_type == PiiType::Sin),
             "should detect SIN with dashes"
@@ -50,7 +50,7 @@ mod tests {
 
     #[test]
     fn detect_sin_with_spaces() {
-        let detections = detect("SIN: 130 692 544", &ca_patterns());
+        let (_, detections) = detect("SIN: 130 692 544", &ca_patterns());
         assert!(
             detections.iter().any(|d| d.pii_type == PiiType::Sin),
             "should detect SIN with spaces"
@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn detect_sin_no_separators() {
-        let detections = detect("SIN: 130692544", &ca_patterns());
+        let (_, detections) = detect("SIN: 130692544", &ca_patterns());
         assert!(
             detections.iter().any(|d| d.pii_type == PiiType::Sin),
             "should detect SIN without separators"
@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn reject_sin_fails_luhn() {
-        let detections = detect("SIN: 123-456-780", &ca_patterns());
+        let (_, detections) = detect("SIN: 123-456-780", &ca_patterns());
         assert!(
             !detections.iter().any(|d| d.pii_type == PiiType::Sin),
             "should reject SIN that fails Luhn"
@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn reject_sin_starts_with_zero() {
         // 046-454-286 passes Luhn but starts with 0
-        let detections = detect("SIN: 046-454-286", &ca_patterns());
+        let (_, detections) = detect("SIN: 046-454-286", &ca_patterns());
         assert!(
             !detections.iter().any(|d| d.pii_type == PiiType::Sin),
             "should reject SIN starting with 0"
@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn reject_sin_starts_with_eight() {
-        let detections = detect("SIN: 800-000-002", &ca_patterns());
+        let (_, detections) = detect("SIN: 800-000-002", &ca_patterns());
         assert!(
             !detections.iter().any(|d| d.pii_type == PiiType::Sin),
             "should reject SIN starting with 8"
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn detect_postal_code_with_space() {
-        let detections = detect("Postal: K1A 0B1", &ca_patterns());
+        let (_, detections) = detect("Postal: K1A 0B1", &ca_patterns());
         assert!(
             detections.iter().any(|d| d.pii_type == PiiType::PostalCode),
             "should detect postal code with space"
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn detect_postal_code_without_space() {
-        let detections = detect("Postal: K1A0B1", &ca_patterns());
+        let (_, detections) = detect("Postal: K1A0B1", &ca_patterns());
         assert!(
             detections.iter().any(|d| d.pii_type == PiiType::PostalCode),
             "should detect postal code without space"
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn detect_postal_code_with_dash() {
-        let detections = detect("Postal: K1A-0B1", &ca_patterns());
+        let (_, detections) = detect("Postal: K1A-0B1", &ca_patterns());
         assert!(
             detections.iter().any(|d| d.pii_type == PiiType::PostalCode),
             "should detect postal code with dash"
@@ -124,9 +124,18 @@ mod tests {
     }
 
     #[test]
+    fn detect_postal_code_lowercase() {
+        let (_, detections) = detect("Postal: k1a 0b1", &ca_patterns());
+        assert!(
+            detections.iter().any(|d| d.pii_type == PiiType::PostalCode),
+            "should detect lowercase postal code"
+        );
+    }
+
+    #[test]
     fn reject_postal_code_invalid_first_letter() {
         // D, F, I, O, Q, U, W, Z are not valid first letters
-        let detections = detect("Postal: D1A 0B1", &ca_patterns());
+        let (_, detections) = detect("Postal: D1A 0B1", &ca_patterns());
         assert!(
             !detections.iter().any(|d| d.pii_type == PiiType::PostalCode),
             "should reject postal code starting with D"
@@ -136,7 +145,7 @@ mod tests {
     #[test]
     fn reject_postal_code_invalid_letters() {
         // I and O are never valid in postal codes
-        let detections = detect("Postal: K1I 0B1", &ca_patterns());
+        let (_, detections) = detect("Postal: K1I 0B1", &ca_patterns());
         assert!(
             !detections.iter().any(|d| d.pii_type == PiiType::PostalCode),
             "should reject postal code with I"

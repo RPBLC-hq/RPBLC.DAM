@@ -22,9 +22,9 @@ Patterns that apply regardless of locale selection. These detect PII formats tha
 
 - **PiiType**: `Phone`
 - **Confidence**: 0.9
-- **Regex**: `\+[1-9]\d{6,14}\b` (strict E.164: + followed by 7-15 digits, first digit non-zero)
+- **Regex**: `\+[1-9]\d(?:[\s\-.]?\d){5,13}\b` (E.164: 7-15 digits, first non-zero, optional separators)
 - **Validator**: None
-- **Examples**: `+442079460958`, `+818312345678`
+- **Examples**: `+442079460958`, `+44 20 7946 0958`, `+81-3-1234-5678`
 
 ## IPv4 Address
 

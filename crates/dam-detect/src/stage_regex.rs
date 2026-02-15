@@ -157,7 +157,11 @@ pub(crate) struct Pattern {
 
 /// Run regex-based PII detection on text using the given patterns.
 /// Text is normalized (zero-width chars removed, NFKC applied) before detection.
-pub(crate) fn detect(text: &str, patterns: &[Pattern]) -> Vec<Detection> {
+///
+/// Returns `(normalized_text, detections)` — offsets in `Detection` refer to
+/// the normalized text, not the original input. Callers must use the normalized
+/// text when performing span-based replacements.
+pub(crate) fn detect(text: &str, patterns: &[Pattern]) -> (String, Vec<Detection>) {
     let mut detections = Vec::new();
 
     // Normalize text to handle Unicode variants and zero-width characters
@@ -184,7 +188,7 @@ pub(crate) fn detect(text: &str, patterns: &[Pattern]) -> Vec<Detection> {
         }
     }
 
-    detections
+    (normalized, detections)
 }
 
 #[cfg(test)]
@@ -198,7 +202,7 @@ mod tests {
 
     #[test]
     fn detect_email() {
-        let detections = detect("Contact me at john@example.com please", &all_patterns());
+        let (_, detections) = detect("Contact me at john@example.com please", &all_patterns());
         assert_eq!(detections.len(), 1);
         assert_eq!(detections[0].pii_type, PiiType::Email);
         assert_eq!(detections[0].value, "john@example.com");
@@ -206,34 +210,34 @@ mod tests {
 
     #[test]
     fn detect_phone() {
-        let detections = detect("Call me at 555-123-4567", &all_patterns());
+        let (_, detections) = detect("Call me at 555-123-4567", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Phone));
     }
 
     #[test]
     fn detect_ssn() {
-        let detections = detect("SSN: 123-45-6789", &all_patterns());
+        let (_, detections) = detect("SSN: 123-45-6789", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Ssn));
     }
 
     #[test]
     fn reject_invalid_ssn() {
         // 000 area is invalid
-        let detections = detect("Number: 000-12-3456", &all_patterns());
+        let (_, detections) = detect("Number: 000-12-3456", &all_patterns());
         assert!(!detections.iter().any(|d| d.pii_type == PiiType::Ssn));
     }
 
     #[test]
     fn detect_credit_card_with_luhn() {
         // Valid Visa test number
-        let detections = detect("Card: 4111 1111 1111 1111", &all_patterns());
+        let (_, detections) = detect("Card: 4111 1111 1111 1111", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::CreditCard));
     }
 
     #[test]
     fn detect_multiple() {
         let text = "Email me at john@acme.com, SSN 123-45-6789";
-        let detections = detect(text, &all_patterns());
+        let (_, detections) = detect(text, &all_patterns());
         assert!(detections.len() >= 2);
     }
 
@@ -241,41 +245,41 @@ mod tests {
 
     #[test]
     fn ssn_space_separated() {
-        let detections = detect("SSN: 123 45 6789", &all_patterns());
+        let (_, detections) = detect("SSN: 123 45 6789", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Ssn));
     }
 
     #[test]
     fn ssn_no_separators_not_detected() {
         // The regex requires dashes or spaces — bare digits should not match
-        let detections = detect("SSN: 123456789", &all_patterns());
+        let (_, detections) = detect("SSN: 123456789", &all_patterns());
         assert!(!detections.iter().any(|d| d.pii_type == PiiType::Ssn));
     }
 
     #[test]
     fn reject_ssn_area_666() {
-        let detections = detect("Number: 666-12-3456", &all_patterns());
+        let (_, detections) = detect("Number: 666-12-3456", &all_patterns());
         assert!(!detections.iter().any(|d| d.pii_type == PiiType::Ssn));
     }
 
     #[test]
     fn reject_ssn_area_900_plus() {
-        let detections = detect("Number: 900-12-3456", &all_patterns());
+        let (_, detections) = detect("Number: 900-12-3456", &all_patterns());
         assert!(!detections.iter().any(|d| d.pii_type == PiiType::Ssn));
 
-        let detections = detect("Number: 999-12-3456", &all_patterns());
+        let (_, detections) = detect("Number: 999-12-3456", &all_patterns());
         assert!(!detections.iter().any(|d| d.pii_type == PiiType::Ssn));
     }
 
     #[test]
     fn reject_ssn_zero_group() {
-        let detections = detect("Number: 123-00-6789", &all_patterns());
+        let (_, detections) = detect("Number: 123-00-6789", &all_patterns());
         assert!(!detections.iter().any(|d| d.pii_type == PiiType::Ssn));
     }
 
     #[test]
     fn reject_ssn_zero_serial() {
-        let detections = detect("Number: 123-45-0000", &all_patterns());
+        let (_, detections) = detect("Number: 123-45-0000", &all_patterns());
         assert!(!detections.iter().any(|d| d.pii_type == PiiType::Ssn));
     }
 
@@ -284,7 +288,7 @@ mod tests {
     #[test]
     fn reject_luhn_failing_card() {
         // 4111 1111 1111 1112 fails Luhn
-        let detections = detect("Card: 4111 1111 1111 1112", &all_patterns());
+        let (_, detections) = detect("Card: 4111 1111 1111 1112", &all_patterns());
         assert!(!detections.iter().any(|d| d.pii_type == PiiType::CreditCard));
     }
 
@@ -292,31 +296,31 @@ mod tests {
 
     #[test]
     fn reject_localhost_ip() {
-        let detections = detect("IP: 127.0.0.1", &all_patterns());
+        let (_, detections) = detect("IP: 127.0.0.1", &all_patterns());
         assert!(!detections.iter().any(|d| d.pii_type == PiiType::IpAddress));
     }
 
     #[test]
     fn reject_private_ip() {
-        let detections = detect("IP: 192.168.1.1", &all_patterns());
+        let (_, detections) = detect("IP: 192.168.1.1", &all_patterns());
         assert!(!detections.iter().any(|d| d.pii_type == PiiType::IpAddress));
 
-        let detections = detect("IP: 10.0.0.1", &all_patterns());
+        let (_, detections) = detect("IP: 10.0.0.1", &all_patterns());
         assert!(!detections.iter().any(|d| d.pii_type == PiiType::IpAddress));
     }
 
     #[test]
     fn detect_public_ip() {
-        let detections = detect("IP: 8.8.8.8", &all_patterns());
+        let (_, detections) = detect("IP: 8.8.8.8", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::IpAddress));
     }
 
     #[test]
     fn reject_link_local_ip() {
-        let detections = detect("IP: 169.254.1.1", &all_patterns());
+        let (_, detections) = detect("IP: 169.254.1.1", &all_patterns());
         assert!(!detections.iter().any(|d| d.pii_type == PiiType::IpAddress));
 
-        let detections = detect("IP: 169.254.169.254", &all_patterns());
+        let (_, detections) = detect("IP: 169.254.169.254", &all_patterns());
         assert!(!detections.iter().any(|d| d.pii_type == PiiType::IpAddress));
     }
 
@@ -324,24 +328,24 @@ mod tests {
 
     #[test]
     fn empty_input() {
-        let detections = detect("", &all_patterns());
+        let (_, detections) = detect("", &all_patterns());
         assert!(detections.is_empty());
     }
 
     #[test]
     fn pii_at_string_boundaries() {
         // Email at the very start
-        let detections = detect("john@example.com is here", &all_patterns());
+        let (_, detections) = detect("john@example.com is here", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Email));
 
         // Email at the very end
-        let detections = detect("contact john@example.com", &all_patterns());
+        let (_, detections) = detect("contact john@example.com", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Email));
     }
 
     #[test]
     fn no_false_positive_on_plain_text() {
-        let detections = detect(
+        let (_, detections) = detect(
             "Hello, this is a normal sentence with no PII.",
             &all_patterns(),
         );
@@ -353,25 +357,25 @@ mod tests {
     #[test]
     fn detect_email_with_zero_width_space() {
         // Zero-width space (U+200B) after @
-        let detections = detect("email: alice@\u{200B}example.com", &all_patterns());
+        let (_, detections) = detect("email: alice@\u{200B}example.com", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Email));
     }
 
     #[test]
     fn detect_ssn_with_unicode_dashes() {
         // En-dash (U+2010)
-        let detections = detect("SSN: 123\u{2010}45\u{2010}6789", &all_patterns());
+        let (_, detections) = detect("SSN: 123\u{2010}45\u{2010}6789", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Ssn));
 
         // Em-dash (U+2013)
-        let detections = detect("SSN: 123\u{2013}45\u{2013}6789", &all_patterns());
+        let (_, detections) = detect("SSN: 123\u{2013}45\u{2013}6789", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Ssn));
     }
 
     #[test]
     fn detect_email_with_fullwidth_at() {
         // Fullwidth @ (U+FF20)
-        let detections = detect("email: bob\u{FF20}test.org", &all_patterns());
+        let (_, detections) = detect("email: bob\u{FF20}test.org", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Email));
     }
 
@@ -380,21 +384,21 @@ mod tests {
     #[test]
     fn detect_url_encoded_email() {
         // URL-encoded @ (%40)
-        let detections = detect("Email: alice%40example.com", &all_patterns());
+        let (_, detections) = detect("Email: alice%40example.com", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Email));
     }
 
     #[test]
     fn detect_url_encoded_phone() {
         // URL-encoded dashes (%2D)
-        let detections = detect("Phone: 555%2D867%2D5309", &all_patterns());
+        let (_, detections) = detect("Phone: 555%2D867%2D5309", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Phone));
     }
 
     #[test]
     fn detect_base64_encoded_email() {
         // Base64 of "alice@example.com" is "YWxpY2VAZXhhbXBsZS5jb20="
-        let detections = detect(
+        let (_, detections) = detect(
             "Contact: YWxpY2VAZXhhbXBsZS5jb20= is encoded",
             &all_patterns(),
         );
@@ -404,7 +408,7 @@ mod tests {
     #[test]
     fn detect_email_with_cyrillic_homoglyph() {
         // Cyrillic 'а' (U+0430) looks identical to Latin 'a' (U+0061)
-        let detections = detect("email: \u{0430}lice@example.com", &all_patterns());
+        let (_, detections) = detect("email: \u{0430}lice@example.com", &all_patterns());
         assert!(
             detections.iter().any(|d| d.pii_type == PiiType::Email),
             "should detect email even with Cyrillic 'а' prefix"
@@ -414,7 +418,7 @@ mod tests {
     #[test]
     fn base64_non_pii_no_false_positive() {
         // Base64 of "This is just random text" — should not produce PII detections
-        let detections = detect("Token: VGhpcyBpcyBqdXN0IHJhbmRvbSB0ZXh0", &all_patterns());
+        let (_, detections) = detect("Token: VGhpcyBpcyBqdXN0IHJhbmRvbSB0ZXh0", &all_patterns());
         assert!(
             !detections.iter().any(|d| d.pii_type == PiiType::Email
                 || d.pii_type == PiiType::Ssn

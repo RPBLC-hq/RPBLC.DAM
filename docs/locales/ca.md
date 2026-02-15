@@ -15,7 +15,7 @@ Canada-specific PII detection patterns.
 
 - **PiiType**: `PostalCode`
 - **Confidence**: 0.80
-- **Regex**: `\b[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z][\s-]?\d[ABCEGHJ-NPRSTV-Z]\d\b`
+- **Regex**: `(?i)\b[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z][\s-]?\d[ABCEGHJ-NPRSTV-Z]\d\b` (case-insensitive)
 - **Validator**: None (character class restrictions are sufficient)
-- **Examples**: `K1A 0B1`, `V6B2W2`, `M5W-1E6`
-- **Notes**: Canadian postal codes use alternating letter-digit format. Letters D, F, I, O, Q, U are never used. W and Z are not used as the first letter.
+- **Examples**: `K1A 0B1`, `V6B2W2`, `M5W-1E6`, `k1a 0b1`
+- **Notes**: Canadian postal codes use alternating letter-digit format. Case-insensitive matching. Letters D, F, I, O, Q, U are never used. W and Z are not used as the first letter.
