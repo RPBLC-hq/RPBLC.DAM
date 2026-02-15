@@ -351,17 +351,17 @@ dam-cli       CLI binary — all commands, wires everything together
 Data flow:
 
 ```
-                      ┌─────────────┐
+                      ┌──────────────┐
 User input ──────────►│  dam-detect  │──── scan + encrypt ────►┌───────────┐
                       │  (pipeline)  │                         │ dam-vault │
                       └──────────────┘                         │ (SQLite)  │
                              │                                 └─────┬─────┘
                     redacted text with                               │
                     [type:hex] refs                                  │
-                             │                                      │
-                             ▼                                      │
-                      ┌─────────────┐     consent check +           │
-LLM context ────────►│ dam-resolve  │◄──── decrypt ────────────────┘
+                             │                                       │
+                             ▼                                       │
+                      ┌─────────────┐     consent check +            │
+LLM context ─────────►│ dam-resolve │◄──── decrypt ──────────────────┘
                       └─────────────┘
                              │
                       real values (only
