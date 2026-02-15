@@ -191,7 +191,8 @@ mod tests {
 
         let mut resolver = StreamingResolver::new(vault);
         let out = resolver.push(&format!("{display} and {phone_display}"));
-        assert_eq!(out, "alice@example.com and 555-1234");
+        // Note: Phone is normalized (dashes removed) for consistent deduplication
+        assert_eq!(out, "alice@example.com and 5551234");
     }
 
     #[test]

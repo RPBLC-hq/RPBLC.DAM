@@ -6,6 +6,17 @@ use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
 
+/// Normalize PII values for consistent deduplication.
+/// Strips spaces and dashes from credit cards and phone numbers.
+fn normalize_pii(pii_type: PiiType, value: &str) -> String {
+    match pii_type {
+        PiiType::CreditCard | PiiType::Phone => {
+            value.chars().filter(|c| *c != ' ' && *c != '-').collect()
+        }
+        _ => value.to_string(),
+    }
+}
+
 /// Metadata about a vault entry (no decrypted values).
 #[derive(Debug, Clone)]
 pub struct VaultEntry {
@@ -47,6 +58,7 @@ impl VaultStore {
     /// Store a PII value in the vault. Returns the generated reference.
     ///
     /// Performs deduplication: if the exact same value+type already exists, returns the existing ref.
+    /// Values are normalized before storage (e.g., credit cards and phones have spaces/dashes removed).
     pub fn store_pii(
         &self,
         pii_type: PiiType,
@@ -59,13 +71,16 @@ impl VaultStore {
             .lock()
             .map_err(|e| DamError::Vault(e.to_string()))?;
 
+        // Normalize the value for consistent deduplication and storage
+        let normalized = normalize_pii(pii_type, plaintext);
+
         // Check for duplicates: decrypt existing entries of same type and compare
-        if let Some(existing_ref) = self.find_duplicate(&conn, pii_type, plaintext)? {
+        if let Some(existing_ref) = self.find_duplicate(&conn, pii_type, &normalized)? {
             return Ok(existing_ref);
         }
 
         // Generate a new reference with collision retry
-        let encrypted = self.crypto.encrypt(plaintext.as_bytes())?;
+        let encrypted = self.crypto.encrypt(normalized.as_bytes())?;
         let now = chrono::Utc::now().timestamp();
 
         const MAX_RETRIES: usize = 5;
@@ -363,6 +378,29 @@ mod tests {
             .store_pii(PiiType::Email, "test@test.com", None, None)
             .unwrap();
         assert_eq!(ref1.key(), ref2.key());
+    }
+
+    #[test]
+    fn credit_card_normalization_dedup() {
+        let (store, _path) = test_vault();
+        // Same card number in different formats should deduplicate
+        let ref1 = store
+            .store_pii(PiiType::CreditCard, "4111 1111 1111 1111", None, None)
+            .unwrap();
+        let ref2 = store
+            .store_pii(PiiType::CreditCard, "4111-1111-1111-1111", None, None)
+            .unwrap();
+        let ref3 = store
+            .store_pii(PiiType::CreditCard, "4111111111111111", None, None)
+            .unwrap();
+
+        // All three should return the same reference
+        assert_eq!(ref1.key(), ref2.key());
+        assert_eq!(ref2.key(), ref3.key());
+
+        // Retrieve should return normalized value
+        let value = store.retrieve_pii(&ref1).unwrap();
+        assert_eq!(value, "4111111111111111");
     }
 
     #[test]

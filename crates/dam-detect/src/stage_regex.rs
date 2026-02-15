@@ -1,6 +1,146 @@
 use dam_core::PiiType;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use unicode_normalization::UnicodeNormalization;
+
+/// Normalize text for consistent PII detection.
+/// - Strips zero-width characters (U+200B, U+200C, U+200D, U+FEFF, U+00AD)
+/// - Applies NFKC normalization to convert fullwidth and other variants to ASCII
+/// - Replaces Unicode dash variants with ASCII hyphen-minus
+/// - URL-decodes percent-encoded sequences
+/// - Attempts to decode potential Base64 strings
+fn normalize_text(text: &str) -> String {
+    // First pass: strip zero-width chars and replace dash variants
+    let cleaned: String = text.chars()
+        .filter(|c| {
+            // Strip zero-width characters
+            !matches!(
+                *c,
+                '\u{200B}' | // zero-width space
+                '\u{200C}' | // zero-width non-joiner
+                '\u{200D}' | // zero-width joiner
+                '\u{FEFF}' | // zero-width no-break space
+                '\u{00AD}'   // soft hyphen
+            )
+        })
+        .map(|c| {
+            // Replace Unicode dash variants with ASCII hyphen-minus
+            match c {
+                '\u{2010}' | // hyphen
+                '\u{2011}' | // non-breaking hyphen
+                '\u{2012}' | // figure dash
+                '\u{2013}' | // en dash
+                '\u{2014}' | // em dash
+                '\u{2015}' | // horizontal bar
+                '\u{2212}' => '-', // minus sign
+                _ => c,
+            }
+        })
+        .nfkc() // NFKC normalization converts fullwidth, ligatures, etc. to ASCII
+        .collect();
+
+    // URL-decode
+    let url_decoded = url_decode(&cleaned);
+
+    // Try to decode potential Base64 strings and add them to detection
+    let with_base64 = decode_base64_segments(&url_decoded);
+
+    with_base64
+}
+
+/// Simple URL decoding for percent-encoded sequences
+fn url_decode(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            // Try to decode %XX sequence
+            let hex: String = chars.by_ref().take(2).collect();
+            if hex.len() == 2 {
+                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                    if let Some(decoded) = char::from_u32(byte as u32) {
+                        result.push(decoded);
+                        continue;
+                    }
+                }
+            }
+            // If decode failed, keep original
+            result.push('%');
+            result.push_str(&hex);
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
+/// Detect and decode potential Base64 strings in text.
+/// Looks for sequences of 20+ Base64 characters and attempts to decode them.
+fn decode_base64_segments(text: &str) -> String {
+    use once_cell::sync::Lazy;
+    use regex::Regex;
+
+    // Match potential Base64 strings (20+ chars, alphanumeric + / + = padding)
+    static BASE64_PATTERN: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"[A-Za-z0-9+/]{20,}={0,2}").unwrap()
+    });
+
+    let mut result = String::with_capacity(text.len());
+    let mut last_end = 0;
+
+    for mat in BASE64_PATTERN.find_iter(text) {
+        result.push_str(&text[last_end..mat.start()]);
+
+        // Try to decode as Base64
+        if let Ok(decoded_bytes) = base64_decode(mat.as_str()) {
+            if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
+                // Add both original and decoded (decoded might contain PII)
+                result.push_str(mat.as_str());
+                result.push(' ');
+                result.push_str(&decoded_str);
+            } else {
+                result.push_str(mat.as_str());
+            }
+        } else {
+            result.push_str(mat.as_str());
+        }
+
+        last_end = mat.end();
+    }
+
+    result.push_str(&text[last_end..]);
+    result
+}
+
+/// Simple Base64 decoding
+fn base64_decode(s: &str) -> Result<Vec<u8>, ()> {
+    // Simple Base64 alphabet
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let mut result = Vec::new();
+    let mut buffer = 0u32;
+    let mut bits = 0;
+
+    for &byte in s.as_bytes() {
+        if byte == b'=' {
+            break;
+        }
+
+        let value = ALPHABET.iter().position(|&c| c == byte).ok_or(())?;
+        buffer = (buffer << 6) | (value as u32);
+        bits += 6;
+
+        if bits >= 8 {
+            bits -= 8;
+            result.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+
+    Ok(result)
+}
 
 /// A single PII detection with location and confidence.
 #[derive(Debug, Clone)]
@@ -86,11 +226,15 @@ static PATTERNS: Lazy<Vec<Pattern>> = Lazy::new(|| {
 });
 
 /// Run regex-based PII detection on text.
+/// Text is normalized (zero-width chars removed, NFKC applied) before detection.
 pub fn detect(text: &str) -> Vec<Detection> {
     let mut detections = Vec::new();
 
+    // Normalize text to handle Unicode variants and zero-width characters
+    let normalized = normalize_text(text);
+
     for pattern in PATTERNS.iter() {
-        for mat in pattern.regex.find_iter(text) {
+        for mat in pattern.regex.find_iter(&normalized) {
             let value = mat.as_str().to_string();
 
             // Run validator if present
@@ -178,6 +322,7 @@ fn validate_ip(value: &str) -> bool {
         (10, _, _, _) => false,        // private class A
         (172, 16..=31, _, _) => false, // private class B
         (192, 168, _, _) => false,     // private class C
+        (169, 254, _, _) => false,     // link-local
         _ => true,
     }
 }
@@ -301,6 +446,15 @@ mod tests {
         assert!(detections.iter().any(|d| d.pii_type == PiiType::IpAddress));
     }
 
+    #[test]
+    fn reject_link_local_ip() {
+        let detections = detect("IP: 169.254.1.1");
+        assert!(!detections.iter().any(|d| d.pii_type == PiiType::IpAddress));
+
+        let detections = detect("IP: 169.254.169.254");
+        assert!(!detections.iter().any(|d| d.pii_type == PiiType::IpAddress));
+    }
+
     // --- General edge cases ---
 
     #[test]
@@ -324,5 +478,55 @@ mod tests {
     fn no_false_positive_on_plain_text() {
         let detections = detect("Hello, this is a normal sentence with no PII.");
         assert!(detections.is_empty());
+    }
+
+    // --- Unicode normalization tests (issues #9, #10, #12) ---
+
+    #[test]
+    fn detect_email_with_zero_width_space() {
+        // Zero-width space (U+200B) after @
+        let detections = detect("email: alice@\u{200B}example.com");
+        assert!(detections.iter().any(|d| d.pii_type == PiiType::Email));
+    }
+
+    #[test]
+    fn detect_ssn_with_unicode_dashes() {
+        // En-dash (U+2010)
+        let detections = detect("SSN: 123\u{2010}45\u{2010}6789");
+        assert!(detections.iter().any(|d| d.pii_type == PiiType::Ssn));
+
+        // Em-dash (U+2013)
+        let detections = detect("SSN: 123\u{2013}45\u{2013}6789");
+        assert!(detections.iter().any(|d| d.pii_type == PiiType::Ssn));
+    }
+
+    #[test]
+    fn detect_email_with_fullwidth_at() {
+        // Fullwidth @ (U+FF20)
+        let detections = detect("email: bob\u{FF20}test.org");
+        assert!(detections.iter().any(|d| d.pii_type == PiiType::Email));
+    }
+
+    // --- Encoding bypass tests (issue #11) ---
+
+    #[test]
+    fn detect_url_encoded_email() {
+        // URL-encoded @ (%40)
+        let detections = detect("Email: alice%40example.com");
+        assert!(detections.iter().any(|d| d.pii_type == PiiType::Email));
+    }
+
+    #[test]
+    fn detect_url_encoded_phone() {
+        // URL-encoded dashes (%2D)
+        let detections = detect("Phone: 555%2D867%2D5309");
+        assert!(detections.iter().any(|d| d.pii_type == PiiType::Phone));
+    }
+
+    #[test]
+    fn detect_base64_encoded_email() {
+        // Base64 of "alice@example.com" is "YWxpY2VAZXhhbXBsZS5jb20="
+        let detections = detect("Contact: YWxpY2VAZXhhbXBsZS5jb20= is encoded");
+        assert!(detections.iter().any(|d| d.pii_type == PiiType::Email));
     }
 }
