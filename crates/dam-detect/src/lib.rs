@@ -1,3 +1,4 @@
+pub(crate) mod locales;
 pub mod pipeline;
 pub mod stage_ner;
 pub mod stage_regex;
