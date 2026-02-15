@@ -8,7 +8,7 @@ pub(crate) fn patterns() -> Vec<Pattern> {
     vec![
         // National Insurance Number — 2 letters + 6 digits + 1 letter (A-D)
         Pattern {
-            regex: Regex::new(r"\b[A-CEGHJ-PR-TW-Z][A-CEGHJ-NPR-TW-Z]\d{6}[A-D]\b").unwrap(),
+            regex: Regex::new(r"(?i)\b[A-CEGHJ-PR-TW-Z][A-CEGHJ-NPR-TW-Z]\d{6}[A-D]\b").unwrap(),
             pii_type: PiiType::NiNumber,
             confidence: 0.90,
             validator: Some(validate_ni_prefix),
@@ -22,7 +22,7 @@ pub(crate) fn patterns() -> Vec<Pattern> {
         },
         // UK Driving Licence (DVLA) — 16 alphanumeric characters
         Pattern {
-            regex: Regex::new(r"\b[A-Z9]{5}\d{6}[A-Z9]{2}[A-Z0-9]{3}\b").unwrap(),
+            regex: Regex::new(r"(?i)\b[A-Z9]{5}\d{6}[A-Z9]{2}[A-Z0-9]{3}\b").unwrap(),
             pii_type: PiiType::DriversLicense,
             confidence: 0.85,
             validator: Some(validate_dvla_license),

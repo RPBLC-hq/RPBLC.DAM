@@ -9,7 +9,7 @@ pub(crate) fn patterns() -> Vec<Pattern> {
         // EU VAT identification number — country prefix (2 letters) + 2-13 alphanumeric chars
         Pattern {
             regex: Regex::new(
-                r"\b(?:AT|BE|BG|CY|CZ|DE|DK|EE|EL|ES|FI|FR|HR|HU|IE|IT|LT|LU|LV|MT|NL|PL|PT|RO|SE|SI|SK)[A-Z0-9]{2,13}\b",
+                r"(?i)\b(?:AT|BE|BG|CY|CZ|DE|DK|EE|EL|ES|FI|FR|HR|HU|IE|IT|LT|LU|LV|MT|NL|PL|PT|RO|SE|SI|SK)[A-Z0-9]{2,13}\b",
             )
             .unwrap(),
             pii_type: PiiType::VatNumber,
@@ -19,7 +19,7 @@ pub(crate) fn patterns() -> Vec<Pattern> {
         // SWIFT/BIC code — 8 or 11 alphanumeric characters
         // 4 bank code (letters) + 2 country (letters) + 2 location (alphanumeric) + optional 3 branch
         Pattern {
-            regex: Regex::new(r"\b[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b").unwrap(),
+            regex: Regex::new(r"(?i)\b[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?\b").unwrap(),
             pii_type: PiiType::SwiftBic,
             confidence: 0.80,
             validator: Some(validate_swift_bic),

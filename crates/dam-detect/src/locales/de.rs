@@ -9,7 +9,7 @@ pub(crate) fn patterns() -> Vec<Pattern> {
         // Personalausweis (national ID card) — 10-character ICAO format
         // First char is a letter from the valid set, followed by 8 alphanumeric + 1 check digit
         Pattern {
-            regex: Regex::new(r"\b[CFGHJKLMNPRTVWXYZ][0-9CFGHJKLMNPRTVWXYZ]{8}\d\b").unwrap(),
+            regex: Regex::new(r"(?i)\b[CFGHJKLMNPRTVWXYZ][0-9CFGHJKLMNPRTVWXYZ]{8}\d\b").unwrap(),
             pii_type: PiiType::NationalId,
             confidence: 0.85,
             validator: Some(validate_icao_check),

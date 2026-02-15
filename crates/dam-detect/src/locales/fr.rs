@@ -10,7 +10,7 @@ pub(crate) fn patterns() -> Vec<Pattern> {
         // Format: sex(1) + year(2) + month(2) + dept(2, may be 2A/2B) + commune(3) + order(3) + key(2)
         Pattern {
             regex: Regex::new(
-                r"\b[12]\d{2}(?:0[1-9]|1[0-2]|[2-9]\d)(?:\d{2}|2[AB])\d{3}\d{3}\d{2}\b",
+                r"(?i)\b[12]\d{2}(?:0[1-9]|1[0-2]|[2-9]\d)(?:\d{2}|2[AB])\d{3}\d{3}\d{2}\b",
             )
             .unwrap(),
             pii_type: PiiType::InseeNir,

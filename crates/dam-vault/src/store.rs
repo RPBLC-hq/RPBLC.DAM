@@ -7,23 +7,22 @@ use std::path::Path;
 use std::sync::Mutex;
 
 /// Normalize PII values for consistent deduplication.
-/// Strips spaces and dashes from credit cards, phones, SINs, and IBANs.
-/// Uppercases IBANs and postal codes.
+/// Strips spaces and dashes. Uppercases types that contain letters.
 fn normalize_pii(pii_type: PiiType, value: &str) -> String {
     match pii_type {
         PiiType::CreditCard
         | PiiType::Phone
         | PiiType::Sin
-        | PiiType::NiNumber
         | PiiType::NhsNumber
-        | PiiType::InseeNir
         | PiiType::TaxId => value.chars().filter(|c| *c != ' ' && *c != '-').collect(),
         PiiType::Iban
         | PiiType::PostalCode
+        | PiiType::NiNumber
         | PiiType::NationalId
         | PiiType::VatNumber
         | PiiType::SwiftBic
-        | PiiType::DriversLicense => value
+        | PiiType::DriversLicense
+        | PiiType::InseeNir => value
             .chars()
             .filter(|c| *c != ' ' && *c != '-')
             .map(|c| c.to_ascii_uppercase())

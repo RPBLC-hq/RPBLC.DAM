@@ -1,5 +1,7 @@
 pub(crate) mod locales;
 pub mod pipeline;
+#[cfg(test)]
+mod qa_european;
 pub mod stage_ner;
 pub mod stage_regex;
 pub mod stage_rules;
