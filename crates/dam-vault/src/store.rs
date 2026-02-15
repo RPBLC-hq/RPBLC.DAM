@@ -21,7 +21,7 @@ fn normalize_pii(pii_type: PiiType, value: &str) -> String {
             .collect(),
         PiiType::PostalCode => value
             .chars()
-            .filter(|c| *c != ' ')
+            .filter(|c| *c != ' ' && *c != '-')
             .map(|c| c.to_ascii_uppercase())
             .collect(),
         _ => value.to_string(),

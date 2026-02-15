@@ -48,9 +48,9 @@ pub(crate) fn patterns() -> Vec<Pattern> {
             confidence: 0.5,
             validator: None,
         },
-        // IBAN — 2 letters + 2 digits + 11-30 alphanumeric
+        // IBAN — 2 letters + 2 digits + 11-30 alphanumeric (case-insensitive)
         Pattern {
-            regex: Regex::new(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b").unwrap(),
+            regex: Regex::new(r"(?i)\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b").unwrap(),
             pii_type: PiiType::Iban,
             confidence: 0.90,
             validator: Some(validate_iban),

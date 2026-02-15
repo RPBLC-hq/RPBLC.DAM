@@ -100,7 +100,7 @@ pub(crate) fn validate_ip(value: &str) -> bool {
 /// Expects an alphanumeric string. Rearranges first 4 chars to end,
 /// converts letters A=10..Z=35, computes iterative mod 97.
 pub(crate) fn validate_mod97(value: &str) -> bool {
-    if value.len() < 5 {
+    if value.len() < 5 || !value.is_ascii() {
         return false;
     }
 
@@ -221,6 +221,11 @@ pub(crate) fn validate_iban(value: &str) -> bool {
         .chars()
         .filter(|c| !c.is_whitespace() && *c != '-')
         .collect();
+
+    // Non-ASCII input cannot be a valid IBAN; reject early to make byte slicing safe.
+    if !clean.is_ascii() {
+        return false;
+    }
 
     // Minimum IBAN length is 15 (Norway), max is 34
     if clean.len() < 15 || clean.len() > 34 {
