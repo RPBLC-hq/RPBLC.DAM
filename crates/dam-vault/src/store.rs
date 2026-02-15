@@ -7,12 +7,23 @@ use std::path::Path;
 use std::sync::Mutex;
 
 /// Normalize PII values for consistent deduplication.
-/// Strips spaces and dashes from credit cards and phone numbers.
+/// Strips spaces and dashes from credit cards, phones, SINs, and IBANs.
+/// Uppercases IBANs and postal codes.
 fn normalize_pii(pii_type: PiiType, value: &str) -> String {
     match pii_type {
-        PiiType::CreditCard | PiiType::Phone => {
+        PiiType::CreditCard | PiiType::Phone | PiiType::Sin => {
             value.chars().filter(|c| *c != ' ' && *c != '-').collect()
         }
+        PiiType::Iban => value
+            .chars()
+            .filter(|c| *c != ' ' && *c != '-')
+            .map(|c| c.to_ascii_uppercase())
+            .collect(),
+        PiiType::PostalCode => value
+            .chars()
+            .filter(|c| *c != ' ' && *c != '-')
+            .map(|c| c.to_ascii_uppercase())
+            .collect(),
         _ => value.to_string(),
     }
 }
@@ -531,6 +542,66 @@ mod tests {
         let (store, _path) = test_vault();
         let entries = store.list_entries(None).unwrap();
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn iban_normalization_dedup() {
+        let (store, _path) = test_vault();
+        let ref1 = store
+            .store_pii(PiiType::Iban, "DE89 3704 0044 0532 0130 00", None, None)
+            .unwrap();
+        let ref2 = store
+            .store_pii(PiiType::Iban, "de89370400440532013000", None, None)
+            .unwrap();
+        let ref3 = store
+            .store_pii(PiiType::Iban, "DE89-3704-0044-0532-0130-00", None, None)
+            .unwrap();
+
+        assert_eq!(ref1.key(), ref2.key());
+        assert_eq!(ref2.key(), ref3.key());
+
+        let value = store.retrieve_pii(&ref1).unwrap();
+        assert_eq!(value, "DE89370400440532013000");
+    }
+
+    #[test]
+    fn sin_normalization_dedup() {
+        let (store, _path) = test_vault();
+        let ref1 = store
+            .store_pii(PiiType::Sin, "130-692-544", None, None)
+            .unwrap();
+        let ref2 = store
+            .store_pii(PiiType::Sin, "130 692 544", None, None)
+            .unwrap();
+        let ref3 = store
+            .store_pii(PiiType::Sin, "130692544", None, None)
+            .unwrap();
+
+        assert_eq!(ref1.key(), ref2.key());
+        assert_eq!(ref2.key(), ref3.key());
+
+        let value = store.retrieve_pii(&ref1).unwrap();
+        assert_eq!(value, "130692544");
+    }
+
+    #[test]
+    fn postal_code_normalization_dedup() {
+        let (store, _path) = test_vault();
+        let ref1 = store
+            .store_pii(PiiType::PostalCode, "K1A 0B1", None, None)
+            .unwrap();
+        let ref2 = store
+            .store_pii(PiiType::PostalCode, "k1a 0b1", None, None)
+            .unwrap();
+        let ref3 = store
+            .store_pii(PiiType::PostalCode, "k1a0b1", None, None)
+            .unwrap();
+
+        assert_eq!(ref1.key(), ref2.key());
+        assert_eq!(ref2.key(), ref3.key());
+
+        let value = store.retrieve_pii(&ref1).unwrap();
+        assert_eq!(value, "K1A0B1");
     }
 
     #[test]

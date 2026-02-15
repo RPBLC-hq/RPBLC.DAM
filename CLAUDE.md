@@ -46,6 +46,20 @@ Cargo workspace with focused crates:
 | `dam_reveal` | Override: temporarily reveal PII (audited) |
 | `dam_compare` | Derived operations without revealing (Phase 3 stub) |
 
+## Locales
+
+Detection patterns are organized by geographic locale in `crates/dam-detect/src/locales/`:
+
+- `global.rs` — patterns not specific to any country (email, credit card, intl phone, IPv4, DOB)
+- `us.rs` — US-specific patterns (SSN, US phone)
+- `mod.rs` — `build_patterns()` dispatcher that assembles patterns from active locales
+
+**Adding a new locale**: create `xx.rs`, add `mod xx;` + match arm in `mod.rs`, create `docs/locales/xx.md`.
+
+**Classification rule**: if a pattern is country-specific, it goes in that locale module; otherwise it goes in `global.rs`.
+
+Keep `docs/locales/` in sync when patterns change.
+
 ## Conventions
 
 - Error type: `DamError` / `DamResult<T>` in dam-core

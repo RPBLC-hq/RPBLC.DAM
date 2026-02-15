@@ -1,3 +1,4 @@
+use crate::locale::Locale;
 use crate::pii_type::PiiType;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -85,6 +86,13 @@ pub struct DetectionConfig {
     pub whitelist: Vec<String>,
     /// User-defined regex rules: name → pattern.
     pub custom_rules: HashMap<String, CustomRule>,
+    /// Active locales for PII detection patterns.
+    #[serde(default = "default_locales")]
+    pub locales: Vec<Locale>,
+}
+
+fn default_locales() -> Vec<Locale> {
+    Locale::defaults()
 }
 
 impl Default for DetectionConfig {
@@ -94,6 +102,7 @@ impl Default for DetectionConfig {
             excluded_types: Vec::new(),
             whitelist: Vec::new(),
             custom_rules: HashMap::new(),
+            locales: Locale::defaults(),
         }
     }
 }

@@ -1,6 +1,7 @@
-use crate::stage_regex::{self, Detection};
+use crate::locales;
+use crate::stage_regex::{self, Detection, Pattern};
 use crate::stage_rules::RulesEngine;
-use dam_core::{DamConfig, DamResult, PiiRef, PiiType};
+use dam_core::{DamConfig, DamResult, Locale, PiiRef, PiiType};
 use dam_vault::VaultStore;
 use std::sync::Arc;
 
@@ -30,35 +31,44 @@ pub struct DetectionPipeline {
     vault: Arc<VaultStore>,
     whitelist: Vec<String>,
     excluded_types: Vec<PiiType>,
+    patterns: Vec<Pattern>,
 }
 
 impl DetectionPipeline {
     /// Create a new pipeline with the given config and vault.
     pub fn new(config: &DamConfig, vault: Arc<VaultStore>) -> Self {
         let rules_engine = RulesEngine::new(&config.detection.custom_rules);
+        let patterns = locales::build_patterns(&config.detection.locales);
 
         Self {
             rules_engine,
             vault,
             whitelist: config.detection.whitelist.clone(),
             excluded_types: config.detection.excluded_types.clone(),
+            patterns,
         }
     }
 
     /// Create a minimal pipeline (no custom rules, no whitelist).
     pub fn basic(vault: Arc<VaultStore>) -> Self {
+        let patterns = locales::build_patterns(&Locale::defaults());
+
         Self {
             rules_engine: RulesEngine::empty(),
             vault,
             whitelist: Vec::new(),
             excluded_types: Vec::new(),
+            patterns,
         }
     }
 
     /// Scan text for PII, store detections in vault, return redacted text.
     pub fn scan(&self, text: &str, source: Option<&str>) -> DamResult<ScanResult> {
         // Stage 1: Regex detection
-        let mut detections = stage_regex::detect(text);
+        // `detect` normalizes text (strips zero-width chars, NFKC, etc.) and
+        // returns offsets into the normalized form. We must use that same
+        // normalized string when building the redacted output.
+        let (normalized, mut detections) = stage_regex::detect(text, &self.patterns);
 
         // Stage 2: User-defined rules
         if !self.rules_engine.is_empty() {
@@ -96,8 +106,8 @@ impl DetectionPipeline {
             });
         }
 
-        // Build redacted text by replacing spans end-to-start (preserves offsets)
-        let mut redacted = text.to_string();
+        // Build redacted text from the normalized form (offsets are valid there)
+        let mut redacted = normalized;
         replacements.sort_by(|a, b| b.0.cmp(&a.0)); // reverse sort by start
         for (start, end, replacement) in &replacements {
             redacted.replace_range(*start..*end, replacement);
