@@ -73,12 +73,7 @@ async fn handle_messages(
         let mut builder = Response::builder().status(upstream_status);
 
         // Forward headers clients may rely on
-        for name in &[
-            "content-type",
-            "x-request-id",
-            "request-id",
-            "retry-after",
-        ] {
+        for name in &["content-type", "x-request-id", "request-id", "retry-after"] {
             if let Some(value) = upstream_resp.headers().get(*name) {
                 builder = builder.header(*name, value);
             }

@@ -1,4 +1,5 @@
-use crate::stage_regex::{validate_ip, validate_luhn, Pattern};
+use crate::stage_regex::Pattern;
+use crate::validators::{validate_iban, validate_ip, validate_luhn_cc};
 use dam_core::PiiType;
 use regex::Regex;
 
@@ -20,11 +21,11 @@ pub(crate) fn patterns() -> Vec<Pattern> {
             .unwrap(),
             pii_type: PiiType::CreditCard,
             confidence: 0.85,
-            validator: Some(validate_luhn),
+            validator: Some(validate_luhn_cc),
         },
-        // International phone (starts with +)
+        // International phone — E.164 format (+ followed by 7-15 digits)
         Pattern {
-            regex: Regex::new(r"\+\d{1,3}[-.\s]?\d{1,4}[-.\s]?\d{3,4}[-.\s]?\d{3,4}\b").unwrap(),
+            regex: Regex::new(r"\+[1-9]\d{6,14}\b").unwrap(),
             pii_type: PiiType::Phone,
             confidence: 0.9,
             validator: None,
@@ -45,6 +46,13 @@ pub(crate) fn patterns() -> Vec<Pattern> {
             pii_type: PiiType::DateOfBirth,
             confidence: 0.5,
             validator: None,
+        },
+        // IBAN — 2 letters + 2 digits + 11-30 alphanumeric
+        Pattern {
+            regex: Regex::new(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b").unwrap(),
+            pii_type: PiiType::Iban,
+            confidence: 0.90,
+            validator: Some(validate_iban),
         },
     ]
 }

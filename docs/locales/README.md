@@ -8,7 +8,7 @@ DAM's detection pipeline uses locale-based pattern modules. Each locale contribu
 |--------|------|--------|-----|
 | Global | `global` | Implemented | [global.md](global.md) |
 | United States | `us` | Implemented | [us.md](us.md) |
-| Canada | `ca` | Placeholder | [ca.md](ca.md) |
+| Canada | `ca` | Implemented | [ca.md](ca.md) |
 | United Kingdom | `uk` | Placeholder | — |
 | France | `fr` | Placeholder | — |
 | Germany | `de` | Placeholder | — |

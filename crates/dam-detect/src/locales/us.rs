@@ -1,4 +1,5 @@
-use crate::stage_regex::{validate_ssn, Pattern};
+use crate::stage_regex::Pattern;
+use crate::validators::validate_ssn;
 use dam_core::PiiType;
 use regex::Regex;
 

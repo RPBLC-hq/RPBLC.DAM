@@ -4,11 +4,7 @@ use clap::{Parser, Subcommand};
 mod commands;
 
 #[derive(Parser)]
-#[command(
-    name = "dam",
-    version,
-    about = "DAM — PII firewall for AI agents"
-)]
+#[command(name = "dam", version, about = "DAM — PII firewall for AI agents")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

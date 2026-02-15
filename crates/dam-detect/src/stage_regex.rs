@@ -10,7 +10,8 @@ use unicode_normalization::UnicodeNormalization;
 /// - Attempts to decode potential Base64 strings
 fn normalize_text(text: &str) -> String {
     // First pass: strip zero-width chars and replace dash variants
-    let cleaned: String = text.chars()
+    let cleaned: String = text
+        .chars()
         .filter(|c| {
             // Strip zero-width characters
             !matches!(
@@ -19,7 +20,7 @@ fn normalize_text(text: &str) -> String {
                 '\u{200C}' | // zero-width non-joiner
                 '\u{200D}' | // zero-width joiner
                 '\u{FEFF}' | // zero-width no-break space
-                '\u{00AD}'   // soft hyphen
+                '\u{00AD}' // soft hyphen
             )
         })
         .map(|c| {
@@ -79,9 +80,8 @@ fn decode_base64_segments(text: &str) -> String {
     use regex::Regex;
 
     // Match potential Base64 strings (20+ chars, alphanumeric + / + = padding)
-    static BASE64_PATTERN: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"[A-Za-z0-9+/]{20,}={0,2}").unwrap()
-    });
+    static BASE64_PATTERN: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"[A-Za-z0-9+/]{20,}={0,2}").unwrap());
 
     let mut result = String::with_capacity(text.len());
     let mut last_end = 0;
@@ -185,76 +185,6 @@ pub(crate) fn detect(text: &str, patterns: &[Pattern]) -> Vec<Detection> {
     }
 
     detections
-}
-
-/// Validate SSN: exclude known invalid ranges (000, 666, 900-999 for area).
-pub(crate) fn validate_ssn(value: &str) -> bool {
-    let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.len() != 9 {
-        return false;
-    }
-    let area: u32 = digits[..3].parse().unwrap_or(0);
-    let group: u32 = digits[3..5].parse().unwrap_or(0);
-    let serial: u32 = digits[5..].parse().unwrap_or(0);
-
-    // Invalid area numbers
-    if area == 0 || area == 666 || area >= 900 {
-        return false;
-    }
-    // Group and serial can't be all zeros
-    if group == 0 || serial == 0 {
-        return false;
-    }
-    true
-}
-
-/// Luhn algorithm for credit card validation.
-pub(crate) fn validate_luhn(value: &str) -> bool {
-    let digits: Vec<u32> = value
-        .chars()
-        .filter(|c| c.is_ascii_digit())
-        .filter_map(|c| c.to_digit(10))
-        .collect();
-
-    if digits.len() < 13 || digits.len() > 19 {
-        return false;
-    }
-
-    let mut sum = 0u32;
-    let mut double = false;
-    for &d in digits.iter().rev() {
-        let mut n = d;
-        if double {
-            n *= 2;
-            if n > 9 {
-                n -= 9;
-            }
-        }
-        sum += n;
-        double = !double;
-    }
-    sum.is_multiple_of(10)
-}
-
-/// Validate that an IP is not a common non-PII address (localhost, broadcast, etc.).
-pub(crate) fn validate_ip(value: &str) -> bool {
-    let parts: Vec<u8> = value.split('.').filter_map(|p| p.parse().ok()).collect();
-
-    if parts.len() != 4 {
-        return false;
-    }
-
-    // Exclude common non-PII IPs
-    match (parts[0], parts[1], parts[2], parts[3]) {
-        (127, _, _, _) => false,       // loopback
-        (0, 0, 0, 0) => false,         // unspecified
-        (255, 255, 255, 255) => false, // broadcast
-        (10, _, _, _) => false,        // private class A
-        (172, 16..=31, _, _) => false, // private class B
-        (192, 168, _, _) => false,     // private class C
-        (169, 254, _, _) => false,     // link-local
-        _ => true,
-    }
 }
 
 #[cfg(test)]
@@ -411,7 +341,10 @@ mod tests {
 
     #[test]
     fn no_false_positive_on_plain_text() {
-        let detections = detect("Hello, this is a normal sentence with no PII.", &all_patterns());
+        let detections = detect(
+            "Hello, this is a normal sentence with no PII.",
+            &all_patterns(),
+        );
         assert!(detections.is_empty());
     }
 
@@ -461,7 +394,10 @@ mod tests {
     #[test]
     fn detect_base64_encoded_email() {
         // Base64 of "alice@example.com" is "YWxpY2VAZXhhbXBsZS5jb20="
-        let detections = detect("Contact: YWxpY2VAZXhhbXBsZS5jb20= is encoded", &all_patterns());
+        let detections = detect(
+            "Contact: YWxpY2VAZXhhbXBsZS5jb20= is encoded",
+            &all_patterns(),
+        );
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Email));
     }
 

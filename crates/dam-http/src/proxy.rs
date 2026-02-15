@@ -289,7 +289,10 @@ mod tests {
 
         let nested = &req.extra["deeply_nested"]["level1"]["level2"]["contacts"][0]["email"];
         let email = nested.as_str().unwrap();
-        assert!(!email.contains("deep@nested.com"), "PII in deeply nested JSON should be redacted");
+        assert!(
+            !email.contains("deep@nested.com"),
+            "PII in deeply nested JSON should be redacted"
+        );
         assert!(email.contains("[email:"));
     }
 

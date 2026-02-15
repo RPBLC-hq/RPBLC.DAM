@@ -1,3 +1,4 @@
+mod ca;
 mod global;
 mod us;
 
@@ -16,9 +17,9 @@ pub fn build_patterns(locales: &[Locale]) -> Vec<Pattern> {
         match locale {
             Locale::Global => patterns.extend(global::patterns()),
             Locale::Us => patterns.extend(us::patterns()),
+            Locale::Ca => patterns.extend(ca::patterns()),
             // Placeholder locales — no patterns yet
-            Locale::Ca
-            | Locale::Uk
+            Locale::Uk
             | Locale::Fr
             | Locale::De
             | Locale::Jp
@@ -81,8 +82,30 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for p in &patterns {
             let key = (p.pii_type, p.regex.as_str().to_string());
-            assert!(seen.insert(key), "duplicate pattern found: {:?}", p.pii_type);
+            assert!(
+                seen.insert(key),
+                "duplicate pattern found: {:?}",
+                p.pii_type
+            );
         }
+    }
+
+    #[test]
+    fn ca_includes_sin() {
+        let patterns = build_patterns(&[Locale::Global, Locale::Ca]);
+        assert!(
+            patterns.iter().any(|p| p.pii_type == PiiType::Sin),
+            "Canada locale should include SIN pattern"
+        );
+    }
+
+    #[test]
+    fn ca_includes_postal_code() {
+        let patterns = build_patterns(&[Locale::Global, Locale::Ca]);
+        assert!(
+            patterns.iter().any(|p| p.pii_type == PiiType::PostalCode),
+            "Canada locale should include postal code pattern"
+        );
     }
 
     #[test]
