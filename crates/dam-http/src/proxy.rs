@@ -256,6 +256,44 @@ mod tests {
     }
 
     #[test]
+    fn redact_deeply_nested_extra_fields() {
+        let (_vault, pipeline) = test_setup();
+        let mut extra = HashMap::new();
+        extra.insert(
+            "deeply_nested".to_string(),
+            serde_json::json!({
+                "level1": {
+                    "level2": {
+                        "contacts": [
+                            {"email": "deep@nested.com"},
+                            {"note": "no pii here"}
+                        ]
+                    }
+                }
+            }),
+        );
+
+        let mut req = MessagesRequest {
+            model: "test".into(),
+            messages: vec![Message {
+                role: "user".into(),
+                content: MessageContent::Text("Hi".into()),
+            }],
+            max_tokens: Some(100),
+            stream: None,
+            system: None,
+            extra,
+        };
+
+        redact_request(&pipeline, &mut req).unwrap();
+
+        let nested = &req.extra["deeply_nested"]["level1"]["level2"]["contacts"][0]["email"];
+        let email = nested.as_str().unwrap();
+        assert!(!email.contains("deep@nested.com"), "PII in deeply nested JSON should be redacted");
+        assert!(email.contains("[email:"));
+    }
+
+    #[test]
     fn resolve_response_replaces_refs() {
         let (vault, _) = test_setup();
         let pii_ref = vault

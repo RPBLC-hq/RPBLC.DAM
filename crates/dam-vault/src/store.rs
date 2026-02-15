@@ -404,6 +404,27 @@ mod tests {
     }
 
     #[test]
+    fn phone_normalization_dedup() {
+        let (store, _path) = test_vault();
+        // Same phone number in different formats should deduplicate
+        let ref1 = store
+            .store_pii(PiiType::Phone, "555-867-5309", None, None)
+            .unwrap();
+        let ref2 = store
+            .store_pii(PiiType::Phone, "555 867 5309", None, None)
+            .unwrap();
+        let ref3 = store
+            .store_pii(PiiType::Phone, "5558675309", None, None)
+            .unwrap();
+
+        assert_eq!(ref1.key(), ref2.key());
+        assert_eq!(ref2.key(), ref3.key());
+
+        let value = store.retrieve_pii(&ref1).unwrap();
+        assert_eq!(value, "5558675309");
+    }
+
+    #[test]
     fn list_and_delete() {
         let (store, _path) = test_vault();
         store

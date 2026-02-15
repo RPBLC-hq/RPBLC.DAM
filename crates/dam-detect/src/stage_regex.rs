@@ -529,4 +529,26 @@ mod tests {
         let detections = detect("Contact: YWxpY2VAZXhhbXBsZS5jb20= is encoded");
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Email));
     }
+
+    #[test]
+    fn detect_email_with_cyrillic_homoglyph() {
+        // Cyrillic 'а' (U+0430) looks identical to Latin 'a' (U+0061)
+        let detections = detect("email: \u{0430}lice@example.com");
+        assert!(
+            detections.iter().any(|d| d.pii_type == PiiType::Email),
+            "should detect email even with Cyrillic 'а' prefix"
+        );
+    }
+
+    #[test]
+    fn base64_non_pii_no_false_positive() {
+        // Base64 of "This is just random text" — should not produce PII detections
+        let detections = detect("Token: VGhpcyBpcyBqdXN0IHJhbmRvbSB0ZXh0");
+        assert!(
+            !detections.iter().any(|d| d.pii_type == PiiType::Email
+                || d.pii_type == PiiType::Ssn
+                || d.pii_type == PiiType::Phone),
+            "non-PII Base64 should not produce false positives"
+        );
+    }
 }
