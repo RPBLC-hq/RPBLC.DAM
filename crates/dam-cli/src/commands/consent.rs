@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Subcommand;
 use colored::Colorize;
 use comfy_table::{Cell, Table};
+use dam_core::PiiRef;
 use dam_vault::ConsentManager;
 
 #[derive(Subcommand)]
@@ -21,6 +22,9 @@ pub enum ConsentAction {
         accessor: String,
         /// Purpose, e.g. "send_email", "display", or "*" for all
         purpose: String,
+        /// Skip validation that reference exists (for pre-granting)
+        #[arg(long)]
+        force: bool,
     },
 
     /// Revoke consent
@@ -90,7 +94,36 @@ pub async fn run(action: ConsentAction) -> Result<()> {
             ref_id,
             accessor,
             purpose,
+            force,
         } => {
+            // Validate inputs
+            if ref_id.trim().is_empty() {
+                anyhow::bail!("Reference ID cannot be empty");
+            }
+            if accessor.trim().is_empty() {
+                anyhow::bail!("Accessor cannot be empty");
+            }
+            if purpose.trim().is_empty() {
+                anyhow::bail!("Purpose cannot be empty");
+            }
+
+            // Check if reference exists in vault (unless --force is used)
+            if !force {
+                match PiiRef::from_key(&ref_id) {
+                    Ok(pii_ref) => {
+                        if vault.retrieve_pii(&pii_ref).is_err() {
+                            anyhow::bail!(
+                                "Reference [{}] not found in vault. Use --force to grant consent anyway.",
+                                ref_id
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        anyhow::bail!("Invalid reference ID format: {}", ref_id);
+                    }
+                }
+            }
+
             ConsentManager::grant_consent(vault.conn(), &ref_id, &accessor, &purpose, None)?;
             println!(
                 "{} Granted: {} can access [{}] for '{}'",
@@ -106,6 +139,17 @@ pub async fn run(action: ConsentAction) -> Result<()> {
             accessor,
             purpose,
         } => {
+            // Validate inputs
+            if ref_id.trim().is_empty() {
+                anyhow::bail!("Reference ID cannot be empty");
+            }
+            if accessor.trim().is_empty() {
+                anyhow::bail!("Accessor cannot be empty");
+            }
+            if purpose.trim().is_empty() {
+                anyhow::bail!("Purpose cannot be empty");
+            }
+
             ConsentManager::revoke_consent(vault.conn(), &ref_id, &accessor, &purpose)?;
             println!(
                 "{} Revoked: {} can no longer access [{}] for '{}'",

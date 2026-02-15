@@ -5,16 +5,58 @@ use crate::resolve::resolve_text;
 use dam_core::DamConfig;
 use dam_detect::DetectionPipeline;
 use dam_vault::VaultStore;
+use serde_json::Value;
 use std::sync::Arc;
+
+/// Recursively scan a JSON value for PII strings and replace them.
+fn scan_json_value(
+    pipeline: &DetectionPipeline,
+    value: &mut Value,
+) -> Result<(), dam_core::DamError> {
+    match value {
+        Value::String(s) => {
+            let result = pipeline.scan(s, Some("http-proxy"))?;
+            *s = result.redacted_text;
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                scan_json_value(pipeline, item)?;
+            }
+        }
+        Value::Object(map) => {
+            for val in map.values_mut() {
+                scan_json_value(pipeline, val)?;
+            }
+        }
+        _ => {} // Numbers, booleans, null - skip
+    }
+    Ok(())
+}
 
 /// Scan user messages in a request for PII and replace with vault references.
 ///
-/// Only user messages are scanned — assistant messages already contain
-/// references from previous turns.
+/// Scans user messages, system field, model field, and all extra fields (metadata, etc.).
+/// Assistant messages are skipped as they already contain references from previous turns.
 pub fn redact_request(
     pipeline: &DetectionPipeline,
     request: &mut MessagesRequest,
 ) -> Result<(), dam_core::DamError> {
+    // Scan model field
+    let result = pipeline.scan(&request.model, Some("http-proxy"))?;
+    request.model = result.redacted_text;
+
+    // Scan system message if present
+    if let Some(ref mut system) = request.system {
+        let result = pipeline.scan(system, Some("http-proxy"))?;
+        *system = result.redacted_text;
+    }
+
+    // Scan all extra fields (metadata, etc.)
+    for value in request.extra.values_mut() {
+        scan_json_value(pipeline, value)?;
+    }
+
+    // Scan user messages
     for message in &mut request.messages {
         if message.role != "user" {
             continue;
@@ -98,6 +140,7 @@ mod tests {
             }],
             max_tokens: Some(100),
             stream: None,
+            system: None,
             extra: HashMap::new(),
         };
 
@@ -128,6 +171,7 @@ mod tests {
             ],
             max_tokens: Some(100),
             stream: None,
+            system: None,
             extra: HashMap::new(),
         };
 
@@ -137,6 +181,116 @@ mod tests {
         if let MessageContent::Text(ref text) = req.messages[1].content {
             assert_eq!(text, "I see [email:abcd1234]");
         }
+    }
+
+    #[test]
+    fn redact_system_message() {
+        let (_vault, pipeline) = test_setup();
+        let mut req = MessagesRequest {
+            model: "test".into(),
+            messages: vec![Message {
+                role: "user".into(),
+                content: MessageContent::Text("Hello".into()),
+            }],
+            max_tokens: Some(100),
+            stream: None,
+            system: Some("User email is contact@secret.com".into()),
+            extra: HashMap::new(),
+        };
+
+        redact_request(&pipeline, &mut req).unwrap();
+
+        let system = req.system.as_ref().unwrap();
+        assert!(!system.contains("contact@secret.com"));
+        assert!(system.contains("[email:"));
+    }
+
+    #[test]
+    fn redact_model_field() {
+        let (_vault, pipeline) = test_setup();
+        let mut req = MessagesRequest {
+            model: "leak@evil.com".into(),
+            messages: vec![Message {
+                role: "user".into(),
+                content: MessageContent::Text("Hi".into()),
+            }],
+            max_tokens: Some(100),
+            stream: None,
+            system: None,
+            extra: HashMap::new(),
+        };
+
+        redact_request(&pipeline, &mut req).unwrap();
+
+        assert!(!req.model.contains("leak@evil.com"));
+        assert!(req.model.contains("[email:"));
+    }
+
+    #[test]
+    fn redact_metadata_field() {
+        let (_vault, pipeline) = test_setup();
+        let mut extra = HashMap::new();
+        extra.insert(
+            "metadata".to_string(),
+            serde_json::json!({"user_email": "leak@metadata.com"}),
+        );
+
+        let mut req = MessagesRequest {
+            model: "test".into(),
+            messages: vec![Message {
+                role: "user".into(),
+                content: MessageContent::Text("Hi".into()),
+            }],
+            max_tokens: Some(100),
+            stream: None,
+            system: None,
+            extra,
+        };
+
+        redact_request(&pipeline, &mut req).unwrap();
+
+        let metadata = req.extra.get("metadata").unwrap();
+        let user_email = metadata["user_email"].as_str().unwrap();
+        assert!(!user_email.contains("leak@metadata.com"));
+        assert!(user_email.contains("[email:"));
+    }
+
+    #[test]
+    fn redact_deeply_nested_extra_fields() {
+        let (_vault, pipeline) = test_setup();
+        let mut extra = HashMap::new();
+        extra.insert(
+            "deeply_nested".to_string(),
+            serde_json::json!({
+                "level1": {
+                    "level2": {
+                        "contacts": [
+                            {"email": "deep@nested.com"},
+                            {"note": "no pii here"}
+                        ]
+                    }
+                }
+            }),
+        );
+
+        let mut req = MessagesRequest {
+            model: "test".into(),
+            messages: vec![Message {
+                role: "user".into(),
+                content: MessageContent::Text("Hi".into()),
+            }],
+            max_tokens: Some(100),
+            stream: None,
+            system: None,
+            extra,
+        };
+
+        redact_request(&pipeline, &mut req).unwrap();
+
+        let nested = &req.extra["deeply_nested"]["level1"]["level2"]["contacts"][0]["email"];
+        let email = nested.as_str().unwrap();
+        assert!(!email.contains("deep@nested.com"), "PII in deeply nested JSON should be redacted");
+        assert!(email.contains("[email:"));
     }
 
     #[test]
