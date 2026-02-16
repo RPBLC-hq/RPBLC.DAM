@@ -11,9 +11,9 @@ LLMs process personal data in ways users can't control: training pipelines, prov
 ## Security Layers
 
 ```
-                         YOUR MACHINE                          │  PROVIDER
-                                                               │
-  ┌─────────┐         ┌──────────────────────────────────┐     │    ┌──────────┐
+                         YOUR MACHINE                           │  PROVIDER
+                                                                │
+  ┌──────────┐         ┌──────────────────────────────────┐     │    ┌──────────┐
   │  User /  │         │            DAM Proxy             │     │    │          │
   │  App     │         │                                  │     │    │   LLM    │
   │          │─────────┤►  1. INTERCEPT                   │     │    │ Provider │
@@ -23,7 +23,7 @@ LLMs process personal data in ways users can't control: training pipelines, prov
   │  at 555- │         │   Regex pipeline finds PII       │     │    │          │
   │  1234"   │         │                                  │     │    │          │
   │          │         │►  3. ENCRYPT + VAULT             │     │    │          │
-  │          │         │   AES-256-GCM per value ──► 🔒   │     │    │          │
+  │          │         │   AES-256-GCM per value ──► 🔒  │     │    │          │
   │          │         │                                  │     │    │          │
   │          │         │►  4. REPLACE                     │     │    │          │
   │          │         │   john@acme.co → [email:a3f71bc9]│     │    │          │
@@ -37,10 +37,10 @@ LLMs process personal data in ways users can't control: training pipelines, prov
   │  real    │  values │                                  │     │    │          │
   │  values  │         │►  6. AUDIT                       │     │    │          │
   │          │         │   SHA-256 hash-chained log       │     │    │          │
-  └─────────┘         └──────────────────────────────────┘     │    └──────────┘
-                                                               │
-                       Everything stays local.                 │  PII never leaves
-                       Vault, keys, audit — on your machine.   │  your machine.
+  └──────────┘         └──────────────────────────────────┘     │    └──────────┘
+                                                                │
+                       Everything stays local.                  │  PII never leaves
+                       Vault, keys, audit — on your machine.    │  your machine.
 ```
 
 The proxy operates transparently: no code changes needed in your application. Point your API client at DAM instead of the provider, and PII is intercepted automatically.
