@@ -87,12 +87,26 @@ pub struct DetectionConfig {
     /// User-defined regex rules: name → pattern.
     pub custom_rules: HashMap<String, CustomRule>,
     /// Active locales for PII detection patterns.
-    #[serde(default = "default_locales")]
+    #[serde(default = "default_locales", deserialize_with = "deserialize_locales")]
     pub locales: Vec<Locale>,
 }
 
 fn default_locales() -> Vec<Locale> {
     Locale::defaults()
+}
+
+/// Tolerant deserializer that silently drops unknown locale strings.
+/// This prevents config loading from failing when locale variants are removed
+/// (e.g. "jp", "kr", "in", "cn" from older configs).
+fn deserialize_locales<'de, D>(deserializer: D) -> Result<Vec<Locale>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let strings: Vec<String> = Vec::deserialize(deserializer)?;
+    Ok(strings
+        .iter()
+        .filter_map(|s| s.parse::<Locale>().ok())
+        .collect())
 }
 
 impl Default for DetectionConfig {
@@ -139,5 +153,78 @@ impl Default for ServerConfig {
             http_port: 7828,
             api_token: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_locales_drops_unknown() {
+        let toml = r#"
+[vault]
+path = "/tmp/vault.db"
+key_source = "os_keychain"
+
+[detection]
+sensitivity = "standard"
+excluded_types = []
+whitelist = []
+locales = ["global", "us", "jp", "kr", "in", "cn"]
+
+[detection.custom_rules]
+
+[server]
+http_port = 7828
+"#;
+        let config: DamConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.detection.locales, vec![Locale::Global, Locale::Us]);
+    }
+
+    #[test]
+    fn deserialize_locales_keeps_valid() {
+        let toml = r#"
+[vault]
+path = "/tmp/vault.db"
+key_source = "os_keychain"
+
+[detection]
+sensitivity = "standard"
+excluded_types = []
+whitelist = []
+locales = ["global", "us", "eu", "fr"]
+
+[detection.custom_rules]
+
+[server]
+http_port = 7828
+"#;
+        let config: DamConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.detection.locales,
+            vec![Locale::Global, Locale::Us, Locale::Eu, Locale::Fr]
+        );
+    }
+
+    #[test]
+    fn missing_locales_uses_default() {
+        let toml = r#"
+[vault]
+path = "/tmp/vault.db"
+key_source = "os_keychain"
+
+[detection]
+sensitivity = "standard"
+excluded_types = []
+whitelist = []
+
+[detection.custom_rules]
+
+[server]
+http_port = 7828
+"#;
+        let config: DamConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.detection.locales, Locale::defaults());
     }
 }
