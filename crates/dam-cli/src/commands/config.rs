@@ -95,7 +95,19 @@ pub async fn run(action: ConfigAction) -> Result<()> {
             }
 
             config.save(&config_path)?;
-            println!("Updated {key} = {value}");
+
+            // Print normalized value for locales (shows what was actually written)
+            if key == "detection.locales" {
+                let display: Vec<String> = config
+                    .detection
+                    .locales
+                    .iter()
+                    .map(|l| l.to_string())
+                    .collect();
+                println!("Updated {key} = {}", display.join(", "));
+            } else {
+                println!("Updated {key} = {value}");
+            }
         }
     }
 
