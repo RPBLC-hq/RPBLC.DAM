@@ -1,31 +1,58 @@
 # DAM - Data Access Mediator
 
-**Data Access Mediator — a PII firewall for AI agents.**
+**A PII firewall for AI agents.**
 
-DAM sits between AI agents and personal data. It intercepts personally identifiable information (PII) before it enters LLM context windows, replaces it with opaque typed references like `[email:a3f71bc9]`, stores the encrypted originals in a local vault, and only resolves references back to real values at execution boundaries — with explicit consent.
-
-The LLM never sees raw PII. It reasons about _types_ of data (`[email:...]`, `[phone:...]`) without accessing values. When an action needs real data (sending an email, making a call), the agent requests resolution through a consent-checked path. Every operation is logged in a tamper-evident audit trail.
+DAM sits between your application and the LLM provider as a local proxy. It intercepts personally identifiable information (PII) before it enters LLM context windows, replaces it with opaque typed references like `[email:a3f71bc9]`, stores the encrypted originals in a local vault, and resolves references back to real values in the response — so the user sees the original data but the LLM never does.
 
 ## Why
 
-LLMs process personal data in ways users can't control: training pipelines, provider logging, context window leaks to other tools. DAM gives users a hard boundary — PII stays encrypted locally, the model gets references, and resolution requires explicit consent per-accessor per-purpose.
+LLMs process personal data in ways users can't control: training pipelines, provider logging, context window leaks to other tools. DAM gives users a hard boundary — PII stays encrypted locally, the model gets references, and all operations are logged in a tamper-evident audit trail.
+
+## Security Layers
+
+```
+                         YOUR MACHINE                          │  PROVIDER
+                                                               │
+  ┌─────────┐         ┌──────────────────────────────────┐     │    ┌──────────┐
+  │  User /  │         │            DAM Proxy             │     │    │          │
+  │  App     │         │                                  │     │    │   LLM    │
+  │          │─────────┤►  1. INTERCEPT                   │     │    │ Provider │
+  │ "Email   │  raw    │   Captures API request           │     │    │          │
+  │  john@   │  PII    │                                  │     │    │          │
+  │  acme.co │         │►  2. DETECT                      │     │    │          │
+  │  at 555- │         │   Regex pipeline finds PII       │     │    │          │
+  │  1234"   │         │                                  │     │    │          │
+  │          │         │►  3. ENCRYPT + VAULT             │     │    │          │
+  │          │         │   AES-256-GCM per value ──► 🔒   │     │    │          │
+  │          │         │                                  │     │    │          │
+  │          │         │►  4. REPLACE                     │     │    │          │
+  │          │         │   john@acme.co → [email:a3f71bc9]│     │    │          │
+  │          │         │   555-1234     → [phone:c2d81e4f]│─────┼───►│          │
+  │          │         │                                  │ ref │    │ Only     │
+  │          │         │                  redacted only ──┼─────┼───►│ sees     │
+  │          │         │                                  │     │    │ [refs]   │
+  │          │         │►  5. RESOLVE RESPONSE            │     │    │          │
+  │          │◄────────┤   [email:a3f71bc9] → john@acme.co│◄────┼────│          │
+  │  sees    │  real   │   refs back to real values       │     │    │          │
+  │  real    │  values │                                  │     │    │          │
+  │  values  │         │►  6. AUDIT                       │     │    │          │
+  │          │         │   SHA-256 hash-chained log       │     │    │          │
+  └─────────┘         └──────────────────────────────────┘     │    └──────────┘
+                                                               │
+                       Everything stays local.                 │  PII never leaves
+                       Vault, keys, audit — on your machine.   │  your machine.
+```
+
+The proxy operates transparently: no code changes needed in your application. Point your API client at DAM instead of the provider, and PII is intercepted automatically.
 
 ## How It Works
 
-```
-User input           LLM context            Action execution
-─────────────────    ─────────────────      ─────────────────
-"Email john@acme     "Email [email:a3f7     dam_resolve checks
- at 555-1234"   ──►   1bc9] at [phone: ──►  consent, decrypts,
-                       c2d81e4f]"            passes real values
-                                             to the tool
-```
-
-1. **Scan** — Text enters DAM. Regex detectors find emails, phones, SSNs, credit cards, IPs, and more. Each value is encrypted (AES-256-GCM, per-entry key) and stored in a local SQLite vault.
-2. **Replace** — Original values are swapped for typed references: `[email:a3f71bc9]`. The LLM receives only these tokens.
-3. **Reason** — The LLM works with references. It knows the _type_ of data but never the _value_. It can search the vault, check status, and request consent.
-4. **Resolve** — When an action needs real data, `dam_resolve` checks that consent has been granted for that specific reference + accessor + purpose. If granted, the value is decrypted and returned. If not, the agent is told to ask the user.
-5. **Audit** — Every scan, resolve, reveal, consent grant/revoke is logged with a SHA-256 hash chain. Tampered or deleted rows are detectable.
+1. **Intercept** — DAM receives the API request before it leaves your machine.
+2. **Detect** — Regex detectors find emails, phones, SSNs, credit cards, IPs, and more.
+3. **Encrypt + Vault** — Each PII value is encrypted (AES-256-GCM, per-entry key) and stored in a local SQLite vault.
+4. **Replace** — Original values are swapped for typed references: `[email:a3f71bc9]`. The LLM receives only these tokens.
+5. **Resolve response** — When the LLM responds with references, DAM replaces them with the original values before returning to the client. The user sees real data; the LLM never did.
+6. **Audit** — Every scan, resolve, and reveal is logged with a SHA-256 hash chain. Tampered or deleted rows are detectable.
 
 ## Installation
 
@@ -70,7 +97,39 @@ This creates:
 - `~/.dam/config.toml` — configuration file (with your selected locales)
 - A 256-bit KEK stored in your OS keychain (DPAPI on Windows, Keychain on macOS, libsecret on Linux)
 
-### 2. Scan text for PII
+### 2. Start the proxy
+
+```bash
+dam serve                  # listen on 127.0.0.1:7828 (default)
+dam serve --port 9000      # custom port
+```
+
+Point any Anthropic API client at the proxy:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:7828
+```
+
+That's it. All messages now flow through DAM. User messages are scanned and redacted before reaching the LLM. Responses are resolved back to real values before reaching you.
+
+### 3. Try it with curl
+
+```bash
+# With DAM running, this request gets intercepted:
+curl http://127.0.0.1:7828/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-5-20250514",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Email john@acme.com about the meeting"}]
+  }'
+# The LLM sees: "Email [email:a3f71bc9] about the meeting"
+# You see the response with real values restored
+```
+
+### 4. Scan text manually (CLI)
 
 ```bash
 dam scan "Email me at john@acme.com, SSN 123-45-6789"
@@ -91,7 +150,7 @@ You can also pipe from stdin:
 echo "Call me at 555-867-5309" | dam scan
 ```
 
-### 3. View vault entries
+### 5. View vault entries
 
 ```bash
 dam vault list                    # all entries
@@ -100,7 +159,7 @@ dam vault show email:a3f71bc9     # decrypt and display a value
 dam vault delete email:a3f71bc9   # remove an entry
 ```
 
-### 4. Manage consent
+### 6. Manage consent
 
 ```bash
 # Grant: allow "claude" to access email:a3f71bc9 for "send_email"
@@ -116,7 +175,7 @@ dam consent list
 dam consent revoke email:a3f71bc9 claude send_email
 ```
 
-### 5. View audit trail
+### 7. View audit trail
 
 ```bash
 dam audit                          # last 50 entries
@@ -126,11 +185,34 @@ dam audit --limit 10               # limit output
 
 ## Integration
 
-DAM can be used in three ways: as an **MCP server** (for agents that support MCP), as an **HTTP proxy** (for any Anthropic API client), or as a **CLI tool** (for scripts and manual use).
+### HTTP Proxy (primary)
 
-### MCP Server
+The proxy is the primary integration path. It provides a hard security boundary: PII is intercepted and redacted *before* the request leaves your machine, with no reliance on LLM behavior.
 
-DAM speaks the [Model Context Protocol](https://modelcontextprotocol.io/) over stdio. This is the primary integration path for AI agents.
+```bash
+dam serve
+```
+
+The proxy:
+- Intercepts `POST /v1/messages` requests
+- Scans **user** messages for PII, replaces with vault references
+- Forwards the redacted request to `https://api.anthropic.com`
+- Resolves references in the response before returning to the client
+- Handles both streaming (SSE) and non-streaming responses
+- Passes through `x-api-key`, `authorization`, and `anthropic-version` headers
+
+This works with any tool that uses the Anthropic Messages API: `curl`, Python SDK, TypeScript SDK, etc.
+
+### MCP Server (supplementary agent tools)
+
+DAM also speaks the [Model Context Protocol](https://modelcontextprotocol.io/) over stdio, exposing vault tools to AI agents.
+
+**Important**: MCP tools are called *by* the LLM, which means the LLM has already seen the data in its context window by the time it calls a tool. MCP does **not** provide the same security boundary as the proxy. Use the proxy for PII interception; use MCP tools for supplementary operations like:
+
+- Scanning data fetched from external sources (files, APIs) before forwarding it elsewhere
+- Searching the vault for existing references
+- Managing consent and checking vault status
+- Resolving references when executing actions (consent-checked)
 
 After running `dam init`, add to your agent's MCP configuration:
 
@@ -165,36 +247,7 @@ args = ["mcp"]
 }
 ```
 
-Once configured, the agent receives 7 tools and system instructions telling it to always scan user input and work with references instead of raw PII.
-
-### HTTP Proxy
-
-DAM can act as a transparent Anthropic API proxy. It scans PII in inbound user messages and resolves references in outbound LLM responses automatically — the user sees real values, the LLM sees only references.
-
-```bash
-dam serve                  # listen on 127.0.0.1:7828 (default)
-dam serve --port 9000      # custom port
-```
-
-Then point any Anthropic API client at the proxy:
-
-```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:7828
-```
-
-The proxy:
-- Intercepts `POST /v1/messages` requests
-- Scans **user** messages for PII, replaces with vault references
-- Forwards the redacted request to `https://api.anthropic.com`
-- Resolves references in the response before returning to the client
-- Handles both streaming (SSE) and non-streaming responses
-- Passes through `x-api-key`, `authorization`, and `anthropic-version` headers
-
-This works with any tool that uses the Anthropic Messages API: `curl`, Python SDK, TypeScript SDK, etc.
-
-## MCP Tools Reference
-
-When running as an MCP server, DAM exposes these tools to the agent:
+### MCP Tools Reference
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
@@ -206,14 +259,11 @@ When running as an MCP server, DAM exposes these tools to the agent:
 | `dam_reveal` | Override: reveal PII value (bypasses consent, audited) | `ref_id`, `reason` |
 | `dam_compare` | Derived operations without revealing (stub) | `operation`, `ref_a`, `ref_b` (optional) |
 
-The server sends these instructions to the LLM:
-
-> ALWAYS use `dam_scan` on user input and external data before processing. Work with typed references like `[email:a3f71bc9]` instead of raw PII values. Use `dam_resolve` only when executing actions that require real values. If `dam_resolve` returns a consent error, inform the user and ask them to grant consent via `dam_consent`. Never reconstruct or guess PII from references.
-
 ## CLI Reference
 
 ```
 dam init                                          Initialize vault, config, and KEK
+dam serve [--port PORT]                           Start HTTP proxy (default: 7828)
 dam mcp                                           Start MCP server (stdio transport)
 dam scan [TEXT]                                    Scan text for PII (stdin if omitted)
 dam vault list [--type TYPE]                       List vault entries
@@ -226,7 +276,6 @@ dam audit [--ref REF_ID] [--limit N]               View audit trail (default: 50
 dam config show                                    Display configuration
 dam config get KEY                                 Get a config value
 dam config set KEY VALUE                           Update a config value
-dam serve [--port PORT]                            Start HTTP proxy (default: 7828)
 ```
 
 ## PII Types
@@ -338,6 +387,15 @@ description = "Internal employee ID"
 - Storing the same value with the same type returns the existing reference
 - Different types with the same value get separate entries
 
+### Proxy vs. MCP: security comparison
+
+| | HTTP Proxy | MCP Tools |
+|---|---|---|
+| PII reaches the LLM | No — intercepted before the request | Yes — LLM sees data before calling tools |
+| Relies on LLM compliance | No — enforced at network layer | Yes — LLM must choose to call `dam_scan` |
+| Automatic | Yes — transparent, no code changes | No — requires LLM to follow instructions |
+| Best for | Primary PII protection | Vault operations, scanning external data, consent management |
+
 ## Architecture
 
 DAM is a Cargo workspace with 7 focused crates:
@@ -352,7 +410,7 @@ dam-http      HTTP proxy, streaming SSE resolver, Anthropic API types
 dam-cli       CLI binary — all commands, wires everything together
 ```
 
-Data flow:
+Data flow (HTTP proxy):
 
 ```
                       ┌──────────────┐
