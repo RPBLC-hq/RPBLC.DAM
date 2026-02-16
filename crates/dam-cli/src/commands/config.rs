@@ -2,10 +2,18 @@ use anyhow::Result;
 use clap::Subcommand;
 use dam_core::config::DamConfig;
 
+use super::init::parse_locale_list;
+
 #[derive(Subcommand)]
 pub enum ConfigAction {
     /// Show the current configuration
     Show,
+
+    /// Get a configuration value
+    Get {
+        /// Configuration key (e.g., "detection.locales")
+        key: String,
+    },
 
     /// Set a configuration value
     Set {
@@ -31,6 +39,36 @@ pub async fn run(action: ConfigAction) -> Result<()> {
             }
         }
 
+        ConfigAction::Get { key } => {
+            let config = DamConfig::load(&config_path)?;
+
+            match key.as_str() {
+                "detection.locales" => {
+                    let display: Vec<String> = config
+                        .detection
+                        .locales
+                        .iter()
+                        .map(|l| l.to_string())
+                        .collect();
+                    println!("{}", display.join(", "));
+                }
+                "detection.sensitivity" => {
+                    let s = match config.detection.sensitivity {
+                        dam_core::config::Sensitivity::Standard => "standard",
+                        dam_core::config::Sensitivity::Elevated => "elevated",
+                        dam_core::config::Sensitivity::Maximum => "maximum",
+                    };
+                    println!("{s}");
+                }
+                "server.http_port" => {
+                    println!("{}", config.server.http_port);
+                }
+                _ => {
+                    anyhow::bail!("Unknown config key: {key}");
+                }
+            }
+        }
+
         ConfigAction::Set { key, value } => {
             let mut config = DamConfig::load(&config_path)?;
 
@@ -44,6 +82,9 @@ pub async fn run(action: ConfigAction) -> Result<()> {
                             "Invalid sensitivity: {value}. Use: standard, elevated, maximum"
                         ),
                     };
+                }
+                "detection.locales" => {
+                    config.detection.locales = parse_locale_list(&value)?;
                 }
                 "server.http_port" => {
                     config.server.http_port = value.parse()?;

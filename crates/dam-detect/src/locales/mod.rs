@@ -26,8 +26,6 @@ pub fn build_patterns(locales: &[Locale]) -> Vec<Pattern> {
             Locale::Uk => patterns.extend(uk::patterns()),
             Locale::Fr => patterns.extend(fr::patterns()),
             Locale::De => patterns.extend(de::patterns()),
-            // Placeholder locales — no patterns yet
-            Locale::Jp | Locale::Kr | Locale::In | Locale::Cn => {}
         }
     }
 

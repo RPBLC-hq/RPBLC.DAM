@@ -62,10 +62,12 @@ dam --help
 dam init
 ```
 
+During init, you'll select which regions' PII patterns to enable. Global patterns (email, credit card, IP, IBAN) are always active.
+
 This creates:
 - `~/.dam/` — home directory
 - `~/.dam/vault.db` — encrypted SQLite vault
-- `~/.dam/config.toml` — configuration file
+- `~/.dam/config.toml` — configuration file (with your selected locales)
 - A 256-bit KEK stored in your OS keychain (DPAPI on Windows, Keychain on macOS, libsecret on Linux)
 
 ### 2. Scan text for PII
@@ -222,6 +224,7 @@ dam consent grant REF_ID ACCESSOR PURPOSE          Grant consent
 dam consent revoke REF_ID ACCESSOR PURPOSE         Revoke consent
 dam audit [--ref REF_ID] [--limit N]               View audit trail (default: 50)
 dam config show                                    Display configuration
+dam config get KEY                                 Get a config value
 dam config set KEY VALUE                           Update a config value
 dam serve [--port PORT]                            Start HTTP proxy (default: 7828)
 ```
@@ -273,6 +276,7 @@ key_source = "os_keychain"  # "os_keychain", "passphrase", or { env_var = { name
 
 [detection]
 sensitivity = "standard"    # "standard", "elevated", or "maximum"
+locales = ["global", "us"]  # active locale modules for PII detection
 excluded_types = []         # e.g. ["ip", "phone"] to skip detection
 whitelist = []              # terms to never flag as PII
 
