@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Release binary workflow — cross-compiled binaries for Linux, macOS (ARM + Intel), and Windows published to GitHub Releases on tag push, with SHA-256 checksums
+
 ## [0.1.0] — 2026-02-16
 
 ### Added
