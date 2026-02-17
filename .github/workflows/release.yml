@@ -19,10 +19,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             binary: dam
-            asset: dam-x86_64-unknown-linux-gnu
+            asset: dam-x86_64-unknown-linux-musl
           - target: aarch64-apple-darwin
             os: macos-latest
             binary: dam
@@ -38,10 +38,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.85"
+          toolchain: "1.87"
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
@@ -49,7 +53,7 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} --package dam-cli --bin dam
 
       - name: Rename binary
         shell: bash
