@@ -46,7 +46,10 @@ fn normalize_text(text: &str) -> String {
     decode_base64_segments(&url_decoded)
 }
 
-/// Simple URL decoding for percent-encoded sequences
+/// Decode percent-encoded sequences (e.g. `%40` → `@`).
+///
+/// Handles standard `%XX` hex pairs. If a `%` is not followed by two valid
+/// hex digits the original characters are preserved.
 fn url_decode(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -73,8 +76,13 @@ fn url_decode(text: &str) -> String {
     result
 }
 
-/// Detect and decode potential Base64 strings in text.
-/// Looks for sequences of 20+ Base64 characters and attempts to decode them.
+/// Detect and inline-decode potential Base64 segments in text.
+///
+/// Finds sequences of 20+ Base64 characters (`[A-Za-z0-9+/]{20,}={0,2}`)
+/// and attempts to decode them. On success, the decoded UTF-8 string is
+/// appended after the original segment so that downstream regex patterns
+/// can match PII hidden inside Base64 payloads. The 20-char minimum avoids
+/// false positives on short alphanumeric tokens.
 fn decode_base64_segments(text: &str) -> String {
     use once_cell::sync::Lazy;
     use regex::Regex;
@@ -110,7 +118,11 @@ fn decode_base64_segments(text: &str) -> String {
     result
 }
 
-/// Simple Base64 decoding
+/// Minimal Base64 decoder using the standard alphabet (`A-Za-z0-9+/`).
+///
+/// Processes input until `=` padding or end of string. Returns `Err(())`
+/// if any byte is not in the Base64 alphabet. This avoids pulling in a
+/// full Base64 crate for a single normalization step.
 fn base64_decode(s: &str) -> Result<Vec<u8>, ()> {
     // Simple Base64 alphabet
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

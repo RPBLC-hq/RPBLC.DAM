@@ -13,6 +13,7 @@ This document describes the internal architecture of DAM (Data Access Mediator),
 - [Audit Hash Chain](#audit-hash-chain)
 - [Streaming SSE Resolution](#streaming-sse-resolution)
 - [Threat Model](#threat-model)
+- [Adding a New PII Type](#adding-a-new-pii-type)
 
 ---
 
@@ -311,3 +312,102 @@ flowchart TD
 ```
 
 The trust boundary is the network edge of the user's machine. DAM ensures that no PII value crosses this boundary. The LLM provider is treated as fully untrusted — it receives only type tags and opaque identifiers.
+
+---
+
+## Adding a New PII Type
+
+This walkthrough adds a fictional `TaxFileNumber` type (Australian TFN) as an example. Adapt the steps for your actual PII type.
+
+### Step 1 — Add the PiiType Variant
+
+In `crates/dam-core/src/pii_type.rs`, add a variant to the `PiiType` enum:
+
+```rust
+/// Australian Tax File Number. Tag: `tfn`, locale: AU.
+TaxFileNumber,
+```
+
+Then implement the required methods on the new variant:
+
+- `tag()` → `"tfn"` (short form used in references like `[tfn:a3f71bc9]`)
+- `Display` → `"tax_file_number"` (human-readable long form)
+- `FromStr` → accept `"tax_file_number"`, `"tfn"`, and any aliases
+- `from_tag()` → `"tfn" => Some(PiiType::TaxFileNumber)`
+- Add the variant to the `all()` array
+
+### Step 2 — Add a Detection Pattern
+
+In the appropriate locale file (e.g. `crates/dam-detect/src/locales/au.rs` for a new locale, or an existing one):
+
+```rust
+Pattern {
+    regex: Regex::new(r"(?i)\b\d{3}[\s-]?\d{3}[\s-]?\d{3}\b").unwrap(),
+    pii_type: PiiType::TaxFileNumber,
+    confidence: 0.85,
+    validator: Some(validate_tfn),
+}
+```
+
+Key conventions:
+- Use `(?i)` on any pattern containing letter ranges
+- Set `confidence` between 0.0 and 1.0 (higher = fewer false positives)
+- Set `validator: None` if the type has no checksum or structural rule
+
+### Step 3 — Add a Validator (If Applicable)
+
+In `crates/dam-detect/src/validators.rs`:
+
+```rust
+/// Australian TFN check — weighted sum mod 11 with specific weights.
+pub(crate) fn validate_tfn(value: &str) -> bool {
+    let digits: Vec<u32> = value
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .filter_map(|c| c.to_digit(10))
+        .collect();
+
+    if digits.len() != 9 {
+        return false;
+    }
+
+    let weights = [1, 4, 3, 7, 5, 8, 6, 9, 10];
+    let sum: u32 = digits.iter().zip(weights).map(|(d, w)| d * w).sum();
+    sum.is_multiple_of(11)
+}
+```
+
+Validators are plain `fn(&str) -> bool` functions. They receive the raw matched string (may contain spaces/dashes from the regex capture).
+
+### Step 4 — Register the Locale (If New)
+
+If you created a new locale module:
+
+1. Add `mod au;` in `crates/dam-detect/src/locales/mod.rs`
+2. Add a match arm in `build_patterns()` to call `au::patterns()`
+3. Add the locale variant to `Locale` in `crates/dam-core/src/locale.rs`
+4. Create `docs/locales/au.md` documenting the patterns
+
+### Step 5 — Add Tests
+
+Add unit tests in the locale module and consider adversarial tests (see `qa_european.rs` for the template):
+
+```rust
+#[test]
+fn detect_tfn() {
+    let (_, detections) = detect("TFN: 123 456 782", &au_patterns());
+    assert!(detections.iter().any(|d| d.pii_type == PiiType::TaxFileNumber));
+}
+
+#[test]
+fn reject_invalid_tfn() {
+    let (_, detections) = detect("TFN: 000 000 000", &au_patterns());
+    assert!(!detections.iter().any(|d| d.pii_type == PiiType::TaxFileNumber));
+}
+```
+
+### Step 6 — Update Documentation
+
+- Update the PII detection table in `README.md`
+- Update `docs/locales/xx.md` if adding to an existing locale
+- Add a CHANGELOG entry under `[Unreleased]`

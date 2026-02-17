@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Crate-level `//!` doc comments on all seven `lib.rs` / `main.rs` files
 - `docs/ARCHITECTURE.md` — deep design documentation covering envelope encryption, consent resolution, audit hash chain, detection pipeline, streaming SSE resolution, threat model, and crate dependency graph
 - "Who Is This For?" section in README with developer, compliance, and solo developer personas
+- `--verbose` / `-v` CLI flag for debug-level tracing output on `serve`, `scan`, and all non-MCP commands
+- Code coverage reporting via `cargo-tarpaulin` in CI (uploaded as artifact)
+- "Adding a New PII Type" step-by-step guide in `docs/ARCHITECTURE.md`
+- Rustdoc comments on internal normalization helpers (`url_decode`, `decode_base64_segments`, `base64_decode`)
 
 ## [0.1.0] — 2026-02-16
 

@@ -10,6 +10,10 @@ mod commands;
 #[derive(Parser)]
 #[command(name = "dam", version, about = "DAM — PII firewall for AI agents")]
 struct Cli {
+    /// Enable verbose logging (debug-level tracing output)
+    #[arg(long, short, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -73,10 +77,15 @@ async fn main() -> Result<()> {
     match &cli.command {
         Commands::Mcp => {} // Don't init tracing for MCP (it uses stdio)
         _ => {
+            let default_level = if cli.verbose {
+                tracing::Level::DEBUG
+            } else {
+                tracing::Level::WARN
+            };
             tracing_subscriber::fmt()
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::from_default_env()
-                        .add_directive(tracing::Level::WARN.into()),
+                        .add_directive(default_level.into()),
                 )
                 .init();
         }

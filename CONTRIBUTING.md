@@ -12,7 +12,7 @@ Thank you for your interest in contributing to DAM! This document explains how t
 
 ## Development Setup
 
-Requires [Rust](https://rustup.rs/) 1.85+ (edition 2024) and a C compiler (for bundled SQLite).
+Requires [Rust](https://rustup.rs/) 1.88+ (edition 2024, let-chains) and a C compiler (for bundled SQLite).
 
 ```bash
 cargo build                               # debug build
