@@ -17,7 +17,7 @@
 
 Every time an AI agent processes a customer email, a phone number, or an SSN, that data flows through third-party servers, training pipelines, and context windows you don't control. Most enterprises have responded by restricting or outright banning LLM usage. That's a reasonable reaction, but it's also expensive.
 
-**DAM** is a different approach. It sits between your users and the LLM, intercepts personal data before it leaves your machine, and replaces it with typed references like `[email:a3f71bc9]`. Originals stay encrypted in a local vault. When an action actually needs real data — sending an email, making a call — DAM checks consent, decrypts, and logs everything.
+DAM is a different approach. It sits between your application and the LLM provider as a local proxy, intercepts personal data before it leaves your machine, and replaces it with typed references like `[email:a3f71bc9]`. Originals stay encrypted in a local vault. When the LLM responds with references, DAM resolves them back to real values — so the user sees the original data but the LLM never does.
 
 The LLM reasons about data types. It never touches data values.
 
@@ -32,44 +32,49 @@ The LLM reasons about data types. It never touches data values.
 ## How It Works
 
 ```
-                 YOUR MACHINE                              CLOUD
-  ┌─────────────────────────────────────────┐    ┌──────────────────┐
-  │                                         │    │                  │
-  │  ┌───────────┐      ┌──────────────┐    │    │                  │
-  │  │ User      │      │  DAM         │    │    │    LLM           │
-  │  │ Input     │─────►│  Firewall    │────┼───►│    Provider      │
-  │  │           │      │              │    │    │                  │
-  │  │ "john@    │      │  1. Detect   │    │    │  Only sees:      │
-  │  │  acme.com"│      │  2. Encrypt  │    │    │  [email:a3f71bc9]│
-  │  │           │      │  3. Replace  │    │    │                  │
-  │  └───────────┘      └──────┬───────┘    │    └────────┬─────────┘
-  │                            │            │             │
-  │                     ┌──────▼───────┐    │    ┌────────▼─────────┐
-  │                     │ Encrypted    │    │    │ LLM Response     │
-  │                     │ Vault        │    │    │ with references  │
-  │                     │ (SQLite +    │◄───┼────┤                  │
-  │                     │  AES-256)    │    │    │ "Send to         │
-  │                     │              │    │    │ [email:a3f71bc9]"│
-  │                     └──────┬───────┘    │    └──────────────────┘
-  │                            │            │
-  │                     ┌──────▼───────┐    │
-  │                     │ Consent +    │    │
-  │                     │ Audit Log    │    │     Only resolved with
-  │                     │ (hash chain) │    │     explicit consent
-  │                     └──────────────┘    │
-  │                                         │
-  └─────────────────────────────────────────┘
-         Everything stays here.
+                         YOUR MACHINE                           │  PROVIDER
+                                                                │
+  ┌──────────┐         ┌──────────────────────────────────┐     │    ┌──────────┐
+  │  User /  │         │            DAM Proxy             │     │    │          │
+  │  App     │         │                                  │     │    │   LLM    │
+  │          │─────────┤►  1. INTERCEPT                   │     │    │ Provider │
+  │ "Email   │  raw    │   Captures API request           │     │    │          │
+  │  john@   │  PII    │                                  │     │    │          │
+  │  acme.co │         │►  2. DETECT                      │     │    │          │
+  │  at 555- │         │   Regex pipeline finds PII       │     │    │          │
+  │  1234"   │         │                                  │     │    │          │
+  │          │         │►  3. ENCRYPT + VAULT             │     │    │          │
+  │          │         │   AES-256-GCM per value ──► 🔒  │     │    │          │
+  │          │         │                                  │     │    │          │
+  │          │         │►  4. REPLACE                     │     │    │          │
+  │          │         │   john@acme.co → [email:a3f71bc9]│     │    │          │
+  │          │         │   555-1234     → [phone:c2d81e4f]│─────┼───►│          │
+  │          │         │                                  │ ref │    │ Only     │
+  │          │         │                  redacted only ──┼─────┼───►│ sees     │
+  │          │         │                                  │     │    │ [refs]   │
+  │          │         │►  5. RESOLVE RESPONSE            │     │    │          │
+  │          │◄────────┤   [email:a3f71bc9] → john@acme.co│◄────┼────│          │
+  │  sees    │  real   │   refs back to real values       │     │    │          │
+  │  real    │  values │                                  │     │    │          │
+  │  values  │         │►  6. AUDIT                       │     │    │          │
+  │          │         │   SHA-256 hash-chained log       │     │    │          │
+  └──────────┘         └──────────────────────────────────┘     │    └──────────┘
+                                                                │
+                       Everything stays local.                  │  PII never leaves
+                       Vault, keys, audit — on your machine.    │  your machine.
 ```
 
-### The five stages
+The proxy operates transparently: no code changes needed in your application. Point your API client at DAM instead of the provider, and PII is intercepted automatically.
+
+### The six stages
 
 | Stage | What happens |
 |-------|-------------|
-| **Detect** | Regex-based pipeline finds emails, phones, SSNs, credit cards, IPs, IBANs, and 15+ locale-specific patterns across US, Canada, UK, France, Germany, and the EU |
-| **Encrypt** | Each value gets its own AES-256-GCM key (envelope encryption). The master key lives in your OS keychain — never on disk |
+| **Intercept** | DAM receives the API request before it leaves your machine |
+| **Detect** | Regex pipeline finds emails, phones, SSNs, credit cards, IPs, IBANs, and 15+ locale-specific patterns across US, Canada, UK, France, Germany, and the EU |
+| **Encrypt + Vault** | Each value gets its own AES-256-GCM key (envelope encryption). The master key lives in your OS keychain — never on disk |
 | **Replace** | Values become typed references: `[email:a3f71bc9]`. The LLM knows the *type* but never the *value* |
-| **Resolve** | When an action needs real data, DAM checks per-reference, per-accessor, per-purpose consent. No consent = no data |
+| **Resolve response** | When the LLM responds with references, DAM replaces them with real values before returning to the client. The user sees real data; the LLM never did |
 | **Audit** | Every operation is logged in a SHA-256 hash-chained trail. Tampered rows are detectable. Full compliance visibility |
 
 ## Quick Start
@@ -100,7 +105,32 @@ dam init
 
 This creates your encrypted vault, config, and stores a 256-bit master key in your OS keychain. You'll select which regional PII patterns to enable (global patterns are always on).
 
-### Scan
+### Start the proxy
+
+```bash
+dam serve                              # listen on 127.0.0.1:7828
+export ANTHROPIC_BASE_URL=http://127.0.0.1:7828   # point your client at it
+```
+
+That's it. All messages now flow through DAM. User messages are scanned and redacted before reaching the LLM. Responses are resolved back to real values before reaching you.
+
+### Try it with curl
+
+```bash
+curl http://127.0.0.1:7828/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-5-20250514",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Email john@acme.com about the meeting"}]
+  }'
+# The LLM sees: "Email [email:a3f71bc9] about the meeting"
+# You see the response with real values restored
+```
+
+### Scan text manually
 
 ```bash
 dam scan "Email john@acme.com, SSN 123-45-6789"
@@ -148,11 +178,34 @@ dam audit --ref email:a3f71bc9     # filter by reference
 
 ## Integration
 
-DAM plugs into your AI stack three ways:
+### HTTP Proxy (primary)
 
-### MCP Server (recommended for AI agents)
+The proxy is the primary integration path. It provides a hard security boundary: PII is intercepted and redacted *before* the request leaves your machine, with no reliance on LLM behavior.
 
-DAM speaks the [Model Context Protocol](https://modelcontextprotocol.io/) over stdio. One line of config and your agent gets 7 privacy tools + system instructions to always scan before processing.
+```bash
+dam serve
+```
+
+The proxy:
+- Intercepts `POST /v1/messages` requests
+- Scans **user** messages for PII, replaces with vault references
+- Forwards the redacted request to `https://api.anthropic.com`
+- Resolves references in the response before returning to the client
+- Handles both streaming (SSE) and non-streaming responses
+- Passes through `x-api-key`, `authorization`, and `anthropic-version` headers
+
+Works with `curl`, Python SDK, TypeScript SDK — anything that calls the Anthropic Messages API.
+
+### MCP Server (supplementary agent tools)
+
+DAM also speaks the [Model Context Protocol](https://modelcontextprotocol.io/) over stdio, exposing vault tools to AI agents.
+
+**Important**: MCP tools are called *by* the LLM, which means the LLM has already seen the data in its context window by the time it calls a tool. MCP does **not** provide the same security boundary as the proxy. Use the proxy for PII interception; use MCP tools for supplementary operations like:
+
+- Scanning data fetched from external sources (files, APIs) before forwarding it elsewhere
+- Searching the vault for existing references
+- Managing consent and checking vault status
+- Resolving references when executing actions (consent-checked)
 
 <details>
 <summary><strong>Claude Code</strong> — <code>.mcp.json</code> in project root or <code>~/.claude/mcp.json</code></summary>
@@ -194,20 +247,18 @@ args = ["mcp"]
 ```
 </details>
 
-### HTTP Proxy (zero-code integration)
-
-Drop-in proxy for any Anthropic API client. Scans PII on the way in, resolves references on the way out. The user sees real values, the LLM never does.
-
-```bash
-dam serve                              # start on 127.0.0.1:7828
-export ANTHROPIC_BASE_URL=http://127.0.0.1:7828   # point your client at it
-```
-
-Works with `curl`, Python SDK, TypeScript SDK — anything that calls the Messages API. Handles both streaming (SSE) and non-streaming responses.
-
 ### CLI (scripts and pipelines)
 
 Every operation is available as a CLI command. See the [full reference](#cli-reference) below.
+
+### Proxy vs. MCP: security comparison
+
+| | HTTP Proxy | MCP Tools |
+|---|---|---|
+| PII reaches the LLM | No — intercepted before the request | Yes — LLM sees data before calling tools |
+| Relies on LLM compliance | No — enforced at network layer | Yes — LLM must choose to call `dam_scan` |
+| Automatic | Yes — transparent, no code changes | No — requires LLM to follow instructions |
+| Best for | Primary PII protection | Vault operations, scanning external data, consent management |
 
 ## MCP Tools
 
@@ -337,6 +388,7 @@ description = "Internal employee ID"
 
 ```
 dam init                                          Initialize vault, config, and KEK
+dam serve [--port PORT]                           Start HTTP proxy (default: 7828)
 dam mcp                                           Start MCP server (stdio)
 dam scan [TEXT]                                    Scan text for PII (stdin if omitted)
 dam vault list [--type TYPE]                       List vault entries
@@ -349,7 +401,6 @@ dam audit [--ref REF_ID] [--limit N]               View audit trail (default: 50
 dam config show                                    Display current configuration
 dam config get KEY                                 Get a config value
 dam config set KEY VALUE                           Update a config value
-dam serve [--port PORT]                            Start HTTP proxy (default: 7828)
 ```
 
 ## Architecture
