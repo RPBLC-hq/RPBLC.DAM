@@ -17,7 +17,7 @@
 
 Every time an AI agent processes a customer email, a phone number, or an SSN, that data flows through third-party servers, training pipelines, and context windows you don't control. Most enterprises have responded by restricting or outright banning LLM usage. That's a reasonable reaction, but it's also expensive.
 
-DAM is a different approach. It sits between your users and the LLM, intercepts personal data before it leaves your machine, and replaces it with typed references like `[email:a3f71bc9]`. Originals stay encrypted in a local vault. When an action actually needs real data — sending an email, making a call — DAM checks consent, decrypts, and logs everything.
+**DAM** is a different approach. It sits between your users and the LLM, intercepts personal data before it leaves your machine, and replaces it with typed references like `[email:a3f71bc9]`. Originals stay encrypted in a local vault. When an action actually needs real data — sending an email, making a call — DAM checks consent, decrypts, and logs everything.
 
 The LLM reasons about data types. It never touches data values.
 
@@ -49,7 +49,7 @@ The LLM reasons about data types. It never touches data values.
   │                     │ Vault        │    │    │ with references  │
   │                     │ (SQLite +    │◄───┼────┤                  │
   │                     │  AES-256)    │    │    │ "Send to         │
-  │                     │              │    │    │  [email:a3f71bc9]"│
+  │                     │              │    │    │ [email:a3f71bc9]"│
   │                     └──────┬───────┘    │    └──────────────────┘
   │                            │            │
   │                     ┌──────▼───────┐    │
