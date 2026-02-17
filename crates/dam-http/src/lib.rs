@@ -7,6 +7,7 @@
 
 pub mod anthropic;
 pub mod error;
+pub mod openai;
 pub mod proxy;
 pub mod resolve;
 pub mod routes;

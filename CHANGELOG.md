@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **OpenAI Chat Completions proxy** (`POST /v1/chat/completions`) — PII redaction and streaming SSE resolution for OpenAI-compatible APIs (OpenAI, OpenRouter, xAI, Ollama, etc.)
+- Configurable upstream URLs for Anthropic and OpenAI via config or CLI (`--anthropic-upstream`, `--openai-upstream`)
 - Release binary workflow — cross-compiled binaries for Linux, macOS (ARM + Intel), and Windows published to GitHub Releases on tag push, with SHA-256 checksums
 - Rustdoc comments on all public API types, methods, and error variants across all crates
 - Crate-level `//!` doc comments on all seven `lib.rs` / `main.rs` files
