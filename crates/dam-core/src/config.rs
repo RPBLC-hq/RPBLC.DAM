@@ -40,10 +40,10 @@ impl DamConfig {
     /// Honors the `DAM_HOME` environment variable if set, allowing tests
     /// and CI to run in isolated temp directories without touching `~/.dam/`.
     pub fn default_home() -> PathBuf {
-        if let Some(home) = std::env::var_os("DAM_HOME") {
-            if !home.is_empty() {
-                return PathBuf::from(home);
-            }
+        if let Some(home) = std::env::var_os("DAM_HOME")
+            && !home.is_empty()
+        {
+            return PathBuf::from(home);
         }
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))

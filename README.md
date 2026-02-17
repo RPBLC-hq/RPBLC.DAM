@@ -7,6 +7,12 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/alexyboyer/RPBLC.DAM/actions/workflows/ci.yml"><img src="https://github.com/alexyboyer/RPBLC.DAM/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.85%2B-orange.svg" alt="Rust 1.85+"></a>
+</p>
+
+<p align="center">
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#how-it-works">How It Works</a> &middot;
   <a href="#integration">Integration</a> &middot;
@@ -32,7 +38,7 @@ The LLM reasons about data types. It never touches data values.
 ## How It Works
 
 ```
-                 YOUR MACHINE                              CLOUD
+                 YOUR MACHINE                            CLOUD
   ┌─────────────────────────────────────────┐    ┌──────────────────┐
   │                                         │    │                  │
   │  ┌───────────┐      ┌──────────────┐    │    │                  │
@@ -44,12 +50,12 @@ The LLM reasons about data types. It never touches data values.
   │  │  at 555-  │      │  3. Replace  │    │    │                  │
   │  │  1234"    │      └──────┬───────┘    │    └────────┬─────────┘
   │  │           │             │            │             │
-  │  │  sees     │      ┌──────▼───────┐    │    ┌────────▼─────────┐
-  │  │  real     │      │  Encrypted   │    │    │ LLM responds     │
-  │  │  values   │      │  Vault       │    │    │ with references: │
-  │  │           │◄─────│  (SQLite +   │◄───┼────┤                  │
+  │  │           │      ┌──────▼───────┐    │    ┌────────▼─────────┐
+  │  │  sees     │      │  Encrypted   │    │    │ LLM responds     │
+  │  │  real     │      │  Vault       │    │    │ with references: │
+  │  │  values   │◄─────│  (SQLite +   │◄───┼────┤                  │
   │  │           │      │   AES-256)   │    │    │ "Send to         │
-  │  └───────────┘      └──────┬───────┘    │    │  [email:a3f71bc9]│
+  │  └───────────┘      └──────┬───────┘    │    │ [email:a3f71bc9]"│
   │                            │            │    └──────────────────┘
   │                     ┌──────▼───────┐    │
   │                     │ Consent +    │    │     Only resolved with
@@ -104,7 +110,7 @@ This creates your encrypted vault, config, and stores a 256-bit master key in yo
 ### Start the proxy
 
 ```bash
-dam serve                              # listen on 127.0.0.1:7828
+dam serve                                         # listen on 127.0.0.1:7828
 export ANTHROPIC_BASE_URL=http://127.0.0.1:7828   # point your client at it
 ```
 
@@ -159,7 +165,7 @@ dam vault delete email:a3f71bc9   # remove permanently
 ### Control consent
 
 ```bash
-dam consent grant email:a3f71bc9 claude send_email   # specific
+dam consent grant email:a3f71bc9 claude send_email    # specific
 dam consent grant email:a3f71bc9 "*" "*"              # blanket
 dam consent revoke email:a3f71bc9 claude send_email   # revoke
 dam consent list                                      # view all rules
