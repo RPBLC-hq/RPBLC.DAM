@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 
 - Release binary workflow — cross-compiled binaries for Linux, macOS (ARM + Intel), and Windows published to GitHub Releases on tag push, with SHA-256 checksums
+- Rustdoc comments on all public API types, methods, and error variants across all crates
+- Crate-level `//!` doc comments on all seven `lib.rs` / `main.rs` files
+- `docs/ARCHITECTURE.md` — deep design documentation covering envelope encryption, consent resolution, audit hash chain, detection pipeline, streaming SSE resolution, threat model, and crate dependency graph
+- "Who Is This For?" section in README with developer, compliance, and solo developer personas
 
 ## [0.1.0] — 2026-02-16
 

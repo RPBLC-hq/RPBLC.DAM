@@ -18,7 +18,11 @@ Never reconstruct or guess PII from references. \
 Use dam_status to check vault statistics. \
 Use dam_vault_search to find specific entries by type or label.";
 
-/// The DAM MCP server exposing PII protection tools.
+/// The DAM MCP server exposing PII protection tools over stdio transport.
+///
+/// Provides 7 tools: `dam_scan`, `dam_resolve`, `dam_consent`, `dam_vault_search`,
+/// `dam_status`, `dam_reveal`, and `dam_compare`. The server injects instructions
+/// guiding the LLM to always scan input and work with typed references.
 #[derive(Clone)]
 pub struct DamMcpServer {
     vault: Arc<VaultStore>,
@@ -28,6 +32,7 @@ pub struct DamMcpServer {
 
 #[tool(tool_box)]
 impl DamMcpServer {
+    /// Create a new MCP server with the given vault, detection pipeline, and resolver.
     pub fn new(
         vault: Arc<VaultStore>,
         pipeline: Arc<DetectionPipeline>,

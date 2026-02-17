@@ -9,10 +9,25 @@ use std::str::FromStr;
 
 /// A typed reference to a PII value stored in the vault.
 ///
-/// Format: `[type:hex]` e.g. `[email:a3f71bc9]` (8 hex chars locally, 4-16 accepted)
+/// Format: `[type:hex]` e.g. `[email:a3f71bc9]` (8 hex chars locally, 4-16 accepted).
+///
+/// # Examples
+///
+/// ```
+/// use dam_core::{PiiRef, PiiType};
+///
+/// let r = PiiRef::generate(PiiType::Email);
+/// assert_eq!(r.pii_type, PiiType::Email);
+/// assert_eq!(r.id.len(), 8);
+///
+/// let parsed: PiiRef = r.display().parse().unwrap();
+/// assert_eq!(parsed, r);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PiiRef {
+    /// The category of PII this reference points to.
     pub pii_type: PiiType,
+    /// Hex identifier (8 chars for locally-generated refs, 4-16 accepted).
     pub id: String,
 }
 

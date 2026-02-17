@@ -1,3 +1,7 @@
+//! CLI binary for DAM — wires all crates together into a single `dam` command.
+//!
+//! Subcommands: `init`, `mcp`, `scan`, `vault`, `consent`, `audit`, `config`, `serve`.
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 

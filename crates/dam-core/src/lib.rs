@@ -1,3 +1,9 @@
+//! Shared types, error handling, configuration, and PII reference format.
+//!
+//! This is the foundation crate for DAM. It defines the core types used across
+//! all other crates: [`PiiRef`] for typed references, [`PiiType`] for PII categories,
+//! [`DamConfig`] for configuration, and [`DamError`] for unified error handling.
+
 pub mod config;
 pub mod error;
 pub mod locale;

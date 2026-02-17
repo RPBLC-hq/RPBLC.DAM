@@ -2,18 +2,28 @@ use dam_core::{DamError, DamResult};
 use rusqlite::Connection;
 use std::sync::Mutex;
 
-/// A consent rule record.
+/// A consent rule record, controlling who may resolve which PII reference and why.
 #[derive(Debug, Clone)]
 pub struct ConsentRule {
+    /// Reference key this rule applies to (e.g. `email:a3f71bc9`).
     pub ref_id: String,
+    /// Who is granted access. Use `"*"` for any accessor.
     pub accessor: String,
+    /// Allowed purpose. Use `"*"` for any purpose.
     pub purpose: String,
+    /// Whether access is granted (`true`) or explicitly denied (`false`).
     pub allowed: bool,
+    /// Unix timestamp when the rule was created.
     pub created_at: i64,
+    /// Optional Unix timestamp for automatic expiration.
     pub expires_at: Option<i64>,
 }
 
 /// Consent management for PII resolution.
+///
+/// Default-denied: no accessor can resolve a PII reference without an explicit
+/// consent rule. Rules are checked in specificity order (exact → wildcard accessor
+/// → wildcard purpose → full wildcard). Expired rules are cleaned up on check.
 pub struct ConsentManager;
 
 impl ConsentManager {
