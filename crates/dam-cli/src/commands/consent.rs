@@ -113,13 +113,12 @@ pub async fn run(action: ConsentAction) -> Result<()> {
                     Ok(pii_ref) => {
                         if vault.retrieve_pii(&pii_ref).is_err() {
                             anyhow::bail!(
-                                "Reference [{}] not found in vault. Use --force to grant consent anyway.",
-                                ref_id
+                                "Reference [{ref_id}] not found in vault. Use --force to grant consent anyway."
                             );
                         }
                     }
                     Err(_) => {
-                        anyhow::bail!("Invalid reference ID format: {}", ref_id);
+                        anyhow::bail!("Invalid reference ID format: {ref_id}");
                     }
                 }
             }
