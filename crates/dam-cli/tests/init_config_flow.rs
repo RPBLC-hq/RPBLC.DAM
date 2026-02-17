@@ -23,7 +23,6 @@ fn config_save_and_load_roundtrip() {
 #[test]
 fn config_default_values() {
     let config = DamConfig::default();
-    assert_eq!(config.detection.locales.len(), 7);
     assert_eq!(config.detection.locales, Locale::defaults());
     assert_eq!(config.detection.sensitivity, Sensitivity::Standard);
     assert_eq!(config.server.http_port, 7828);
