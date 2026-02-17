@@ -23,7 +23,7 @@
 
 Every time an AI agent processes a customer email, a phone number, or an SSN, that data flows through third-party servers, training pipelines, and context windows you don't control. Most enterprises have responded by restricting or outright banning LLM usage. That's a reasonable reaction, but it's also expensive.
 
-DAM is a different approach. It sits between your application and the LLM provider as a local proxy, intercepts personal data before it leaves your machine, and replaces it with typed references like `[email:a3f71bc9]`. Originals stay encrypted in a local vault. When the LLM responds with references, DAM resolves them back to real values — so the user sees the original data but the LLM never does.
+**DAM** is a different approach. It sits between your application and the LLM provider as a local proxy, intercepts personal data before it leaves your machine, and replaces it with typed references like `[email:a3f71bc9]`. Originals stay encrypted in a local vault. When the LLM responds with references, DAM resolves them back to real values — so the user sees the original data but the LLM never does.
 
 The LLM reasons about data types. It never touches data values.
 
