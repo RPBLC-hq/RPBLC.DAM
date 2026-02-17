@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: "0 6 * * 1"  # Every Monday at 06:00 UTC
   push:
+    branches: [main]
     paths:
       - "**/Cargo.lock"
       - "**/Cargo.toml"
@@ -22,11 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        uses: taiki-e/install-action@cargo-audit
 
       - name: Run audit
         run: cargo audit
