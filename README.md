@@ -32,49 +32,45 @@ The LLM reasons about data types. It never touches data values.
 ## How It Works
 
 ```
-                         YOUR MACHINE                           │  PROVIDER
-                                                                │
-  ┌──────────┐         ┌──────────────────────────────────┐     │    ┌──────────┐
-  │  User /  │         │            DAM Proxy             │     │    │          │
-  │  App     │         │                                  │     │    │   LLM    │
-  │          │─────────┤►  1. INTERCEPT                   │     │    │ Provider │
-  │ "Email   │  raw    │   Captures API request           │     │    │          │
-  │  john@   │  PII    │                                  │     │    │          │
-  │  acme.co │         │►  2. DETECT                      │     │    │          │
-  │  at 555- │         │   Regex pipeline finds PII       │     │    │          │
-  │  1234"   │         │                                  │     │    │          │
-  │          │         │►  3. ENCRYPT + VAULT             │     │    │          │
-  │          │         │   AES-256-GCM per value ──► 🔒  │     │    │          │
-  │          │         │                                  │     │    │          │
-  │          │         │►  4. REPLACE                     │     │    │          │
-  │          │         │   john@acme.co → [email:a3f71bc9]│     │    │          │
-  │          │         │   555-1234     → [phone:c2d81e4f]│─────┼───►│          │
-  │          │         │                                  │ ref │    │ Only     │
-  │          │         │                  redacted only ──┼─────┼───►│ sees     │
-  │          │         │                                  │     │    │ [refs]   │
-  │          │         │►  5. RESOLVE RESPONSE            │     │    │          │
-  │          │◄────────┤   [email:a3f71bc9] → john@acme.co│◄────┼────│          │
-  │  sees    │  real   │   refs back to real values       │     │    │          │
-  │  real    │  values │                                  │     │    │          │
-  │  values  │         │►  6. AUDIT                       │     │    │          │
-  │          │         │   SHA-256 hash-chained log       │     │    │          │
-  └──────────┘         └──────────────────────────────────┘     │    └──────────┘
-                                                                │
-                       Everything stays local.                  │  PII never leaves
-                       Vault, keys, audit — on your machine.    │  your machine.
+                 YOUR MACHINE                              CLOUD
+  ┌─────────────────────────────────────────┐    ┌──────────────────┐
+  │                                         │    │                  │
+  │  ┌───────────┐      ┌──────────────┐    │    │                  │
+  │  │ User /    │      │  DAM         │    │    │    LLM           │
+  │  │ App       │─────►│  Proxy       │────┼───►│    Provider      │
+  │  │           │      │              │    │    │                  │
+  │  │ "john@    │      │  1. Detect   │    │    │  Only sees:      │
+  │  │  acme.com │      │  2. Encrypt  │    │    │  [email:a3f71bc9]│
+  │  │  at 555-  │      │  3. Replace  │    │    │                  │
+  │  │  1234"    │      └──────┬───────┘    │    └────────┬─────────┘
+  │  │           │             │            │             │
+  │  │  sees     │      ┌──────▼───────┐    │    ┌────────▼─────────┐
+  │  │  real     │      │  Encrypted   │    │    │ LLM responds     │
+  │  │  values   │      │  Vault       │    │    │ with references: │
+  │  │           │◄─────│  (SQLite +   │◄───┼────┤                  │
+  │  │           │      │   AES-256)   │    │    │ "Send to         │
+  │  └───────────┘      └──────┬───────┘    │    │  [email:a3f71bc9]│
+  │                            │            │    └──────────────────┘
+  │                     ┌──────▼───────┐    │
+  │                     │ Consent +    │    │     Only resolved with
+  │                     │ Audit Log    │    │     explicit consent
+  │                     │ (hash chain) │    │
+  │                     └──────────────┘    │
+  │                                         │
+  └─────────────────────────────────────────┘
+         Everything stays here.
 ```
 
-The proxy operates transparently: no code changes needed in your application. Point your API client at DAM instead of the provider, and PII is intercepted automatically.
+No code changes needed. Point your API client at DAM instead of the provider, and PII is intercepted automatically.
 
-### The six stages
+### The pipeline
 
 | Stage | What happens |
 |-------|-------------|
-| **Intercept** | DAM receives the API request before it leaves your machine |
 | **Detect** | Regex pipeline finds emails, phones, SSNs, credit cards, IPs, IBANs, and 15+ locale-specific patterns across US, Canada, UK, France, Germany, and the EU |
-| **Encrypt + Vault** | Each value gets its own AES-256-GCM key (envelope encryption). The master key lives in your OS keychain — never on disk |
+| **Encrypt** | Each value gets its own AES-256-GCM key (envelope encryption). The master key lives in your OS keychain — never on disk |
 | **Replace** | Values become typed references: `[email:a3f71bc9]`. The LLM knows the *type* but never the *value* |
-| **Resolve response** | When the LLM responds with references, DAM replaces them with real values before returning to the client. The user sees real data; the LLM never did |
+| **Resolve** | When the LLM responds with references, DAM replaces them with real values before returning to the client. The user sees real data; the LLM never did |
 | **Audit** | Every operation is logged in a SHA-256 hash-chained trail. Tampered rows are detectable. Full compliance visibility |
 
 ## Quick Start
