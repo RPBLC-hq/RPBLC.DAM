@@ -2,16 +2,25 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Anthropic Messages API request body.
+///
+/// Known fields are parsed explicitly; unknown fields (e.g. `temperature`,
+/// `metadata`) are captured in `extra` via `serde(flatten)` for passthrough.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagesRequest {
+    /// Model identifier (e.g. `"claude-sonnet-4-5-20250929"`).
     pub model: String,
+    /// Conversation messages.
     pub messages: Vec<Message>,
+    /// Maximum tokens to generate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// Whether to stream the response as SSE events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    /// Optional system prompt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
+    /// All other API fields, preserved for passthrough.
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -19,19 +28,25 @@ pub struct MessagesRequest {
 /// A single message in the conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
+    /// Message role: `"user"` or `"assistant"`.
     pub role: String,
+    /// Message content (plain text or structured blocks).
     pub content: MessageContent,
 }
 
-/// Message content: either a plain string or structured blocks.
+/// Message content: either a plain string or an array of typed blocks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MessageContent {
+    /// Simple text content.
     Text(String),
+    /// Structured content blocks (text, image, tool_use, tool_result).
     Blocks(Vec<ContentBlock>),
 }
 
-/// A content block within a message.
+/// A content block within a request message.
+///
+/// Unknown block types are captured as [`Other`](ContentBlock::Other) for forward compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
@@ -61,13 +76,20 @@ pub enum ContentBlock {
 }
 
 /// Anthropic Messages API response body (non-streaming).
+///
+/// Unknown fields (e.g. `usage`, `stop_reason`) are captured in `extra`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagesResponse {
+    /// Unique message identifier.
     pub id: String,
+    /// Always `"message"`.
     #[serde(rename = "type")]
     pub response_type: String,
+    /// Always `"assistant"`.
     pub role: String,
+    /// Response content blocks.
     pub content: Vec<ResponseBlock>,
+    /// All other response fields, preserved for passthrough.
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -91,7 +113,10 @@ pub enum ResponseBlock {
     Other,
 }
 
-/// SSE event types from the streaming API.
+/// SSE event types from the Anthropic streaming API.
+///
+/// Used to parse `data:` payloads in server-sent events. Only `ContentBlockDelta`
+/// and `ContentBlockStop` are actively processed for reference resolution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum StreamEvent {
@@ -119,7 +144,7 @@ pub enum StreamEvent {
     Error { error: serde_json::Value },
 }
 
-/// Delta within a content_block_delta event.
+/// Delta payload within a `content_block_delta` SSE event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Delta {

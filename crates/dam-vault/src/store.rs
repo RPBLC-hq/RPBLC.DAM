@@ -32,17 +32,29 @@ fn normalize_pii(pii_type: PiiType, value: &str) -> String {
 }
 
 /// Metadata about a vault entry (no decrypted values).
+///
+/// Returned by [`VaultStore::list_entries`]. The actual PII value is only
+/// available via [`VaultStore::retrieve_pii`].
 #[derive(Debug, Clone)]
 pub struct VaultEntry {
+    /// Reference key in `type:hex` form (e.g. `email:a3f71bc9`).
     pub ref_id: String,
+    /// Category of PII stored.
     pub pii_type: PiiType,
+    /// Unix timestamp when the entry was created.
     pub created_at: i64,
+    /// Optional Unix timestamp for automatic expiration.
     pub expires_at: Option<i64>,
+    /// Where the PII was detected (e.g. `"http-proxy"`, `"mcp"`).
     pub source: Option<String>,
+    /// Optional human-readable label.
     pub label: Option<String>,
 }
 
 /// The encrypted PII vault backed by SQLite.
+///
+/// Thread-safe: the database connection is protected by a [`Mutex`].
+/// All values are encrypted with envelope encryption via [`EnvelopeCrypto`].
 pub struct VaultStore {
     conn: Mutex<Connection>,
     crypto: EnvelopeCrypto,

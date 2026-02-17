@@ -4,11 +4,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Top-level DAM configuration.
+/// Top-level DAM configuration, loaded from `~/.dam/config.toml`.
+///
+/// Contains vault, detection, and server settings. Use [`DamConfig::load`] to
+/// read from disk or [`Default::default`] for sensible defaults.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DamConfig {
+    /// Vault storage settings (path and key source).
     pub vault: VaultConfig,
+    /// PII detection settings (sensitivity, locales, rules).
     pub detection: DetectionConfig,
+    /// HTTP server settings (port, auth token).
     pub server: ServerConfig,
 }
 
@@ -56,11 +62,12 @@ impl DamConfig {
     }
 }
 
+/// Vault storage configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultConfig {
     /// Path to the SQLite vault database.
     pub path: PathBuf,
-    /// How the KEK is sourced.
+    /// How the KEK (Key Encryption Key) is sourced.
     pub key_source: KeySource,
 }
 
@@ -73,6 +80,7 @@ impl Default for VaultConfig {
     }
 }
 
+/// How the master encryption key (KEK) is sourced.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeySource {
@@ -84,6 +92,7 @@ pub enum KeySource {
     EnvVar { name: String },
 }
 
+/// PII detection pipeline configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionConfig {
     /// Detection sensitivity level.
@@ -129,6 +138,7 @@ impl Default for DetectionConfig {
     }
 }
 
+/// Detection sensitivity level controlling which PII patterns are active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Sensitivity {
@@ -140,13 +150,18 @@ pub enum Sensitivity {
     Maximum,
 }
 
+/// A user-defined regex detection rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomRule {
+    /// Regex pattern to match.
     pub pattern: String,
+    /// PII type to assign to matches.
     pub pii_type: PiiType,
+    /// Optional human-readable description.
     pub description: Option<String>,
 }
 
+/// HTTP server and API configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     /// HTTP API port (for `dam serve`).

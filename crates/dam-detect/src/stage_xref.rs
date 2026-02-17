@@ -7,6 +7,10 @@
 
 use crate::stage_regex::Detection;
 
+/// Vault cross-reference detector (Phase 2 stub).
+///
+/// Will compare text segments against known vault entries for partial matches.
+/// Currently returns no detections.
 #[derive(Default)]
 pub struct XrefDetector;
 

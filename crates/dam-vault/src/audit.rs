@@ -3,21 +3,34 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 
-/// An entry in the audit trail.
+/// An entry in the tamper-evident audit trail.
 #[derive(Debug, Clone)]
 pub struct AuditEntry {
+    /// Auto-incrementing row ID.
     pub id: i64,
+    /// Reference key that was accessed (e.g. `email:a3f71bc9`).
     pub ref_id: String,
+    /// Who requested access (e.g. `"claude"`, `"dam:reveal"`).
     pub accessor: String,
+    /// Why access was requested (e.g. `"send_email"`, `"override"`).
     pub purpose: String,
+    /// What happened: `"resolve"`, `"denied"`, `"reveal"`, `"create"`, `"delete"`.
     pub action: String,
+    /// Whether the operation was allowed.
     pub granted: bool,
+    /// Unix timestamp of the event.
     pub ts: i64,
+    /// Optional human-readable detail (e.g. denial reason).
     pub detail: Option<String>,
+    /// SHA-256 hash of the previous entry for chain verification.
     pub prev_hash: Option<String>,
 }
 
 /// Hash-chained audit log for all vault operations.
+///
+/// Every scan, resolve, reveal, consent change, and vault mutation is recorded.
+/// Each entry includes the SHA-256 hash of the previous entry, forming a
+/// tamper-evident chain verifiable via [`AuditLog::verify_chain`].
 pub struct AuditLog;
 
 impl AuditLog {

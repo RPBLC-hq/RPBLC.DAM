@@ -7,6 +7,10 @@
 
 use crate::stage_regex::Detection;
 
+/// NER-based entity detector (Phase 2 stub).
+///
+/// Will use an ONNX model to detect PERSON, ORG, GPE, and LOC entities.
+/// Currently returns no detections.
 #[derive(Default)]
 pub struct NerDetector;
 

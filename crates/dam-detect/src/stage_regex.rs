@@ -138,13 +138,18 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, ()> {
     Ok(result)
 }
 
-/// A single PII detection with location and confidence.
+/// A single PII detection with byte offsets into the normalized text.
 #[derive(Debug, Clone)]
 pub struct Detection {
+    /// The matched PII value.
     pub value: String,
+    /// Category of PII detected.
     pub pii_type: PiiType,
+    /// Start byte offset in the normalized text.
     pub start: usize,
+    /// End byte offset in the normalized text.
     pub end: usize,
+    /// Confidence score (0.0–1.0).
     pub confidence: f32,
 }
 

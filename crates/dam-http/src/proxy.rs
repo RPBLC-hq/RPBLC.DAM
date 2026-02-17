@@ -89,16 +89,21 @@ pub fn resolve_response(vault: &Arc<VaultStore>, response: &mut MessagesResponse
     }
 }
 
-/// Shared application state passed to handlers.
+/// Shared application state passed to axum handlers.
 #[derive(Clone)]
 pub struct AppState {
+    /// Encrypted PII vault for storage and retrieval.
     pub vault: Arc<VaultStore>,
+    /// PII detection pipeline for scanning user messages.
     pub pipeline: Arc<DetectionPipeline>,
+    /// HTTP client for forwarding requests to the upstream LLM provider.
     pub client: reqwest::Client,
+    /// Base URL of the upstream API (e.g. `https://api.anthropic.com`).
     pub upstream_url: String,
 }
 
 impl AppState {
+    /// Create application state from config and vault, targeting the Anthropic API.
     pub fn new(config: &DamConfig, vault: Arc<VaultStore>) -> Self {
         let pipeline = Arc::new(DetectionPipeline::new(config, vault.clone()));
         let client = reqwest::Client::new();

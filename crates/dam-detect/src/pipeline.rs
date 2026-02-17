@@ -6,26 +6,36 @@ use dam_vault::VaultStore;
 use std::sync::Arc;
 
 /// Result of scanning text for PII.
+///
+/// Contains both the original and redacted text, plus details of every detection.
 #[derive(Debug, Clone)]
 pub struct ScanResult {
     /// The original text before redaction.
     pub original_text: String,
-    /// The text with PII replaced by references.
+    /// The text with PII replaced by typed references (e.g. `[email:a3f71bc9]`).
     pub redacted_text: String,
-    /// All PII detections found.
+    /// All PII detections found, each with its vault reference.
     pub detections: Vec<DetectionResult>,
 }
 
-/// A single detection with its vault reference.
+/// A single PII detection with its vault reference.
 #[derive(Debug, Clone)]
 pub struct DetectionResult {
+    /// The detected PII value (from normalized text).
     pub value: String,
+    /// Category of PII detected.
     pub pii_type: PiiType,
+    /// Vault reference assigned to this detection.
     pub pii_ref: PiiRef,
+    /// Detection confidence score (0.0–1.0).
     pub confidence: f32,
 }
 
 /// The full PII detection pipeline.
+///
+/// Runs text through regex detection (with normalization), user-defined rules,
+/// and stubs for NER and vault cross-reference. Detected values are validated,
+/// deduplicated, and stored in the vault.
 pub struct DetectionPipeline {
     rules_engine: RulesEngine,
     vault: Arc<VaultStore>,

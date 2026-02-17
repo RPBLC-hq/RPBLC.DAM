@@ -2,17 +2,22 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
+/// HTTP proxy error type, automatically converted to JSON error responses.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    /// The upstream LLM provider returned an error.
     #[error("upstream error: {0}")]
     Upstream(String),
 
+    /// The client sent a malformed request.
     #[error("request error: {0}")]
     BadRequest(String),
 
+    /// Internal proxy error (serialization, configuration, etc.).
     #[error("proxy error: {0}")]
     Proxy(String),
 
+    /// A vault operation failed.
     #[error("vault error: {0}")]
     Vault(#[from] dam_core::DamError),
 }

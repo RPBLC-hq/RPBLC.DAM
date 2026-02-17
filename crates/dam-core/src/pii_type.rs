@@ -3,30 +3,56 @@ use std::fmt;
 use std::str::FromStr;
 
 /// All recognized categories of personally identifiable information.
+///
+/// Each variant has a short [`tag()`](PiiType::tag) used in reference strings
+/// (e.g. `[email:a3f71bc9]`) and a longer [`Display`] form for human output.
+/// Use [`FromStr`] for case-insensitive parsing with aliases (e.g. "cc" → `CreditCard`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PiiType {
+    /// Email address (tag: `email`). Global locale.
     Email,
+    /// Phone number (tag: `phone`). Global + US locale.
     Phone,
+    /// US Social Security Number (tag: `ssn`). US locale.
     Ssn,
+    /// Credit card number, Luhn-validated (tag: `cc`). Global locale.
     CreditCard,
+    /// IPv4 address, public IPs only (tag: `ip`). Global locale.
     IpAddress,
+    /// Date of birth (tag: `dob`). Global locale.
     DateOfBirth,
+    /// International Bank Account Number, Mod97-validated (tag: `iban`). Global locale.
     Iban,
+    /// Canadian Social Insurance Number, Luhn-validated (tag: `sin`). Canada locale.
     Sin,
+    /// Canadian postal code (tag: `postal`). Canada locale.
     PostalCode,
+    /// UK National Insurance number (tag: `ni`). UK locale.
     NiNumber,
+    /// UK NHS number, Mod11-validated (tag: `nhs`). UK locale.
     NhsNumber,
+    /// UK driving licence, DVLA format (tag: `dl`). UK locale.
     DriversLicense,
+    /// French INSEE/NIR (tag: `nir`). France locale.
     InseeNir,
+    /// National identity card number (tag: `natid`). Germany locale.
     NationalId,
+    /// Tax identification number (tag: `taxid`). Germany locale.
     TaxId,
+    /// EU VAT number (tag: `vat`). EU locale.
     VatNumber,
+    /// SWIFT/BIC code (tag: `swift`). EU locale.
     SwiftBic,
+    /// Person name (tag: `name`). Phase 2 NER.
     Name,
+    /// Physical address (tag: `addr`). Phase 2 NER.
     Address,
+    /// Organization name (tag: `org`). Phase 2 NER.
     Organization,
+    /// Geographic location (tag: `loc`). Phase 2 NER.
     Location,
+    /// User-defined PII type from custom rules (tag: `custom`).
     Custom,
 }
 

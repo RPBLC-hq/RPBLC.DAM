@@ -13,8 +13,11 @@ const NONCE_SIZE: usize = 12;
 
 /// Result of encrypting a PII value with envelope encryption.
 pub struct EncryptedEntry {
+    /// AES-256-GCM ciphertext of the PII value.
     pub ciphertext: Vec<u8>,
+    /// The DEK, encrypted (wrapped) by the KEK.
     pub dek_encrypted: Vec<u8>,
+    /// Combined IV: data_iv (12 bytes) || kek_iv (12 bytes) = 24 bytes.
     pub iv: Vec<u8>,
 }
 
@@ -24,6 +27,7 @@ pub struct EnvelopeCrypto {
 }
 
 impl EnvelopeCrypto {
+    /// Create a new envelope crypto engine with the given KEK.
     pub fn new(kek: [u8; KEY_SIZE]) -> Self {
         Self { kek }
     }

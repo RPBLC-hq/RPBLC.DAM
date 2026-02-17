@@ -27,6 +27,14 @@ Every time an AI agent processes a customer email, a phone number, or an SSN, th
 
 The LLM reasons about data types. It never touches data values.
 
+## Who Is This For?
+
+**Developers building AI agents** — if your agent handles customer emails, phone numbers, or payment info, DAM ensures none of it reaches the LLM. Drop in a local proxy, keep your existing code.
+
+**Security and compliance teams** — evaluating LLM deployments for SOC 2, GDPR, or HIPAA? DAM provides AES-256 encryption, granular consent controls, and a tamper-evident audit trail you can point auditors at.
+
+**Solo developers** — want PII protection without signing up for a cloud vendor? One binary, zero dependencies, runs entirely on your machine.
+
 ```
   "Send the contract to john@acme.com        "Send the contract to [email:a3f71bc9]
    and CC sarah@corp.io,                       and CC [email:d4f82c19],

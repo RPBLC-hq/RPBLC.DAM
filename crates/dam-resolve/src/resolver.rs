@@ -2,21 +2,29 @@ use dam_core::{DamError, DamResult, PiiRef};
 use dam_vault::{AuditLog, ConsentManager, VaultStore};
 use std::sync::Arc;
 
-/// Result of resolving a single reference.
+/// Result of resolving a single PII reference.
 #[derive(Debug, Clone)]
 pub struct ResolveResult {
+    /// The reference that was resolved.
     pub pii_ref: PiiRef,
+    /// Whether consent was granted.
     pub granted: bool,
+    /// The decrypted PII value (only present if granted).
     pub value: Option<String>,
+    /// Denial reason (only present if denied).
     pub reason: Option<String>,
 }
 
 /// Resolves PII references with consent checking and audit logging.
+///
+/// Every resolution attempt is recorded in the audit trail regardless of outcome.
+/// Use [`Resolver::reveal`] for emergency access that bypasses consent.
 pub struct Resolver {
     vault: Arc<VaultStore>,
 }
 
 impl Resolver {
+    /// Create a new resolver backed by the given vault.
     pub fn new(vault: Arc<VaultStore>) -> Self {
         Self { vault }
     }
@@ -133,17 +141,23 @@ impl Resolver {
     }
 }
 
-/// Result of resolving references in a text string.
+/// Result of resolving all references in a text string.
 #[derive(Debug)]
 pub struct ResolveTextResult {
+    /// Text with consented references replaced by real values.
     pub resolved_text: String,
+    /// Successfully resolved references.
     pub resolved: Vec<ResolveResult>,
+    /// References that were denied due to missing consent.
     pub denied: Vec<DeniedRef>,
 }
 
+/// A reference that could not be resolved due to missing consent.
 #[derive(Debug)]
 pub struct DeniedRef {
+    /// The reference that was denied.
     pub pii_ref: PiiRef,
+    /// Human-readable denial reason.
     pub reason: String,
 }
 
