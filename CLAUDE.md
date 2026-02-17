@@ -60,6 +60,14 @@ Detection patterns are organized by geographic locale in `crates/dam-detect/src/
 
 Keep `docs/locales/` in sync when patterns change.
 
+## Governance Files
+
+Keep these files up to date when making changes:
+
+- **CHANGELOG.md** — add entries under an `[Unreleased]` section for every user-facing change (new features, bug fixes, breaking changes). When releasing, rename `[Unreleased]` to `[version] — date`.
+- **SECURITY.md** — update scope if new security-sensitive components are added (e.g., new encryption schemes, auth mechanisms, network-exposed endpoints).
+- **CONTRIBUTING.md** — update if build steps, PR process, or code conventions change.
+
 ## Conventions
 
 - Error type: `DamError` / `DamResult<T>` in dam-core
