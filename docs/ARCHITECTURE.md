@@ -317,35 +317,35 @@ The trust boundary is the network edge of the user's machine. DAM ensures that n
 
 ## Adding a New PII Type
 
-This walkthrough adds a fictional `TaxFileNumber` type (Australian TFN) as an example. Adapt the steps for your actual PII type.
+This walkthrough adds a fictional `AncestralNameNumber` type (Wakandan ANNS) as an example. Adapt the steps for your actual PII type.
 
 ### Step 1 — Add the PiiType Variant
 
 In `crates/dam-core/src/pii_type.rs`, add a variant to the `PiiType` enum:
 
 ```rust
-/// Australian Tax File Number. Tag: `tfn`, locale: AU.
-TaxFileNumber,
+/// Wakandan Ancestral Name Number. Tag: `anns`, locale: WK.
+AncestralNameNumber,
 ```
 
 Then implement the required methods on the new variant:
 
-- `tag()` → `"tfn"` (short form used in references like `[tfn:a3f71bc9]`)
-- `Display` → `"tax_file_number"` (human-readable long form)
-- `FromStr` → accept `"tax_file_number"`, `"tfn"`, and any aliases
-- `from_tag()` → `"tfn" => Some(PiiType::TaxFileNumber)`
+- `tag()` → `"anns"` (short form used in references like `[anns:a3f71bc9]`)
+- `Display` → `"ancestral_name_number"` (human-readable long form)
+- `FromStr` → accept `"ancestral_name_number"`, `"anns"`, and any aliases
+- `from_tag()` → `"anns" => Some(PiiType::AncestralNameNumber)`
 - Add the variant to the `all()` array
 
 ### Step 2 — Add a Detection Pattern
 
-In the appropriate locale file (e.g. `crates/dam-detect/src/locales/au.rs` for a new locale, or an existing one):
+In the appropriate locale file (e.g. `crates/dam-detect/src/locales/wk.rs` for a new locale, or an existing one):
 
 ```rust
 Pattern {
-    regex: Regex::new(r"(?i)\b\d{3}[\s-]?\d{3}[\s-]?\d{3}\b").unwrap(),
-    pii_type: PiiType::TaxFileNumber,
+    regex: Regex::new(r"(?i)\bWK\d{2}[\s-]?\d{4}[\s-]?\d{4}\b").unwrap(),
+    pii_type: PiiType::AncestralNameNumber,
     confidence: 0.85,
-    validator: Some(validate_tfn),
+    validator: Some(validate_anns),
 }
 ```
 
@@ -359,21 +359,21 @@ Key conventions:
 In `crates/dam-detect/src/validators.rs`:
 
 ```rust
-/// Australian TFN check — weighted sum mod 11 with specific weights.
-pub(crate) fn validate_tfn(value: &str) -> bool {
+/// Wakandan ANNS check — alternating weights, sum mod 7 must equal zero.
+pub(crate) fn validate_anns(value: &str) -> bool {
     let digits: Vec<u32> = value
         .chars()
         .filter(|c| c.is_ascii_digit())
         .filter_map(|c| c.to_digit(10))
         .collect();
 
-    if digits.len() != 9 {
+    if digits.len() != 10 {
         return false;
     }
 
-    let weights = [1, 4, 3, 7, 5, 8, 6, 9, 10];
+    let weights = [3, 1, 3, 1, 3, 1, 3, 1, 3, 1];
     let sum: u32 = digits.iter().zip(weights).map(|(d, w)| d * w).sum();
-    sum.is_multiple_of(11)
+    sum != 0 && sum.is_multiple_of(7)
 }
 ```
 
@@ -383,10 +383,10 @@ Validators are plain `fn(&str) -> bool` functions. They receive the raw matched 
 
 If you created a new locale module:
 
-1. Add `mod au;` in `crates/dam-detect/src/locales/mod.rs`
-2. Add a match arm in `build_patterns()` to call `au::patterns()`
+1. Add `mod wk;` in `crates/dam-detect/src/locales/mod.rs`
+2. Add a match arm in `build_patterns()` to call `wk::patterns()`
 3. Add the locale variant to `Locale` in `crates/dam-core/src/locale.rs`
-4. Create `docs/locales/au.md` documenting the patterns
+4. Create `docs/locales/wk.md` documenting the patterns
 
 ### Step 5 — Add Tests
 
@@ -394,15 +394,15 @@ Add unit tests in the locale module and consider adversarial tests (see `qa_euro
 
 ```rust
 #[test]
-fn detect_tfn() {
-    let (_, detections) = detect("TFN: 123 456 782", &au_patterns());
-    assert!(detections.iter().any(|d| d.pii_type == PiiType::TaxFileNumber));
+fn detect_anns() {
+    let (_, detections) = detect("ANNS: WK12 3456 7893", &wk_patterns());
+    assert!(detections.iter().any(|d| d.pii_type == PiiType::AncestralNameNumber));
 }
 
 #[test]
-fn reject_invalid_tfn() {
-    let (_, detections) = detect("TFN: 000 000 000", &au_patterns());
-    assert!(!detections.iter().any(|d| d.pii_type == PiiType::TaxFileNumber));
+fn reject_invalid_anns() {
+    let (_, detections) = detect("ANNS: WK00 0000 0000", &wk_patterns());
+    assert!(!detections.iter().any(|d| d.pii_type == PiiType::AncestralNameNumber));
 }
 ```
 
