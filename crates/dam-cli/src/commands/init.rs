@@ -133,12 +133,12 @@ pub async fn run() -> Result<()> {
     // Useful commands
     println!("{}", "3. Useful commands".bold().underline());
     println!();
-    println!("  {}    Scan text for PII", "dam scan <text>".cyan());
+    println!("  {}       Scan text for PII", "dam scan <text>".cyan());
     println!("  {}       List vault entries", "dam vault list".cyan());
-    println!("  {} Decrypt and show a value", "dam vault show REF".cyan());
-    println!("  {}           Start HTTP proxy", "dam serve".cyan());
-    println!("  {}      View/update settings", "dam config show".cyan());
-    println!("  {}              View audit trail", "dam audit".cyan());
+    println!("  {}       Decrypt and show a value", "dam vault show REF".cyan());
+    println!("  {}       Start HTTP proxy", "dam serve".cyan());
+    println!("  {}       View/update settings", "dam config show".cyan());
+    println!("  {}       View audit trail", "dam audit".cyan());
     println!();
     println!(
         "  {}",
