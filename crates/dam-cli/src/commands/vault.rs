@@ -92,9 +92,7 @@ pub async fn run(action: VaultAction) -> Result<()> {
             if !yes {
                 use std::io::IsTerminal;
                 if !std::io::stdin().is_terminal() {
-                    anyhow::bail!(
-                        "Cannot confirm interactively. Use --yes to skip confirmation."
-                    );
+                    anyhow::bail!("Cannot confirm interactively. Use --yes to skip confirmation.");
                 }
                 let confirm = dialoguer::Confirm::new()
                     .with_prompt("Delete ALL vault entries and consent rules?")

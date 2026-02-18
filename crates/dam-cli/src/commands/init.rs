@@ -77,9 +77,7 @@ pub async fn run() -> Result<()> {
     // Two integration modes
     println!("{}", "2. Connect to your AI agent".bold().underline());
     println!();
-    println!(
-        "  DAM works in two modes — pick the one that fits your setup:"
-    );
+    println!("  DAM works in two modes — pick the one that fits your setup:");
     println!();
 
     // Mode A: HTTP proxy (primary)
@@ -94,13 +92,11 @@ pub async fn run() -> Result<()> {
     );
     println!(
         "  {}",
-        "export OPENAI_BASE_URL=http://127.0.0.1:7828/v1       # OpenAI, OpenRouter, etc."
-            .dimmed()
+        "export OPENAI_BASE_URL=http://127.0.0.1:7828/v1       # OpenAI, OpenRouter, etc.".dimmed()
     );
     println!(
         "  {}",
-        "export ANTHROPIC_BASE_URL=http://127.0.0.1:7828       # Anthropic"
-            .dimmed()
+        "export ANTHROPIC_BASE_URL=http://127.0.0.1:7828       # Anthropic".dimmed()
     );
     println!();
 
@@ -128,10 +124,7 @@ pub async fn run() -> Result<()> {
         r#"  {{ "mcpServers": {{ "dam": {{ "command": "{escaped_path}", "args": ["mcp"] }} }} }}"#
     );
     println!();
-    println!(
-        "  {}",
-        "Codex        — add to ~/.codex/config.toml:".bold()
-    );
+    println!("  {}", "Codex        — add to ~/.codex/config.toml:".bold());
     println!(r#"  [mcp_servers.dam]"#);
     println!(r#"  command = "{escaped_path}""#);
     println!(r#"  args = ["mcp"]"#);
@@ -141,26 +134,11 @@ pub async fn run() -> Result<()> {
     println!("{}", "3. Useful commands".bold().underline());
     println!();
     println!("  {}    Scan text for PII", "dam scan <text>".cyan());
-    println!(
-        "  {}       List vault entries",
-        "dam vault list".cyan()
-    );
-    println!(
-        "  {} Decrypt and show a value",
-        "dam vault show REF".cyan()
-    );
-    println!(
-        "  {}           Start HTTP proxy",
-        "dam serve".cyan()
-    );
-    println!(
-        "  {}      View/update settings",
-        "dam config show".cyan()
-    );
-    println!(
-        "  {}              View audit trail",
-        "dam audit".cyan()
-    );
+    println!("  {}       List vault entries", "dam vault list".cyan());
+    println!("  {} Decrypt and show a value", "dam vault show REF".cyan());
+    println!("  {}           Start HTTP proxy", "dam serve".cyan());
+    println!("  {}      View/update settings", "dam config show".cyan());
+    println!("  {}              View audit trail", "dam audit".cyan());
     println!();
     println!(
         "  {}",
