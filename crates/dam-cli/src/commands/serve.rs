@@ -10,7 +10,9 @@ pub async fn run(
     openai_upstream: Option<String>,
 ) -> Result<()> {
     let mut config = load_config()?;
+    tracing::debug!("config loaded");
     let vault = open_vault(&config)?;
+    tracing::debug!("vault opened");
 
     // Apply CLI overrides
     if let Some(url) = anthropic_upstream {

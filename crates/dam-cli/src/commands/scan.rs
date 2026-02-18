@@ -18,7 +18,9 @@ pub async fn run(text: Option<String>) -> Result<()> {
         }
     };
 
+    tracing::debug!(input_len = text.len(), "scanning text");
     let result = pipeline.scan(&text, Some("cli"))?;
+    tracing::debug!(detections = result.detections.len(), "scan complete");
 
     println!("{}", "Redacted:".bold());
     println!("{}", result.redacted_text);
