@@ -58,60 +58,91 @@ pub async fn run() -> Result<()> {
     );
 
     println!();
-    println!("{}", "MCP Configuration".bold().underline());
+    println!("{}", "Setup complete! Here's how to get started:".bold());
+    println!();
+
+    // Quick start
+    println!("{}", "1. Try it out".bold().underline());
+    println!();
+    println!(
+        "  {}",
+        r#"echo "Email me at john@example.com" | dam scan"#.cyan()
+    );
+    println!(
+        "  {}",
+        "Scans text for PII and replaces it with safe references.".dimmed()
+    );
+    println!();
+
+    // Two integration modes
+    println!("{}", "2. Connect to your AI agent".bold().underline());
+    println!();
+    println!("  DAM works in two modes — pick the one that fits your setup:");
+    println!();
+
+    // Mode A: HTTP proxy (primary)
+    println!(
+        "  {}  Run a local proxy that auto-redacts requests to OpenAI/Anthropic APIs.",
+        "Proxy mode".bold()
+    );
+    println!("  {}", "dam serve".cyan());
+    println!(
+        "  {}",
+        "Then point your client at DAM instead of the upstream API:".dimmed()
+    );
+    println!(
+        "  {}",
+        "export OPENAI_BASE_URL=http://127.0.0.1:7828/v1       # OpenAI, OpenRouter, etc.".dimmed()
+    );
+    println!(
+        "  {}",
+        "export ANTHROPIC_BASE_URL=http://127.0.0.1:7828       # Anthropic".dimmed()
+    );
+    println!();
+
+    // Mode B: MCP
+    println!(
+        "  {}  Add DAM as an MCP server so your agent can scan/resolve PII via tools.",
+        "MCP mode".bold()
+    );
+    println!(
+        "  {}",
+        "Add the snippet for your agent to its config file:".dimmed()
+    );
     println!();
 
     let dam_path = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "dam".to_string());
+    let escaped_path = dam_path.replace('\\', "\\\\");
 
-    // Claude Code
-    println!("{}", "Claude Code (.mcp.json):".bold());
     println!(
-        r#"{{
-  "mcpServers": {{
-    "dam": {{
-      "command": "{}",
-      "args": ["mcp"]
-    }}
-  }}
-}}"#,
-        dam_path.replace('\\', "\\\\")
+        "  {}",
+        "Claude Code  — add to .mcp.json in your project root:".bold()
+    );
+    println!(
+        r#"  {{ "mcpServers": {{ "dam": {{ "command": "{escaped_path}", "args": ["mcp"] }} }} }}"#
     );
     println!();
-
-    // Codex
-    println!("{}", "Codex (~/.codex/config.toml):".bold());
-    println!(
-        r#"[mcp_servers.dam]
-command = "{}"
-args = ["mcp"]"#,
-        dam_path.replace('\\', "\\\\")
-    );
+    println!("  {}", "Codex        — add to ~/.codex/config.toml:".bold());
+    println!(r#"  [mcp_servers.dam]"#);
+    println!(r#"  command = "{escaped_path}""#);
+    println!(r#"  args = ["mcp"]"#);
     println!();
 
-    // OpenClaw
-    println!("{}", "OpenClaw (mcp_config.json):".bold());
-    println!(
-        r#"{{
-  "mcpServers": {{
-    "dam": {{
-      "command": "{}",
-      "args": ["mcp"]
-    }}
-  }}
-}}"#,
-        dam_path.replace('\\', "\\\\")
-    );
-
+    // Useful commands
+    println!("{}", "3. Useful commands".bold().underline());
+    println!();
+    println!("  {}    Scan text for PII", "dam scan <text>".cyan());
+    println!("  {}       List vault entries", "dam vault list".cyan());
+    println!("  {} Decrypt and show a value", "dam vault show REF".cyan());
+    println!("  {}           Start HTTP proxy", "dam serve".cyan());
+    println!("  {}      View/update settings", "dam config show".cyan());
+    println!("  {}              View audit trail", "dam audit".cyan());
     println!();
     println!(
-        "{}",
-        "Copy the appropriate config snippet above into your agent's configuration file.".dimmed()
-    );
-    println!(
-        "{}",
-        "Then restart the agent to enable DAM protection.".dimmed()
+        "  {}",
+        "Run `dam --help` for the full command reference.".dimmed()
     );
 
     Ok(())

@@ -280,6 +280,25 @@ impl VaultStore {
         Ok(())
     }
 
+    /// Delete all entries and their associated consent rules from the vault.
+    pub fn clear_all(&self) -> DamResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DamError::Vault(e.to_string()))?;
+
+        let deleted: usize = conn
+            .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+            .map_err(|e| DamError::Database(e.to_string()))?;
+
+        conn.execute_batch("DELETE FROM consent; DELETE FROM entries;")
+            .map_err(|e| DamError::Database(e.to_string()))?;
+
+        AuditLog::record(&conn, "*", "system", "clear", "clear_all", true, None)?;
+
+        Ok(deleted)
+    }
+
     /// Get the total number of entries in the vault.
     pub fn entry_count(&self) -> DamResult<usize> {
         let conn = self
@@ -369,6 +388,7 @@ impl VaultStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consent::ConsentManager;
     use crate::encryption::generate_kek;
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -705,6 +725,55 @@ mod tests {
 
         let value = store.retrieve_pii(&ref1).unwrap();
         assert_eq!(value, "MORGA657054SM9IJ");
+    }
+
+    #[test]
+    fn clear_all_deletes_entries_and_consent() {
+        let (store, _path) = test_vault();
+
+        // Store some entries
+        let ref1 = store
+            .store_pii(PiiType::Email, "a@b.com", None, None)
+            .unwrap();
+        store
+            .store_pii(PiiType::Phone, "555-1234", None, None)
+            .unwrap();
+
+        // Add a consent rule
+        ConsentManager::grant_consent(store.conn(), &ref1.key(), "agent", "test", None).unwrap();
+
+        // Verify pre-conditions
+        assert_eq!(store.entry_count().unwrap(), 2);
+        let rules = ConsentManager::list_consent(store.conn(), None).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        // Clear
+        let deleted = store.clear_all().unwrap();
+        assert_eq!(deleted, 2);
+
+        // Entries gone
+        assert_eq!(store.entry_count().unwrap(), 0);
+        assert!(store.list_entries(None).unwrap().is_empty());
+
+        // Consent rules gone
+        let rules = ConsentManager::list_consent(store.conn(), None).unwrap();
+        assert!(rules.is_empty());
+
+        // Audit log preserved with clear_all record
+        let audit = AuditLog::query(store.conn(), None, 50).unwrap();
+        assert!(
+            audit
+                .iter()
+                .any(|e| e.action == "clear_all" && e.ref_id == "*")
+        );
+    }
+
+    #[test]
+    fn clear_all_empty_vault() {
+        let (store, _path) = test_vault();
+        let deleted = store.clear_all().unwrap();
+        assert_eq!(deleted, 0);
+        assert_eq!(store.entry_count().unwrap(), 0);
     }
 
     #[test]
