@@ -6,7 +6,9 @@ use super::{load_config, open_vault};
 
 pub async fn run(port: u16) -> Result<()> {
     let config = load_config()?;
+    tracing::debug!("config loaded");
     let vault = open_vault(&config)?;
+    tracing::debug!("vault opened");
 
     let state = AppState::new(&config, vault);
     let app = router(state);
