@@ -4,18 +4,36 @@ use dam_http::server::router;
 
 use super::{load_config, open_vault};
 
-pub async fn run(port: u16) -> Result<()> {
-    let config = load_config()?;
+pub async fn run(
+    port: u16,
+    anthropic_upstream: Option<String>,
+    openai_upstream: Option<String>,
+) -> Result<()> {
+    let mut config = load_config()?;
     tracing::debug!("config loaded");
     let vault = open_vault(&config)?;
     tracing::debug!("vault opened");
+
+    // Apply CLI overrides
+    if let Some(url) = anthropic_upstream {
+        config.server.anthropic_upstream_url = Some(url);
+    }
+    if let Some(url) = openai_upstream {
+        config.server.openai_upstream_url = Some(url);
+    }
 
     let state = AppState::new(&config, vault);
     let app = router(state);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     eprintln!("DAM proxy listening on http://{addr}");
-    eprintln!("Set ANTHROPIC_BASE_URL=http://{addr} to use with any Anthropic client");
+    eprintln!();
+    eprintln!("  Anthropic: set ANTHROPIC_BASE_URL=http://{addr}");
+    eprintln!("  OpenAI:    set OPENAI_BASE_URL=http://{addr}/v1");
+    eprintln!();
+    eprintln!("Routes:");
+    eprintln!("  POST /v1/messages           (Anthropic Messages API)");
+    eprintln!("  POST /v1/chat/completions   (OpenAI Chat Completions API)");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

@@ -61,11 +61,19 @@ enum Commands {
         action: commands::config::ConfigAction,
     },
 
-    /// Start the HTTP proxy (Anthropic API passthrough with PII redaction)
+    /// Start the HTTP proxy (Anthropic + OpenAI API passthrough with PII redaction)
     Serve {
         /// Port to listen on
         #[arg(long, default_value = "7828")]
         port: u16,
+
+        /// Override upstream Anthropic API base URL
+        #[arg(long)]
+        anthropic_upstream: Option<String>,
+
+        /// Override upstream OpenAI API base URL
+        #[arg(long)]
+        openai_upstream: Option<String>,
     },
 }
 
@@ -99,6 +107,10 @@ async fn main() -> Result<()> {
         Commands::Consent { action } => commands::consent::run(action).await,
         Commands::Audit { r#ref, limit } => commands::audit::run(r#ref, limit).await,
         Commands::Config { action } => commands::config::run(action).await,
-        Commands::Serve { port } => commands::serve::run(port).await,
+        Commands::Serve {
+            port,
+            anthropic_upstream,
+            openai_upstream,
+        } => commands::serve::run(port, anthropic_upstream, openai_upstream).await,
     }
 }

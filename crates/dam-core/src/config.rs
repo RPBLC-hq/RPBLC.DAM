@@ -168,6 +168,12 @@ pub struct ServerConfig {
     pub http_port: u16,
     /// API bearer token for HTTP API.
     pub api_token: Option<String>,
+    /// Upstream Anthropic API base URL (defaults to `https://api.anthropic.com`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic_upstream_url: Option<String>,
+    /// Upstream OpenAI API base URL (defaults to `https://api.openai.com`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_upstream_url: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -175,6 +181,8 @@ impl Default for ServerConfig {
         Self {
             http_port: 7828,
             api_token: None,
+            anthropic_upstream_url: None,
+            openai_upstream_url: None,
         }
     }
 }
