@@ -24,6 +24,13 @@ pub enum VaultAction {
         /// Reference key, e.g. "email:a3f71bc9"
         ref_id: String,
     },
+
+    /// Delete ALL vault entries and consent rules
+    Clear {
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 
 pub async fn run(action: VaultAction) -> Result<()> {
@@ -68,15 +75,38 @@ pub async fn run(action: VaultAction) -> Result<()> {
         }
 
         VaultAction::Show { ref_id } => {
-            let pii_ref = PiiRef::from_key(&ref_id)?;
+            let key = super::strip_brackets(&ref_id);
+            let pii_ref = PiiRef::from_key(key)?;
             let value = vault.retrieve_pii(&pii_ref)?;
-            println!("{}: {}", ref_id.yellow(), value);
+            println!("{}: {}", key.yellow(), value);
         }
 
         VaultAction::Delete { ref_id } => {
-            let pii_ref = PiiRef::from_key(&ref_id)?;
+            let key = super::strip_brackets(&ref_id);
+            let pii_ref = PiiRef::from_key(key)?;
             vault.delete_entry(&pii_ref)?;
-            println!("{} Deleted [{}]", "✓".green(), ref_id);
+            println!("{} Deleted [{}]", "✓".green(), key);
+        }
+
+        VaultAction::Clear { yes } => {
+            if !yes {
+                use std::io::IsTerminal;
+                if !std::io::stdin().is_terminal() {
+                    anyhow::bail!(
+                        "Cannot confirm interactively. Use --yes to skip confirmation."
+                    );
+                }
+                let confirm = dialoguer::Confirm::new()
+                    .with_prompt("Delete ALL vault entries and consent rules?")
+                    .default(false)
+                    .interact()?;
+                if !confirm {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            }
+            let deleted = vault.clear_all()?;
+            println!("{} Cleared vault ({deleted} entries removed)", "✓".green());
         }
     }
 

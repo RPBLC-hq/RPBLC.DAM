@@ -44,6 +44,7 @@ pub async fn run(action: ConsentAction) -> Result<()> {
 
     match action {
         ConsentAction::List { r#ref } => {
+            let r#ref = r#ref.map(|s| super::strip_brackets(&s).to_owned());
             let rules = ConsentManager::list_consent(vault.conn(), r#ref.as_deref())?;
 
             if rules.is_empty() {
@@ -96,6 +97,7 @@ pub async fn run(action: ConsentAction) -> Result<()> {
             purpose,
             force,
         } => {
+            let ref_id = super::strip_brackets(&ref_id).to_owned();
             // Validate inputs
             if ref_id.trim().is_empty() {
                 anyhow::bail!("Reference ID cannot be empty");
@@ -138,6 +140,7 @@ pub async fn run(action: ConsentAction) -> Result<()> {
             accessor,
             purpose,
         } => {
+            let ref_id = super::strip_brackets(&ref_id).to_owned();
             // Validate inputs
             if ref_id.trim().is_empty() {
                 anyhow::bail!("Reference ID cannot be empty");

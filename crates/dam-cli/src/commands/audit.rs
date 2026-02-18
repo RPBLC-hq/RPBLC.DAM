@@ -6,6 +6,7 @@ pub async fn run(ref_filter: Option<String>, limit: usize) -> Result<()> {
     let config = super::load_config()?;
     let vault = super::open_vault(&config)?;
 
+    let ref_filter = ref_filter.map(|s| super::strip_brackets(&s).to_owned());
     let entries = AuditLog::query(vault.conn(), ref_filter.as_deref(), limit)?;
 
     if entries.is_empty() {

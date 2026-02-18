@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/alexyboyer/RPBLC.DAM/actions/workflows/ci.yml"><img src="https://github.com/alexyboyer/RPBLC.DAM/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0"></a>
-  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.85%2B-orange.svg" alt="Rust 1.85+"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.88%2B-orange.svg" alt="Rust 1.88+"></a>
 </p>
 
 <p align="center">
@@ -118,8 +118,9 @@ This creates your encrypted vault, config, and stores a 256-bit master key in yo
 ### Start the proxy
 
 ```bash
-dam serve                                         # listen on 127.0.0.1:7828
-export ANTHROPIC_BASE_URL=http://127.0.0.1:7828   # point your client at it
+dam serve                                           # listen on 127.0.0.1:7828
+export OPENAI_BASE_URL=http://127.0.0.1:7828/v1     # OpenAI, OpenRouter, xAI, etc.
+export ANTHROPIC_BASE_URL=http://127.0.0.1:7828      # Anthropic
 ```
 
 That's it. All messages now flow through DAM. User messages are scanned and redacted before reaching the LLM. Responses are resolved back to real values before reaching you.
@@ -127,6 +128,16 @@ That's it. All messages now flow through DAM. User messages are scanned and reda
 ### Try it with curl
 
 ```bash
+# OpenAI
+curl http://127.0.0.1:7828/v1/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "gpt-4o",
+    "messages": [{"role": "user", "content": "Email john@acme.com about the meeting"}]
+  }'
+
+# Anthropic
 curl http://127.0.0.1:7828/v1/messages \
   -H "x-api-key: $ANTHROPIC_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
@@ -197,14 +208,14 @@ dam serve
 ```
 
 The proxy:
-- Intercepts `POST /v1/messages` requests
+- Intercepts `POST /v1/chat/completions` (OpenAI) and `POST /v1/messages` (Anthropic) requests
 - Scans **user** messages for PII, replaces with vault references
-- Forwards the redacted request to `https://api.anthropic.com`
+- Forwards redacted requests to the upstream provider
 - Resolves references in the response before returning to the client
 - Handles both streaming (SSE) and non-streaming responses
-- Passes through `x-api-key`, `authorization`, and `anthropic-version` headers
+- Passes through `authorization`, `x-api-key`, and `anthropic-version` headers
 
-Works with `curl`, Python SDK, TypeScript SDK — anything that calls the Anthropic Messages API.
+Works with `curl`, Python SDK, TypeScript SDK — anything that calls the OpenAI or Anthropic API.
 
 ### MCP Server (supplementary agent tools)
 
@@ -402,8 +413,9 @@ dam serve [--port PORT]                           Start HTTP proxy (default: 782
 dam mcp                                           Start MCP server (stdio)
 dam scan [TEXT]                                    Scan text for PII (stdin if omitted)
 dam vault list [--type TYPE]                       List vault entries
-dam vault show REF_ID                              Decrypt and display entry
-dam vault delete REF_ID                            Delete entry
+dam vault show REF                                 Decrypt and display entry
+dam vault delete REF                               Delete entry
+dam vault clear                                    Delete ALL entries (with confirmation)
 dam consent list [--ref REF_ID]                    List consent rules
 dam consent grant REF_ID ACCESSOR PURPOSE          Grant consent
 dam consent revoke REF_ID ACCESSOR PURPOSE         Revoke consent
@@ -441,7 +453,7 @@ cargo fmt --check                # format check
 - [ ] NER-based detection (names, addresses, organizations)
 - [ ] Vault cross-reference (flag values similar to known PII)
 - [ ] Derived operations (compare, compute on encrypted values)
-- [ ] Multi-provider proxy support (OpenAI, Google, etc.)
+- [ ] Multi-provider proxy support (Google, etc.)
 - [ ] Web dashboard for vault and consent management
 - [ ] Team/org vault with shared consent policies
 

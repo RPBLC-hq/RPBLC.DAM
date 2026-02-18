@@ -16,8 +16,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `docs/ARCHITECTURE.md` — deep design documentation covering envelope encryption, consent resolution, audit hash chain, detection pipeline, streaming SSE resolution, threat model, and crate dependency graph
 - "Who Is This For?" section in README with developer, compliance, and solo developer personas
 - `--verbose` / `-v` CLI flag for debug-level tracing output on `serve`, `scan`, and all non-MCP commands
+- Improved `dam init` post-setup instructions — quick-start example, proxy-first integration flow, and a command reference
+- `dam vault clear` command — delete all vault entries and consent rules (with interactive confirmation or `--yes` flag)
 - "Adding a New PII Type" step-by-step guide in `docs/ARCHITECTURE.md`
 - Rustdoc comments on internal normalization helpers (`url_decode`, `decode_base64_segments`, `base64_decode`)
+
+### Fixed
+
+- CLI commands (`vault show`, `vault delete`, `consent grant`, `audit --ref`) now accept bracketed references like `[email:a3f71bc9]` in addition to bare `email:a3f71bc9`
+- Rust version badge corrected from 1.85+ to 1.88+
+- README quick start updated with OpenAI curl example and both provider base URLs
 
 ## [0.1.0] — 2026-02-16
 

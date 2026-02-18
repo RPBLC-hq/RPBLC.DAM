@@ -280,6 +280,25 @@ impl VaultStore {
         Ok(())
     }
 
+    /// Delete all entries and their associated consent rules from the vault.
+    pub fn clear_all(&self) -> DamResult<usize> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DamError::Vault(e.to_string()))?;
+
+        let deleted: usize = conn
+            .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+            .map_err(|e| DamError::Database(e.to_string()))?;
+
+        conn.execute_batch("DELETE FROM consent; DELETE FROM entries;")
+            .map_err(|e| DamError::Database(e.to_string()))?;
+
+        AuditLog::record(&conn, "*", "system", "clear", "clear_all", true, None)?;
+
+        Ok(deleted)
+    }
+
     /// Get the total number of entries in the vault.
     pub fn entry_count(&self) -> DamResult<usize> {
         let conn = self

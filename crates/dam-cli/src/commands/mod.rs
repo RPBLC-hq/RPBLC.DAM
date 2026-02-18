@@ -12,6 +12,13 @@ use dam_core::config::{DamConfig, KeySource};
 use dam_vault::{KeychainManager, VaultStore};
 use std::sync::Arc;
 
+/// Accept both `email:a3f71bc9` and `[email:a3f71bc9]` from the user.
+pub fn strip_brackets(s: &str) -> &str {
+    s.strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(s)
+}
+
 /// Load config from the default path or return defaults.
 pub fn load_config() -> Result<DamConfig> {
     let config_path = DamConfig::default_config_path();
