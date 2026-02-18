@@ -140,16 +140,12 @@ fn redact_chat_message(
 
 /// Scan user and system messages in an OpenAI ChatRequest for PII.
 ///
-/// Scans model field, user messages, system messages, and all extra fields.
+/// Scans user messages, system messages, and all extra fields.
 /// Assistant and tool messages are skipped.
 pub fn redact_chat_request(
     pipeline: &DetectionPipeline,
     request: &mut ChatRequest,
 ) -> Result<(), dam_core::DamError> {
-    // Scan model field
-    let result = pipeline.scan(&request.model, Some("http-proxy"))?;
-    request.model = result.redacted_text;
-
     // Scan all extra fields
     for value in request.extra.values_mut() {
         scan_json_value(pipeline, value)?;

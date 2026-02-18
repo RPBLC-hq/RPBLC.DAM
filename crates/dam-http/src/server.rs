@@ -314,7 +314,6 @@ impl AnthropicSseState {
 /// Headers to forward from the client to OpenAI-compatible APIs.
 const OPENAI_FORWARD_HEADERS: &[&str] = &[
     "authorization",
-    "content-type",
     "openai-organization",
     "openai-project",
     "x-request-id",
@@ -330,8 +329,10 @@ async fn handle_chat_completions(
         serde_json::from_str(&body).map_err(|e| AppError::BadRequest(e.to_string()))?;
 
     let is_streaming = request.stream.unwrap_or(false);
+    tracing::debug!(model = %request.model, streaming = is_streaming, "incoming openai request");
 
     redact_chat_request(&state.pipeline, &mut request)?;
+    tracing::debug!("openai request redacted");
 
     let upstream_url = format!("{}/v1/chat/completions", state.openai_upstream_url);
     let mut upstream_req = state.client.post(&upstream_url);
@@ -349,6 +350,8 @@ async fn handle_chat_completions(
     let upstream_resp = upstream_req.body(upstream_body).send().await?;
 
     let status = upstream_resp.status();
+    tracing::debug!(status = %status, "openai upstream response");
+
     if !status.is_success() {
         return pass_through_error(upstream_resp).await;
     }
@@ -414,11 +417,16 @@ async fn handle_openai_streaming(
             sse_state.buf.raw_buf.clear();
         }
 
-        // Flush remaining resolver buffers
-        for (_, mut resolver) in sse_state.resolvers.drain() {
+        // Flush remaining resolver buffers as SSE-formatted events
+        for (idx, mut resolver) in sse_state.resolvers.drain() {
             let remaining = resolver.finish();
             if !remaining.is_empty() {
-                yield Ok::<_, std::io::Error>(axum::body::Bytes::from(remaining));
+                let flush_json = serde_json::json!({
+                    "id": "", "object": "chat.completion.chunk",
+                    "choices": [{"index": idx, "delta": {"content": remaining}, "finish_reason": null}]
+                });
+                let event = format!("data: {flush_json}\n\n");
+                yield Ok::<_, std::io::Error>(axum::body::Bytes::from(event));
             }
         }
     };
@@ -480,7 +488,12 @@ impl OpenAiSseState {
             for (_, mut resolver) in self.resolvers.drain() {
                 let remaining = resolver.finish();
                 if !remaining.is_empty() {
-                    outputs.push(remaining.into_bytes());
+                    // Wrap flushed text in a synthetic SSE data event
+                    let flush_json = serde_json::json!({
+                        "id": "", "object": "chat.completion.chunk",
+                        "choices": [{"index": 0, "delta": {"content": remaining}, "finish_reason": null}]
+                    });
+                    outputs.push(format!("data: {flush_json}\n\n").into_bytes());
                 }
             }
             outputs.push(event_bytes.to_vec());

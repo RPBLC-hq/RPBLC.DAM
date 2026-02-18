@@ -65,6 +65,11 @@ pub enum ContentPart {
         extra: HashMap<String, serde_json::Value>,
     },
     /// Forward-compatible catch-all for unknown part types.
+    ///
+    /// TODO: `#[serde(other)]` on a unit variant discards all fields from unknown
+    /// part types (e.g. future `"audio"`, `"input_audio"`), causing data loss on
+    /// roundtrip. Replace with an untagged `Value` catch-all when serde support
+    /// improves, or deserialize as `Vec<Value>` and extract known types manually.
     #[serde(other)]
     Other,
 }
