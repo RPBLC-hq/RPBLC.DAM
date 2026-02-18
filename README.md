@@ -1,5 +1,6 @@
 <p align="center">
   <h1 align="center">DAM</h1>
+  <h3 align="center">Data Access Mediator</h3>
   <p align="center"><strong>The PII firewall for AI agents.</strong></p>
   <p align="center">
     Your data never leaves your machine. The LLM never sees it. Every access is logged.
