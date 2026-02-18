@@ -16,7 +16,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `docs/ARCHITECTURE.md` — deep design documentation covering envelope encryption, consent resolution, audit hash chain, detection pipeline, streaming SSE resolution, threat model, and crate dependency graph
 - "Who Is This For?" section in README with developer, compliance, and solo developer personas
 - `--verbose` / `-v` CLI flag for debug-level tracing output on `serve`, `scan`, and all non-MCP commands
-- Code coverage reporting via `cargo-tarpaulin` in CI with Codecov badge in README
 - "Adding a New PII Type" step-by-step guide in `docs/ARCHITECTURE.md`
 - Rustdoc comments on internal normalization helpers (`url_decode`, `decode_base64_segments`, `base64_decode`)
 

@@ -91,7 +91,7 @@ No code changes needed. Point your API client at DAM instead of the provider, an
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) 1.85+ (edition 2024)
+- [Rust](https://rustup.rs/) 1.88+ (edition 2024)
 - A C compiler (for bundled SQLite)
   - **Windows**: MSVC via Visual Studio Build Tools
   - **macOS**: `xcode-select --install`
