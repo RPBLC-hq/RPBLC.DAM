@@ -44,7 +44,10 @@ pub async fn run(action: ConsentAction) -> Result<()> {
 
     match action {
         ConsentAction::List { r#ref } => {
-            let r#ref = r#ref.map(|s| super::strip_brackets(&s).to_owned());
+            // Normalize: parse as PiiRef to strip brackets, then use key form
+            let r#ref = r#ref
+                .map(|s| s.parse::<PiiRef>().map(|r| r.key()))
+                .transpose()?;
             let rules = ConsentManager::list_consent(vault.conn(), r#ref.as_deref())?;
 
             if rules.is_empty() {
@@ -97,7 +100,6 @@ pub async fn run(action: ConsentAction) -> Result<()> {
             purpose,
             force,
         } => {
-            let ref_id = super::strip_brackets(&ref_id).to_owned();
             // Validate inputs
             if ref_id.trim().is_empty() {
                 anyhow::bail!("Reference ID cannot be empty");
@@ -109,28 +111,23 @@ pub async fn run(action: ConsentAction) -> Result<()> {
                 anyhow::bail!("Purpose cannot be empty");
             }
 
+            // Parse ref (accepts both bracketed and bare forms)
+            let pii_ref: PiiRef = ref_id.parse()?;
+            let key = pii_ref.key();
+
             // Check if reference exists in vault (unless --force is used)
-            if !force {
-                match PiiRef::from_key(&ref_id) {
-                    Ok(pii_ref) => {
-                        if vault.retrieve_pii(&pii_ref).is_err() {
-                            anyhow::bail!(
-                                "Reference [{ref_id}] not found in vault. Use --force to grant consent anyway."
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        anyhow::bail!("Invalid reference ID format: {ref_id}");
-                    }
-                }
+            if !force && vault.retrieve_pii(&pii_ref).is_err() {
+                anyhow::bail!(
+                    "Reference [{key}] not found in vault. Use --force to grant consent anyway."
+                );
             }
 
-            ConsentManager::grant_consent(vault.conn(), &ref_id, &accessor, &purpose, None)?;
+            ConsentManager::grant_consent(vault.conn(), &key, &accessor, &purpose, None)?;
             println!(
                 "{} Granted: {} can access [{}] for '{}'",
                 "✓".green(),
                 accessor,
-                ref_id,
+                key,
                 purpose
             );
         }
@@ -140,7 +137,6 @@ pub async fn run(action: ConsentAction) -> Result<()> {
             accessor,
             purpose,
         } => {
-            let ref_id = super::strip_brackets(&ref_id).to_owned();
             // Validate inputs
             if ref_id.trim().is_empty() {
                 anyhow::bail!("Reference ID cannot be empty");
@@ -152,12 +148,14 @@ pub async fn run(action: ConsentAction) -> Result<()> {
                 anyhow::bail!("Purpose cannot be empty");
             }
 
-            ConsentManager::revoke_consent(vault.conn(), &ref_id, &accessor, &purpose)?;
+            let pii_ref: PiiRef = ref_id.parse()?;
+            let key = pii_ref.key();
+            ConsentManager::revoke_consent(vault.conn(), &key, &accessor, &purpose)?;
             println!(
                 "{} Revoked: {} can no longer access [{}] for '{}'",
                 "✓".green(),
                 accessor,
-                ref_id,
+                key,
                 purpose
             );
         }

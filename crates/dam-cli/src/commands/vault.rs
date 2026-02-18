@@ -75,17 +75,15 @@ pub async fn run(action: VaultAction) -> Result<()> {
         }
 
         VaultAction::Show { ref_id } => {
-            let key = super::strip_brackets(&ref_id);
-            let pii_ref = PiiRef::from_key(key)?;
+            let pii_ref: PiiRef = ref_id.parse()?;
             let value = vault.retrieve_pii(&pii_ref)?;
-            println!("{}: {}", key.yellow(), value);
+            println!("{}: {}", pii_ref.key().yellow(), value);
         }
 
         VaultAction::Delete { ref_id } => {
-            let key = super::strip_brackets(&ref_id);
-            let pii_ref = PiiRef::from_key(key)?;
+            let pii_ref: PiiRef = ref_id.parse()?;
             vault.delete_entry(&pii_ref)?;
-            println!("{} Deleted [{}]", "✓".green(), key);
+            println!("{} Deleted [{}]", "✓".green(), pii_ref.key());
         }
 
         VaultAction::Clear { yes } => {
