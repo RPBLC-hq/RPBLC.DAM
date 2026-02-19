@@ -96,7 +96,7 @@ async fn handle_messages(
     let is_streaming = request.stream.unwrap_or(false);
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming request");
 
-    redact_request(&state.pipeline, &mut request)?;
+    redact_request(&state.pipeline, &state.vault, &mut request)?;
     tracing::debug!("request redacted");
 
     let upstream_url = format!("{}/v1/messages", state.anthropic_upstream_url);
@@ -331,7 +331,7 @@ async fn handle_chat_completions(
     let is_streaming = request.stream.unwrap_or(false);
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming openai request");
 
-    redact_chat_request(&state.pipeline, &mut request)?;
+    redact_chat_request(&state.pipeline, &state.vault, &mut request)?;
     tracing::debug!("openai request redacted");
 
     let upstream_url = format!("{}/v1/chat/completions", state.openai_upstream_url);

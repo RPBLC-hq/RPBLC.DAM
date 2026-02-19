@@ -68,6 +68,10 @@ Keep these files up to date when making changes:
 - **SECURITY.md** — update scope if new security-sensitive components are added (e.g., new encryption schemes, auth mechanisms, network-exposed endpoints).
 - **CONTRIBUTING.md** — update if build steps, PR process, or code conventions change.
 
+## Workflow
+
+- Before creating a PR, pull the latest `main` and rebase your branch to avoid merge conflicts.
+
 ## Conventions
 
 - Error type: `DamError` / `DamResult<T>` in dam-core

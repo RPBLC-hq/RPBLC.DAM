@@ -5,6 +5,34 @@ use comfy_table::{Cell, Table};
 use dam_core::PiiRef;
 use dam_vault::ConsentManager;
 
+/// Parse a TTL string like "30m", "2h", "7d" into seconds.
+fn parse_ttl(ttl: &str) -> Result<i64> {
+    let ttl = ttl.trim();
+    if ttl.is_empty() {
+        anyhow::bail!("TTL cannot be empty");
+    }
+
+    let (num_str, unit) = ttl.split_at(ttl.len() - 1);
+    let num: i64 = num_str.parse().map_err(|_| {
+        anyhow::anyhow!("Invalid TTL format: {ttl:?}. Use e.g. \"30m\", \"1h\", \"7d\"")
+    })?;
+
+    if num <= 0 {
+        anyhow::bail!("TTL must be positive, got {ttl:?}");
+    }
+
+    let secs = match unit {
+        "m" => num * 60,
+        "h" => num * 3600,
+        "d" => num * 86400,
+        _ => anyhow::bail!(
+            "Unknown TTL unit {unit:?} in {ttl:?}. Use 'm' (minutes), 'h' (hours), or 'd' (days)"
+        ),
+    };
+
+    Ok(secs)
+}
+
 #[derive(Subcommand)]
 pub enum ConsentAction {
     /// List consent rules
@@ -22,6 +50,9 @@ pub enum ConsentAction {
         accessor: String,
         /// Purpose, e.g. "send_email", "display", or "*" for all
         purpose: String,
+        /// Duration for consent (e.g. "30m", "1h", "24h", "7d")
+        #[arg(long)]
+        ttl: String,
         /// Skip validation that reference exists (for pre-granting)
         #[arg(long)]
         force: bool,
@@ -98,6 +129,7 @@ pub async fn run(action: ConsentAction) -> Result<()> {
             ref_id,
             accessor,
             purpose,
+            ttl,
             force,
         } => {
             // Validate inputs
@@ -122,13 +154,30 @@ pub async fn run(action: ConsentAction) -> Result<()> {
                 );
             }
 
-            ConsentManager::grant_consent(vault.conn(), &key, &accessor, &purpose, None)?;
+            let duration_secs = parse_ttl(&ttl)?;
+            let expires_at = chrono::Utc::now().timestamp() + duration_secs;
+
+            ConsentManager::grant_consent(
+                vault.conn(),
+                &key,
+                &accessor,
+                &purpose,
+                Some(expires_at),
+            )?;
+
+            let expires_str = chrono::DateTime::from_timestamp(expires_at, 0)
+                .map(|dt: chrono::DateTime<chrono::Utc>| {
+                    dt.format("%Y-%m-%d %H:%M UTC").to_string()
+                })
+                .unwrap_or_else(|| expires_at.to_string());
+
             println!(
-                "{} Granted: {} can access [{}] for '{}'",
+                "{} Granted: {} can access [{}] for '{}' (expires {})",
                 "✓".green(),
                 accessor,
                 key,
-                purpose
+                purpose,
+                expires_str
             );
         }
 
@@ -162,4 +211,37 @@ pub async fn run(action: ConsentAction) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ttl_parse_minutes() {
+        assert_eq!(parse_ttl("30m").unwrap(), 1800);
+        assert_eq!(parse_ttl("1m").unwrap(), 60);
+    }
+
+    #[test]
+    fn ttl_parse_hours() {
+        assert_eq!(parse_ttl("1h").unwrap(), 3600);
+        assert_eq!(parse_ttl("2h").unwrap(), 7200);
+        assert_eq!(parse_ttl("24h").unwrap(), 86400);
+    }
+
+    #[test]
+    fn ttl_parse_days() {
+        assert_eq!(parse_ttl("7d").unwrap(), 604800);
+        assert_eq!(parse_ttl("1d").unwrap(), 86400);
+    }
+
+    #[test]
+    fn ttl_invalid_rejected() {
+        assert!(parse_ttl("abc").is_err());
+        assert!(parse_ttl("0m").is_err());
+        assert!(parse_ttl("").is_err());
+        assert!(parse_ttl("-1h").is_err());
+        assert!(parse_ttl("10x").is_err());
+    }
 }

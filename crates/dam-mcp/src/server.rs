@@ -8,6 +8,32 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{Error as McpError, ServerHandler, tool};
 use std::sync::Arc;
 
+/// Parse a TTL string like "30m", "2h", "7d" into seconds.
+fn parse_mcp_ttl(ttl: &str) -> Result<i64, String> {
+    let ttl = ttl.trim();
+    if ttl.is_empty() {
+        return Err("TTL cannot be empty".to_string());
+    }
+
+    let (num_str, unit) = ttl.split_at(ttl.len() - 1);
+    let num: i64 = num_str
+        .parse()
+        .map_err(|_| format!("Invalid TTL format: {ttl:?}. Use e.g. \"30m\", \"1h\", \"7d\""))?;
+
+    if num <= 0 {
+        return Err(format!("TTL must be positive, got {ttl:?}"));
+    }
+
+    match unit {
+        "m" => Ok(num * 60),
+        "h" => Ok(num * 3600),
+        "d" => Ok(num * 86400),
+        _ => Err(format!(
+            "Unknown TTL unit {unit:?} in {ttl:?}. Use 'm' (minutes), 'h' (hours), or 'd' (days)"
+        )),
+    }
+}
+
 const SERVER_INSTRUCTIONS: &str = "\
 DAM protects PII in conversations. \
 ALWAYS use dam_scan on user input and external data before processing. \
@@ -113,7 +139,7 @@ impl DamMcpServer {
     /// Grant or revoke consent for a tool to access a PII reference.
     #[tool(
         name = "dam_consent",
-        description = "Grant or revoke consent for a tool to access a PII reference. Use this when dam_resolve returns a consent error."
+        description = "Grant or revoke consent for a tool to access a PII reference. Use this when dam_resolve returns a consent error. When granting, a ttl (duration) is required, e.g. '30m', '1h', '24h', '7d'."
     )]
     fn consent(
         &self,
@@ -121,17 +147,29 @@ impl DamMcpServer {
         #[tool(param)] accessor: String,
         #[tool(param)] purpose: String,
         #[tool(param)] action: String,
+        #[tool(param)] ttl: Option<String>,
     ) -> Result<CallToolResult, McpError> {
         let to_err = |e: dam_core::DamError| McpError::internal_error(e.to_string(), None);
 
         match action.as_str() {
             "grant" => {
+                let ttl_str = ttl.as_deref().unwrap_or("").trim();
+                if ttl_str.is_empty() {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "A 'ttl' parameter is required when granting consent (e.g. \"1h\", \"24h\", \"7d\"). Infinite consent is not allowed.".to_string(),
+                    )]));
+                }
+
+                let duration_secs = parse_mcp_ttl(ttl_str)
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                let expires_at = chrono::Utc::now().timestamp() + duration_secs;
+
                 ConsentManager::grant_consent(
                     self.vault.conn(),
                     &ref_id,
                     &accessor,
                     &purpose,
-                    None,
+                    Some(expires_at),
                 )
                 .map_err(to_err)?;
 
@@ -142,12 +180,18 @@ impl DamMcpServer {
                     &purpose,
                     "consent_grant",
                     true,
-                    None,
+                    Some(&format!("ttl={ttl_str}")),
                 )
                 .map_err(to_err)?;
 
+                let expires_str = chrono::DateTime::from_timestamp(expires_at, 0)
+                    .map(|dt: chrono::DateTime<chrono::Utc>| {
+                        dt.format("%Y-%m-%d %H:%M UTC").to_string()
+                    })
+                    .unwrap_or_else(|| expires_at.to_string());
+
                 Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Consent granted: {accessor} can now access [{ref_id}] for purpose '{purpose}'."
+                    "Consent granted: {accessor} can now access [{ref_id}] for purpose '{purpose}' (expires {expires_str})."
                 ))]))
             }
             "revoke" => {
