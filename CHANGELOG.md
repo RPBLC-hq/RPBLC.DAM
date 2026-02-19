@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Consent-aware proxy redaction** — PII with granted consent now passes through to the LLM un-redacted; without consent, PII is still redacted as before
+- **Mandatory consent duration** — `--ttl` flag required on `dam consent grant` and MCP `dam_consent` tool (no infinite consent allowed); accepts durations like `30m`, `1h`, `24h`, `7d`
 - **OpenAI Chat Completions proxy** (`POST /v1/chat/completions`) — PII redaction and streaming SSE resolution for OpenAI-compatible APIs (OpenAI, OpenRouter, xAI, Ollama, etc.)
 - Configurable upstream URLs for Anthropic and OpenAI via config or CLI (`--anthropic-upstream`, `--openai-upstream`)
 - Release binary workflow — cross-compiled binaries for Linux, macOS (ARM + Intel), and Windows published to GitHub Releases on tag push, with SHA-256 checksums
