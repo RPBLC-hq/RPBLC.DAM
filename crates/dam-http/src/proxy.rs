@@ -1179,4 +1179,62 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn consent_ttl_expires_in_real_time() {
+        let (vault, pipeline) = test_setup();
+        let pii_ref = vault
+            .store_pii(PiiType::Email, "ttltest@test.com", None, None)
+            .unwrap();
+        let ref_key = pii_ref.key();
+
+        // Grant consent that expires in 2 seconds
+        let expires_at = chrono::Utc::now().timestamp() + 2;
+        ConsentManager::grant_consent(vault.conn(), &ref_key, "http-proxy", "*", Some(expires_at))
+            .unwrap();
+
+        // Immediately: should pass through
+        let mut req1 = MessagesRequest {
+            model: "test".into(),
+            messages: vec![Message {
+                role: "user".into(),
+                content: MessageContent::Text("Email ttltest@test.com".into()),
+            }],
+            max_tokens: Some(100),
+            stream: None,
+            system: None,
+            extra: HashMap::new(),
+        };
+        redact_request(&pipeline, &vault, &mut req1).unwrap();
+        if let MessageContent::Text(ref text) = req1.messages[0].content {
+            assert!(
+                text.contains("ttltest@test.com"),
+                "Should pass through before TTL expires, got: {text}"
+            );
+        }
+
+        // Wait for expiration
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        // After expiry: should be redacted
+        let mut req2 = MessagesRequest {
+            model: "test".into(),
+            messages: vec![Message {
+                role: "user".into(),
+                content: MessageContent::Text("Email ttltest@test.com".into()),
+            }],
+            max_tokens: Some(100),
+            stream: None,
+            system: None,
+            extra: HashMap::new(),
+        };
+        redact_request(&pipeline, &vault, &mut req2).unwrap();
+        if let MessageContent::Text(ref text) = req2.messages[0].content {
+            assert!(
+                !text.contains("ttltest@test.com"),
+                "Should be redacted after TTL expires, got: {text}"
+            );
+            assert!(text.contains("[email:"));
+        }
+    }
 }
