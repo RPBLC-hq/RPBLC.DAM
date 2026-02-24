@@ -14,8 +14,9 @@ use crate::error::AppError;
 use crate::openai::{ChatChunk, ChatRequest, ChatResponse};
 use crate::proxy::{
     AppState, redact_chat_request, redact_request, redact_responses_request, resolve_chat_response,
-    resolve_response, resolve_responses_response,
+    resolve_json_value, resolve_response, resolve_responses_response,
 };
+use crate::resolve::resolve_text;
 use crate::responses::{ResponsesRequest, ResponsesResponse, ResponsesStreamDelta};
 use crate::streaming::StreamingResolver;
 
@@ -669,12 +670,18 @@ async fn handle_responses_streaming(
             sse_state.buf.raw_buf.clear();
         }
 
-        // Flush remaining resolver buffers
-        for (_, mut resolver) in sse_state.resolvers.drain() {
+        // Flush remaining resolver buffers as properly framed SSE events
+        for (key, mut resolver) in sse_state.resolvers.drain() {
             let remaining = resolver.finish();
-            if !remaining.is_empty() {
-                yield Ok::<_, std::io::Error>(axum::body::Bytes::from(remaining));
-            }
+            if !remaining.is_empty()
+                && let Ok(flush_data) = serde_json::to_string(&serde_json::json!({
+                    "delta": remaining,
+                    "output_index": key.0,
+                    "content_index": key.1,
+                })) {
+                    let event = format!("event: response.output_text.delta\ndata: {flush_data}\n\n");
+                    yield Ok::<_, std::io::Error>(axum::body::Bytes::from(event));
+                }
         }
     };
 
@@ -733,21 +740,21 @@ impl ResponsesSseState {
 
         match event_type {
             "response.output_text.delta" | "response.function_call_arguments.delta" => {
-                self.handle_delta(event_type, data)
+                self.handle_delta(event_type, data, event_bytes)
             }
-            "response.output_text.done" => self.handle_text_done(data),
+            "response.output_text.done" => self.handle_text_done(data, event_bytes),
             "response.completed" => self.handle_completed(event_bytes),
             _ => event_bytes.to_vec(),
         }
     }
 
-    fn handle_delta(&mut self, event_type: &str, data: &str) -> Vec<u8> {
+    fn handle_delta(&mut self, event_type: &str, data: &str, original: &[u8]) -> Vec<u8> {
         let Ok(delta) = serde_json::from_str::<ResponsesStreamDelta>(data) else {
-            return self.format_event(event_type, data);
+            return original.to_vec();
         };
 
         let Some(ref text) = delta.delta else {
-            return self.format_event(event_type, data);
+            return original.to_vec();
         };
 
         let key = (
@@ -768,34 +775,44 @@ impl ResponsesSseState {
         self.format_event(event_type, &new_data)
     }
 
-    fn handle_text_done(&mut self, data: &str) -> Vec<u8> {
+    fn handle_text_done(&mut self, data: &str, original: &[u8]) -> Vec<u8> {
         // Flush the resolver for this content block
         let mut output = Vec::new();
 
-        if let Ok(delta) = serde_json::from_str::<ResponsesStreamDelta>(data) {
-            let key = (
-                delta.output_index.unwrap_or(0),
-                delta.content_index.unwrap_or(0),
-            );
-            if let Some(mut resolver) = self.resolvers.remove(&key) {
-                let remaining = resolver.finish();
-                if !remaining.is_empty() {
-                    // Emit a synthetic text delta with the remaining text
-                    let mut flush_delta = delta.clone();
-                    flush_delta.delta = Some(remaining);
-                    if let Ok(flush_data) = serde_json::to_string(&flush_delta) {
-                        output.extend_from_slice(
-                            self.format_event("response.output_text.delta", &flush_data)
-                                .as_slice(),
-                        );
-                    }
+        let Ok(delta) = serde_json::from_str::<ResponsesStreamDelta>(data) else {
+            return original.to_vec();
+        };
+
+        let key = (
+            delta.output_index.unwrap_or(0),
+            delta.content_index.unwrap_or(0),
+        );
+        if let Some(mut resolver) = self.resolvers.remove(&key) {
+            let remaining = resolver.finish();
+            if !remaining.is_empty() {
+                // Emit a synthetic text delta with the remaining text
+                let mut flush_delta = delta.clone();
+                flush_delta.delta = Some(remaining);
+                if let Ok(flush_data) = serde_json::to_string(&flush_delta) {
+                    output.extend_from_slice(
+                        self.format_event("response.output_text.delta", &flush_data)
+                            .as_slice(),
+                    );
                 }
             }
         }
 
-        // Pass through the done event
+        // Resolve the `text` field in the done payload (it contains the full block text)
+        let mut done_value = serde_json::from_str::<serde_json::Value>(data)
+            .unwrap_or_else(|_| serde_json::Value::String(data.to_string()));
+        if let serde_json::Value::Object(ref mut map) = done_value
+            && let Some(serde_json::Value::String(text)) = map.get_mut("text")
+        {
+            *text = resolve_text(&self.vault, text);
+        }
+        let done_data = serde_json::to_string(&done_value).unwrap_or_else(|_| data.to_string());
         output.extend_from_slice(
-            self.format_event("response.output_text.done", data)
+            self.format_event("response.output_text.done", &done_data)
                 .as_slice(),
         );
         output
@@ -804,12 +821,42 @@ impl ResponsesSseState {
     fn handle_completed(&mut self, original: &[u8]) -> Vec<u8> {
         let mut output = Vec::new();
 
-        // Flush all remaining resolvers
-        for (_, mut resolver) in self.resolvers.drain() {
+        // Flush all remaining resolvers as properly framed SSE delta events
+        for (key, mut resolver) in self.resolvers.drain() {
             let remaining = resolver.finish();
-            if !remaining.is_empty() {
-                // Best-effort: emit as raw text since we don't know which block it belongs to
-                output.extend_from_slice(remaining.as_bytes());
+            if !remaining.is_empty()
+                && let Ok(flush_data) = serde_json::to_string(&serde_json::json!({
+                    "delta": remaining,
+                    "output_index": key.0,
+                    "content_index": key.1,
+                }))
+            {
+                output.extend_from_slice(
+                    format!("event: response.output_text.delta\ndata: {flush_data}\n\n").as_bytes(),
+                );
+            }
+        }
+
+        // Resolve references in the completed payload (contains full response JSON)
+        let event_str = std::str::from_utf8(original).ok();
+        if let Some(event_str) = event_str {
+            let mut data = None;
+            let mut event_type = None;
+            for line in event_str.lines() {
+                if let Some(val) = line.strip_prefix("event:") {
+                    event_type = Some(val.trim());
+                } else if let Some(val) = line.strip_prefix("data:") {
+                    data = Some(val.trim());
+                }
+            }
+            if let (Some(event_type), Some(data_str)) = (event_type, data)
+                && let Ok(mut value) = serde_json::from_str::<serde_json::Value>(data_str)
+            {
+                resolve_json_value(&self.vault, &mut value);
+                let new_data =
+                    serde_json::to_string(&value).unwrap_or_else(|_| data_str.to_string());
+                output.extend_from_slice(self.format_event(event_type, &new_data).as_slice());
+                return output;
             }
         }
 
