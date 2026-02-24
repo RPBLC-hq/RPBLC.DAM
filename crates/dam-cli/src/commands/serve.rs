@@ -8,6 +8,7 @@ pub async fn run(
     port: u16,
     anthropic_upstream: Option<String>,
     openai_upstream: Option<String>,
+    codex_upstream: Option<String>,
 ) -> Result<()> {
     let mut config = load_config()?;
     tracing::debug!("config loaded");
@@ -21,6 +22,9 @@ pub async fn run(
     if let Some(url) = openai_upstream {
         config.server.openai_upstream_url = Some(url);
     }
+    if let Some(url) = codex_upstream {
+        config.server.codex_upstream_url = Some(url);
+    }
 
     let state = AppState::new(&config, vault);
     let app = router(state);
@@ -30,10 +34,13 @@ pub async fn run(
     eprintln!();
     eprintln!("  Anthropic: set ANTHROPIC_BASE_URL=http://{addr}");
     eprintln!("  OpenAI:    set OPENAI_BASE_URL=http://{addr}/v1");
+    eprintln!("  Codex:     set baseUrl=http://{addr}");
     eprintln!();
     eprintln!("Routes:");
     eprintln!("  POST /v1/messages           (Anthropic Messages API)");
     eprintln!("  POST /v1/chat/completions   (OpenAI Chat Completions API)");
+    eprintln!("  POST /v1/responses          (OpenAI Responses API)");
+    eprintln!("  POST /codex/responses       (OpenAI Codex API)");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

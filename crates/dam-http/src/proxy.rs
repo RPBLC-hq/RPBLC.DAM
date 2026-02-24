@@ -3,6 +3,7 @@ use crate::anthropic::{
 };
 use crate::openai::{ChatContent, ChatMessage, ChatRequest, ChatResponse, ContentPart};
 use crate::resolve::resolve_text;
+use crate::responses::{ResponsesRequest, ResponsesResponse};
 use dam_core::{DamConfig, reference::replace_refs};
 use dam_detect::{DetectionPipeline, ScanResult};
 use dam_vault::{ConsentManager, VaultStore};
@@ -213,6 +214,40 @@ pub fn resolve_chat_response(vault: &Arc<VaultStore>, response: &mut ChatRespons
     }
 }
 
+/// Scan an OpenAI Responses API request for PII and replace with vault references.
+///
+/// Scans `instructions`, `input` (recursively), and all extra fields.
+/// The `model` field is not scanned (per existing convention).
+/// PII with granted consent passes through un-redacted.
+pub fn redact_responses_request(
+    pipeline: &DetectionPipeline,
+    vault: &VaultStore,
+    request: &mut ResponsesRequest,
+) -> Result<(), dam_core::DamError> {
+    // Scan instructions if present
+    if let Some(ref mut instructions) = request.instructions {
+        let result = pipeline.scan(instructions, Some("http-proxy"))?;
+        *instructions = apply_consent_passthrough(vault, &result)?;
+    }
+
+    // Scan input recursively
+    scan_json_value(pipeline, vault, &mut request.input)?;
+
+    // Scan all extra fields
+    for value in request.extra.values_mut() {
+        scan_json_value(pipeline, vault, value)?;
+    }
+
+    Ok(())
+}
+
+/// Resolve PII references in a non-streaming OpenAI Responses API response.
+pub fn resolve_responses_response(vault: &Arc<VaultStore>, response: &mut ResponsesResponse) {
+    for item in &mut response.output {
+        resolve_json_value(vault, item);
+    }
+}
+
 /// Shared application state passed to axum handlers.
 #[derive(Clone)]
 pub struct AppState {
@@ -226,6 +261,8 @@ pub struct AppState {
     pub anthropic_upstream_url: String,
     /// Base URL of the upstream OpenAI API.
     pub openai_upstream_url: String,
+    /// Base URL of the upstream Codex API.
+    pub codex_upstream_url: String,
 }
 
 impl AppState {
@@ -246,12 +283,19 @@ impl AppState {
             .clone()
             .unwrap_or_else(|| "https://api.openai.com".to_string());
 
+        let codex_upstream_url = config
+            .server
+            .codex_upstream_url
+            .clone()
+            .unwrap_or_else(|| "https://chatgpt.com/backend-api".to_string());
+
         Self {
             vault,
             pipeline,
             client,
             anthropic_upstream_url,
             openai_upstream_url,
+            codex_upstream_url,
         }
     }
 }
@@ -1178,6 +1222,134 @@ mod tests {
                 "Consented email in OpenAI system message should pass through, got: {text}"
             );
         }
+    }
+
+    // --- Responses API tests ---
+
+    #[test]
+    fn redact_responses_string_input() {
+        let (vault, pipeline) = test_setup();
+        let mut req = ResponsesRequest {
+            model: "gpt-4o".into(),
+            input: serde_json::json!("Email me at john@acme.com"),
+            instructions: None,
+            stream: None,
+            extra: HashMap::new(),
+        };
+
+        redact_responses_request(&pipeline, &vault, &mut req).unwrap();
+
+        let text = req.input.as_str().unwrap();
+        assert!(!text.contains("john@acme.com"));
+        assert!(text.contains("[email:"));
+    }
+
+    #[test]
+    fn redact_responses_instructions() {
+        let (vault, pipeline) = test_setup();
+        let mut req = ResponsesRequest {
+            model: "gpt-4o".into(),
+            input: serde_json::json!("Hello"),
+            instructions: Some("User email is contact@secret.com".into()),
+            stream: None,
+            extra: HashMap::new(),
+        };
+
+        redact_responses_request(&pipeline, &vault, &mut req).unwrap();
+
+        let instructions = req.instructions.as_ref().unwrap();
+        assert!(!instructions.contains("contact@secret.com"));
+        assert!(instructions.contains("[email:"));
+    }
+
+    #[test]
+    fn redact_responses_array_input() {
+        let (vault, pipeline) = test_setup();
+        let mut req = ResponsesRequest {
+            model: "gpt-4o".into(),
+            input: serde_json::json!([
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Send to bob@test.com"}
+                    ]
+                }
+            ]),
+            instructions: None,
+            stream: None,
+            extra: HashMap::new(),
+        };
+
+        redact_responses_request(&pipeline, &vault, &mut req).unwrap();
+
+        let text = req.input[0]["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("bob@test.com"));
+        assert!(text.contains("[email:"));
+    }
+
+    #[test]
+    fn redact_responses_skips_model() {
+        let (vault, pipeline) = test_setup();
+        let mut req = ResponsesRequest {
+            model: "gpt-4o".into(),
+            input: serde_json::json!("Hello"),
+            instructions: None,
+            stream: None,
+            extra: HashMap::new(),
+        };
+
+        redact_responses_request(&pipeline, &vault, &mut req).unwrap();
+        assert_eq!(req.model, "gpt-4o");
+    }
+
+    #[test]
+    fn redact_responses_extra_fields() {
+        let (vault, pipeline) = test_setup();
+        let mut extra = HashMap::new();
+        extra.insert(
+            "metadata".to_string(),
+            serde_json::json!({"user_email": "leak@metadata.com"}),
+        );
+
+        let mut req = ResponsesRequest {
+            model: "gpt-4o".into(),
+            input: serde_json::json!("Hello"),
+            instructions: None,
+            stream: None,
+            extra,
+        };
+
+        redact_responses_request(&pipeline, &vault, &mut req).unwrap();
+
+        let email = req.extra["metadata"]["user_email"].as_str().unwrap();
+        assert!(!email.contains("leak@metadata.com"));
+        assert!(email.contains("[email:"));
+    }
+
+    #[test]
+    fn resolve_responses_response_replaces_refs() {
+        let (vault, _) = test_setup();
+        let pii_ref = vault
+            .store_pii(PiiType::Email, "alice@test.com", None, None)
+            .unwrap();
+
+        let mut resp = ResponsesResponse {
+            id: "resp_abc".into(),
+            output: vec![serde_json::json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": format!("Contact {}", pii_ref.display())}
+                ]
+            })],
+            extra: HashMap::new(),
+        };
+
+        resolve_responses_response(&vault, &mut resp);
+
+        let text = resp.output[0]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text, "Contact alice@test.com");
     }
 
     #[test]

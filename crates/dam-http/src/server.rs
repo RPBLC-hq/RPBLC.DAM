@@ -13,8 +13,10 @@ use crate::anthropic::{Delta, MessagesRequest, MessagesResponse, StreamEvent};
 use crate::error::AppError;
 use crate::openai::{ChatChunk, ChatRequest, ChatResponse};
 use crate::proxy::{
-    AppState, redact_chat_request, redact_request, resolve_chat_response, resolve_response,
+    AppState, redact_chat_request, redact_request, redact_responses_request,
+    resolve_chat_response, resolve_response, resolve_responses_response,
 };
+use crate::responses::{ResponsesRequest, ResponsesResponse, ResponsesStreamDelta};
 use crate::streaming::StreamingResolver;
 
 /// Build the axum router.
@@ -22,6 +24,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v1/messages", post(handle_messages))
         .route("/v1/chat/completions", post(handle_chat_completions))
+        .route("/v1/responses", post(handle_responses))
+        .route("/codex/responses", post(handle_codex_responses))
         .with_state(state)
 }
 
@@ -565,6 +569,317 @@ impl OpenAiSseState {
 }
 
 // ---------------------------------------------------------------------------
+// OpenAI Responses API handler
+// ---------------------------------------------------------------------------
+
+/// POST /v1/responses handler.
+async fn handle_responses(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: String,
+) -> Result<Response, AppError> {
+    let mut request: ResponsesRequest =
+        serde_json::from_str(&body).map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    let is_streaming = request.stream.unwrap_or(false);
+    tracing::debug!(model = %request.model, streaming = is_streaming, "incoming responses api request");
+
+    redact_responses_request(&state.pipeline, &state.vault, &mut request)?;
+    tracing::debug!("responses request redacted");
+
+    let upstream_url = format!("{}/v1/responses", state.openai_upstream_url);
+    let mut upstream_req = state.client.post(&upstream_url);
+
+    for &name in OPENAI_FORWARD_HEADERS {
+        if let Some(value) = headers.get(name) {
+            upstream_req = upstream_req.header(name, value);
+        }
+    }
+    upstream_req = upstream_req.header("content-type", "application/json");
+
+    let upstream_body =
+        serde_json::to_string(&request).map_err(|e| AppError::Proxy(e.to_string()))?;
+
+    let upstream_resp = upstream_req.body(upstream_body).send().await?;
+
+    let status = upstream_resp.status();
+    tracing::debug!(status = %status, "responses api upstream response");
+
+    if !status.is_success() {
+        return pass_through_error(upstream_resp).await;
+    }
+
+    if is_streaming {
+        handle_responses_streaming(state, upstream_resp).await
+    } else {
+        handle_responses_non_streaming(state, upstream_resp).await
+    }
+}
+
+/// Handle a non-streaming Responses API response.
+async fn handle_responses_non_streaming(
+    state: AppState,
+    upstream_resp: reqwest::Response,
+) -> Result<Response, AppError> {
+    let body = upstream_resp.text().await?;
+    let mut response: ResponsesResponse =
+        serde_json::from_str(&body).map_err(|e| AppError::Upstream(e.to_string()))?;
+
+    resolve_responses_response(&state.vault, &mut response);
+
+    let json = serde_json::to_string(&response).map_err(|e| AppError::Proxy(e.to_string()))?;
+
+    Ok((StatusCode::OK, [("content-type", "application/json")], json).into_response())
+}
+
+/// Handle a streaming Responses API response.
+async fn handle_responses_streaming(
+    state: AppState,
+    upstream_resp: reqwest::Response,
+) -> Result<Response, AppError> {
+    let vault = state.vault.clone();
+    let byte_stream = upstream_resp.bytes_stream();
+
+    let stream = async_stream::stream! {
+        let mut sse_state = ResponsesSseState::new(vault);
+
+        tokio::pin!(byte_stream);
+
+        while let Some(chunk_result) = byte_stream.next().await {
+            match chunk_result {
+                Ok(chunk) => {
+                    sse_state.buf.feed(&chunk);
+                    while let Some(event_bytes) = sse_state.buf.next_event() {
+                        let output = sse_state.process_event(&event_bytes);
+                        yield Ok::<_, std::io::Error>(axum::body::Bytes::from(output));
+                    }
+                }
+                Err(e) => {
+                    yield Err(std::io::Error::other(e.to_string()));
+                    break;
+                }
+            }
+        }
+
+        // Flush remaining SSE bytes
+        if !sse_state.buf.raw_buf.is_empty() {
+            if let Ok(s) = std::str::from_utf8(&sse_state.buf.raw_buf) {
+                yield Ok::<_, std::io::Error>(axum::body::Bytes::from(s.to_owned()));
+            }
+            sse_state.buf.raw_buf.clear();
+        }
+
+        // Flush remaining resolver buffers
+        for (_, mut resolver) in sse_state.resolvers.drain() {
+            let remaining = resolver.finish();
+            if !remaining.is_empty() {
+                yield Ok::<_, std::io::Error>(axum::body::Bytes::from(remaining));
+            }
+        }
+    };
+
+    let body = Body::from_stream(stream);
+
+    Ok((
+        StatusCode::OK,
+        [
+            ("content-type", "text/event-stream"),
+            ("cache-control", "no-cache"),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+/// Responses API SSE state: buffer + per-content-block resolvers.
+///
+/// Resolver keys are `(output_index, content_index)` tuples to distinguish
+/// between concurrent output streams (e.g. text + function call arguments).
+struct ResponsesSseState {
+    vault: Arc<dam_vault::VaultStore>,
+    buf: SseBuffer,
+    resolvers: HashMap<(usize, usize), StreamingResolver>,
+}
+
+impl ResponsesSseState {
+    fn new(vault: Arc<dam_vault::VaultStore>) -> Self {
+        Self {
+            vault,
+            buf: SseBuffer::new(),
+            resolvers: HashMap::new(),
+        }
+    }
+
+    fn process_event(&mut self, event_bytes: &[u8]) -> Vec<u8> {
+        let event_str = match std::str::from_utf8(event_bytes) {
+            Ok(s) => s,
+            Err(_) => return event_bytes.to_vec(),
+        };
+
+        let mut event_type = None;
+        let mut data = None;
+
+        for line in event_str.lines() {
+            if let Some(val) = line.strip_prefix("event:") {
+                event_type = Some(val.trim());
+            } else if let Some(val) = line.strip_prefix("data:") {
+                data = Some(val.trim());
+            }
+        }
+
+        let (Some(event_type), Some(data)) = (event_type, data) else {
+            return event_bytes.to_vec();
+        };
+
+        match event_type {
+            "response.output_text.delta" | "response.function_call_arguments.delta" => {
+                self.handle_delta(event_type, data)
+            }
+            "response.output_text.done" => self.handle_text_done(data),
+            "response.completed" => self.handle_completed(event_bytes),
+            _ => event_bytes.to_vec(),
+        }
+    }
+
+    fn handle_delta(&mut self, event_type: &str, data: &str) -> Vec<u8> {
+        let Ok(delta) = serde_json::from_str::<ResponsesStreamDelta>(data) else {
+            return self.format_event(event_type, data);
+        };
+
+        let Some(ref text) = delta.delta else {
+            return self.format_event(event_type, data);
+        };
+
+        let key = (delta.output_index.unwrap_or(0), delta.content_index.unwrap_or(0));
+        let resolver = self
+            .resolvers
+            .entry(key)
+            .or_insert_with(|| StreamingResolver::new(self.vault.clone()));
+
+        let resolved = resolver.push(text);
+
+        let mut new_delta = delta.clone();
+        new_delta.delta = Some(resolved);
+
+        let new_data = serde_json::to_string(&new_delta).unwrap_or_else(|_| data.to_string());
+        self.format_event(event_type, &new_data)
+    }
+
+    fn handle_text_done(&mut self, data: &str) -> Vec<u8> {
+        // Flush the resolver for this content block
+        let mut output = Vec::new();
+
+        if let Ok(delta) = serde_json::from_str::<ResponsesStreamDelta>(data) {
+            let key = (delta.output_index.unwrap_or(0), delta.content_index.unwrap_or(0));
+            if let Some(mut resolver) = self.resolvers.remove(&key) {
+                let remaining = resolver.finish();
+                if !remaining.is_empty() {
+                    // Emit a synthetic text delta with the remaining text
+                    let mut flush_delta = delta.clone();
+                    flush_delta.delta = Some(remaining);
+                    if let Ok(flush_data) = serde_json::to_string(&flush_delta) {
+                        output.extend_from_slice(
+                            self.format_event("response.output_text.delta", &flush_data)
+                                .as_slice(),
+                        );
+                    }
+                }
+            }
+        }
+
+        // Pass through the done event
+        output.extend_from_slice(
+            self.format_event("response.output_text.done", data)
+                .as_slice(),
+        );
+        output
+    }
+
+    fn handle_completed(&mut self, original: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+
+        // Flush all remaining resolvers
+        for (_, mut resolver) in self.resolvers.drain() {
+            let remaining = resolver.finish();
+            if !remaining.is_empty() {
+                // Best-effort: emit as raw text since we don't know which block it belongs to
+                output.extend_from_slice(remaining.as_bytes());
+            }
+        }
+
+        output.extend_from_slice(original);
+        output
+    }
+
+    fn format_event(&self, event_type: &str, data: &str) -> Vec<u8> {
+        format!("event: {event_type}\ndata: {data}\n\n").into_bytes()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI Codex Responses API handler
+// ---------------------------------------------------------------------------
+
+/// Headers to forward from the client to the Codex backend API.
+const CODEX_FORWARD_HEADERS: &[&str] = &[
+    "authorization",
+    "chatgpt-account-id",
+    "openai-beta",
+    "originator",
+    "user-agent",
+    "session_id",
+    "x-request-id",
+];
+
+/// POST /codex/responses handler.
+///
+/// Reuses the same Responses API types and redaction/resolution logic,
+/// but forwards to the Codex backend API (`chatgpt.com/backend-api`)
+/// instead of OpenAI's standard API.
+async fn handle_codex_responses(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: String,
+) -> Result<Response, AppError> {
+    let mut request: ResponsesRequest =
+        serde_json::from_str(&body).map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    let is_streaming = request.stream.unwrap_or(false);
+    tracing::debug!(model = %request.model, streaming = is_streaming, "incoming codex request");
+
+    redact_responses_request(&state.pipeline, &state.vault, &mut request)?;
+    tracing::debug!("codex request redacted");
+
+    let upstream_url = format!("{}/codex/responses", state.codex_upstream_url);
+    let mut upstream_req = state.client.post(&upstream_url);
+
+    for &name in CODEX_FORWARD_HEADERS {
+        if let Some(value) = headers.get(name) {
+            upstream_req = upstream_req.header(name, value);
+        }
+    }
+    upstream_req = upstream_req.header("content-type", "application/json");
+
+    let upstream_body =
+        serde_json::to_string(&request).map_err(|e| AppError::Proxy(e.to_string()))?;
+
+    let upstream_resp = upstream_req.body(upstream_body).send().await?;
+
+    let status = upstream_resp.status();
+    tracing::debug!(status = %status, "codex upstream response");
+
+    if !status.is_success() {
+        return pass_through_error(upstream_resp).await;
+    }
+
+    if is_streaming {
+        handle_responses_streaming(state, upstream_resp).await
+    } else {
+        handle_responses_non_streaming(state, upstream_resp).await
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
@@ -730,6 +1045,130 @@ mod tests {
         // Should pass through [DONE]
         let last = String::from_utf8(outputs.last().unwrap().clone()).unwrap();
         assert!(last.contains("[DONE]"));
+    }
+
+    // --- Responses API SSE tests ---
+
+    #[test]
+    fn responses_sse_resolves_text_delta() {
+        let (vault, ref_key) = test_vault_with_entry();
+        let mut state = ResponsesSseState::new(vault);
+
+        let data = format!(
+            r#"{{"delta":"Hello [{ref_key}] world","output_index":0,"content_index":0}}"#,
+        );
+        let event = format!("event: response.output_text.delta\ndata: {data}\n\n");
+        state.buf.feed(event.as_bytes());
+
+        let ev = state.buf.next_event().unwrap();
+        let output = state.process_event(&ev);
+        let output_str = String::from_utf8(output).unwrap();
+
+        assert!(
+            output_str.contains("alice@example.com"),
+            "should resolve ref: {output_str}"
+        );
+        assert!(!output_str.contains(&format!("[{ref_key}]")));
+        assert!(output_str.starts_with("event: response.output_text.delta\n"));
+    }
+
+    #[test]
+    fn responses_sse_passthrough_non_text_events() {
+        let (vault, _) = test_vault_with_entry();
+        let mut state = ResponsesSseState::new(vault);
+
+        let event = b"event: response.created\ndata: {\"type\":\"response\",\"id\":\"resp_abc\"}\n\n";
+        state.buf.feed(event);
+
+        let ev = state.buf.next_event().unwrap();
+        let output = state.process_event(&ev);
+        assert_eq!(output, event.to_vec());
+    }
+
+    #[test]
+    fn responses_sse_flush_on_text_done() {
+        let (vault, ref_key) = test_vault_with_entry();
+        let mut state = ResponsesSseState::new(vault);
+
+        // First: partial ref in a delta
+        let partial = format!("[{}", &ref_key[..ref_key.len() / 2]);
+        let data1 = format!(
+            r#"{{"delta":"{partial}","output_index":0,"content_index":0}}"#,
+        );
+        let event1 = format!("event: response.output_text.delta\ndata: {data1}\n\n");
+        state.buf.feed(event1.as_bytes());
+        let ev1 = state.buf.next_event().unwrap();
+        let _ = state.process_event(&ev1);
+
+        // Second: rest of ref in another delta
+        let rest = &ref_key[ref_key.len() / 2..];
+        let data2 = format!(
+            r#"{{"delta":"{rest}]","output_index":0,"content_index":0}}"#,
+        );
+        let event2 = format!("event: response.output_text.delta\ndata: {data2}\n\n");
+        state.buf.feed(event2.as_bytes());
+        let ev2 = state.buf.next_event().unwrap();
+        let _ = state.process_event(&ev2);
+
+        // Now send text done — should flush resolver
+        let done_data = r#"{"output_index":0,"content_index":0,"text":"full text"}"#;
+        let done_event = format!("event: response.output_text.done\ndata: {done_data}\n\n");
+        state.buf.feed(done_event.as_bytes());
+        let ev3 = state.buf.next_event().unwrap();
+        let output = state.process_event(&ev3);
+        let output_str = String::from_utf8(output).unwrap();
+
+        // The done event should pass through, and the resolver should be removed
+        assert!(output_str.contains("response.output_text.done"));
+        assert!(state.resolvers.is_empty(), "resolver should be removed after done");
+    }
+
+    #[test]
+    fn responses_sse_flush_on_completed() {
+        let (vault, ref_key) = test_vault_with_entry();
+        let mut state = ResponsesSseState::new(vault);
+
+        // Push a partial ref
+        let partial = format!("[{}", &ref_key[..ref_key.len() / 2]);
+        let data1 = format!(
+            r#"{{"delta":"{partial}","output_index":0,"content_index":0}}"#,
+        );
+        let event1 = format!("event: response.output_text.delta\ndata: {data1}\n\n");
+        state.buf.feed(event1.as_bytes());
+        let ev1 = state.buf.next_event().unwrap();
+        let _ = state.process_event(&ev1);
+
+        // Send completed — should flush all resolvers
+        let completed_event = b"event: response.completed\ndata: {\"type\":\"response\"}\n\n";
+        state.buf.feed(completed_event);
+        let ev2 = state.buf.next_event().unwrap();
+        let output = state.process_event(&ev2);
+        let output_str = String::from_utf8(output).unwrap();
+
+        assert!(output_str.contains("response.completed"));
+        assert!(state.resolvers.is_empty(), "all resolvers should be flushed on completed");
+    }
+
+    #[test]
+    fn responses_sse_function_call_delta() {
+        let (vault, ref_key) = test_vault_with_entry();
+        let mut state = ResponsesSseState::new(vault);
+
+        let data = format!(
+            r#"{{"delta":"[{ref_key}]","output_index":0,"content_index":0}}"#,
+        );
+        let event = format!("event: response.function_call_arguments.delta\ndata: {data}\n\n");
+        state.buf.feed(event.as_bytes());
+
+        let ev = state.buf.next_event().unwrap();
+        let output = state.process_event(&ev);
+        let output_str = String::from_utf8(output).unwrap();
+
+        assert!(
+            output_str.contains("alice@example.com"),
+            "should resolve ref in function call args: {output_str}"
+        );
+        assert!(output_str.starts_with("event: response.function_call_arguments.delta\n"));
     }
 
     #[test]
