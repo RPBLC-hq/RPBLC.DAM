@@ -75,6 +75,13 @@ pub(crate) fn validate_ssn(value: &str) -> bool {
     true
 }
 
+/// Validate international phone number length after stripping separators.
+/// Accepts E.164-compatible lengths (7-15 digits) and rejects obvious non-phone runs.
+pub(crate) fn validate_phone(value: &str) -> bool {
+    let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
+    (7..=15).contains(&digits.len())
+}
+
 /// Validate that an IP is not a common non-PII address (localhost, broadcast, etc.).
 pub(crate) fn validate_ip(value: &str) -> bool {
     let parts: Vec<u8> = value.split('.').filter_map(|p| p.parse().ok()).collect();
