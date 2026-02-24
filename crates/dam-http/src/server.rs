@@ -13,8 +13,8 @@ use crate::anthropic::{Delta, MessagesRequest, MessagesResponse, StreamEvent};
 use crate::error::AppError;
 use crate::openai::{ChatChunk, ChatRequest, ChatResponse};
 use crate::proxy::{
-    AppState, redact_chat_request, redact_request, redact_responses_request,
-    resolve_chat_response, resolve_response, resolve_responses_response,
+    AppState, redact_chat_request, redact_request, redact_responses_request, resolve_chat_response,
+    resolve_response, resolve_responses_response,
 };
 use crate::responses::{ResponsesRequest, ResponsesResponse, ResponsesStreamDelta};
 use crate::streaming::StreamingResolver;
@@ -750,7 +750,10 @@ impl ResponsesSseState {
             return self.format_event(event_type, data);
         };
 
-        let key = (delta.output_index.unwrap_or(0), delta.content_index.unwrap_or(0));
+        let key = (
+            delta.output_index.unwrap_or(0),
+            delta.content_index.unwrap_or(0),
+        );
         let resolver = self
             .resolvers
             .entry(key)
@@ -770,7 +773,10 @@ impl ResponsesSseState {
         let mut output = Vec::new();
 
         if let Ok(delta) = serde_json::from_str::<ResponsesStreamDelta>(data) {
-            let key = (delta.output_index.unwrap_or(0), delta.content_index.unwrap_or(0));
+            let key = (
+                delta.output_index.unwrap_or(0),
+                delta.content_index.unwrap_or(0),
+            );
             if let Some(mut resolver) = self.resolvers.remove(&key) {
                 let remaining = resolver.finish();
                 if !remaining.is_empty() {
@@ -1054,9 +1060,8 @@ mod tests {
         let (vault, ref_key) = test_vault_with_entry();
         let mut state = ResponsesSseState::new(vault);
 
-        let data = format!(
-            r#"{{"delta":"Hello [{ref_key}] world","output_index":0,"content_index":0}}"#,
-        );
+        let data =
+            format!(r#"{{"delta":"Hello [{ref_key}] world","output_index":0,"content_index":0}}"#,);
         let event = format!("event: response.output_text.delta\ndata: {data}\n\n");
         state.buf.feed(event.as_bytes());
 
@@ -1077,7 +1082,8 @@ mod tests {
         let (vault, _) = test_vault_with_entry();
         let mut state = ResponsesSseState::new(vault);
 
-        let event = b"event: response.created\ndata: {\"type\":\"response\",\"id\":\"resp_abc\"}\n\n";
+        let event =
+            b"event: response.created\ndata: {\"type\":\"response\",\"id\":\"resp_abc\"}\n\n";
         state.buf.feed(event);
 
         let ev = state.buf.next_event().unwrap();
@@ -1092,9 +1098,7 @@ mod tests {
 
         // First: partial ref in a delta
         let partial = format!("[{}", &ref_key[..ref_key.len() / 2]);
-        let data1 = format!(
-            r#"{{"delta":"{partial}","output_index":0,"content_index":0}}"#,
-        );
+        let data1 = format!(r#"{{"delta":"{partial}","output_index":0,"content_index":0}}"#,);
         let event1 = format!("event: response.output_text.delta\ndata: {data1}\n\n");
         state.buf.feed(event1.as_bytes());
         let ev1 = state.buf.next_event().unwrap();
@@ -1102,9 +1106,7 @@ mod tests {
 
         // Second: rest of ref in another delta
         let rest = &ref_key[ref_key.len() / 2..];
-        let data2 = format!(
-            r#"{{"delta":"{rest}]","output_index":0,"content_index":0}}"#,
-        );
+        let data2 = format!(r#"{{"delta":"{rest}]","output_index":0,"content_index":0}}"#,);
         let event2 = format!("event: response.output_text.delta\ndata: {data2}\n\n");
         state.buf.feed(event2.as_bytes());
         let ev2 = state.buf.next_event().unwrap();
@@ -1120,7 +1122,10 @@ mod tests {
 
         // The done event should pass through, and the resolver should be removed
         assert!(output_str.contains("response.output_text.done"));
-        assert!(state.resolvers.is_empty(), "resolver should be removed after done");
+        assert!(
+            state.resolvers.is_empty(),
+            "resolver should be removed after done"
+        );
     }
 
     #[test]
@@ -1130,9 +1135,7 @@ mod tests {
 
         // Push a partial ref
         let partial = format!("[{}", &ref_key[..ref_key.len() / 2]);
-        let data1 = format!(
-            r#"{{"delta":"{partial}","output_index":0,"content_index":0}}"#,
-        );
+        let data1 = format!(r#"{{"delta":"{partial}","output_index":0,"content_index":0}}"#,);
         let event1 = format!("event: response.output_text.delta\ndata: {data1}\n\n");
         state.buf.feed(event1.as_bytes());
         let ev1 = state.buf.next_event().unwrap();
@@ -1146,7 +1149,10 @@ mod tests {
         let output_str = String::from_utf8(output).unwrap();
 
         assert!(output_str.contains("response.completed"));
-        assert!(state.resolvers.is_empty(), "all resolvers should be flushed on completed");
+        assert!(
+            state.resolvers.is_empty(),
+            "all resolvers should be flushed on completed"
+        );
     }
 
     #[test]
@@ -1154,9 +1160,7 @@ mod tests {
         let (vault, ref_key) = test_vault_with_entry();
         let mut state = ResponsesSseState::new(vault);
 
-        let data = format!(
-            r#"{{"delta":"[{ref_key}]","output_index":0,"content_index":0}}"#,
-        );
+        let data = format!(r#"{{"delta":"[{ref_key}]","output_index":0,"content_index":0}}"#,);
         let event = format!("event: response.function_call_arguments.delta\ndata: {data}\n\n");
         state.buf.feed(event.as_bytes());
 
