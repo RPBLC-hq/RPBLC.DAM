@@ -96,7 +96,10 @@ mod tests {
         let req: ResponsesRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.model, "gpt-4o");
         assert!(req.input.is_array());
-        assert_eq!(req.instructions.as_deref(), Some("You are a helpful assistant"));
+        assert_eq!(
+            req.instructions.as_deref(),
+            Some("You are a helpful assistant")
+        );
     }
 
     #[test]
