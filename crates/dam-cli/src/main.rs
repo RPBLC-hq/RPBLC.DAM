@@ -74,6 +74,10 @@ enum Commands {
         /// Override upstream OpenAI API base URL
         #[arg(long)]
         openai_upstream: Option<String>,
+
+        /// Override upstream Codex API base URL
+        #[arg(long)]
+        codex_upstream: Option<String>,
     },
 }
 
@@ -111,6 +115,7 @@ async fn main() -> Result<()> {
             port,
             anthropic_upstream,
             openai_upstream,
-        } => commands::serve::run(port, anthropic_upstream, openai_upstream).await,
+            codex_upstream,
+        } => commands::serve::run(port, anthropic_upstream, openai_upstream, codex_upstream).await,
     }
 }

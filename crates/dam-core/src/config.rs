@@ -174,6 +174,9 @@ pub struct ServerConfig {
     /// Upstream OpenAI API base URL (defaults to `https://api.openai.com`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openai_upstream_url: Option<String>,
+    /// Upstream Codex API base URL (defaults to `https://chatgpt.com/backend-api`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_upstream_url: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -183,6 +186,7 @@ impl Default for ServerConfig {
             api_token: None,
             anthropic_upstream_url: None,
             openai_upstream_url: None,
+            codex_upstream_url: None,
         }
     }
 }
