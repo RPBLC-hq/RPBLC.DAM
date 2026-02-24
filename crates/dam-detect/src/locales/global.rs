@@ -1,9 +1,9 @@
 use crate::stage_regex::Pattern;
-use crate::validators::{validate_iban, validate_ip, validate_luhn_cc};
+use crate::validators::{validate_iban, validate_ip, validate_luhn_cc, validate_phone};
 use dam_core::PiiType;
 use regex::Regex;
 
-/// Patterns that apply regardless of locale — not country-specific PII.
+/// Patterns that apply regardless of locale - not country-specific PII.
 pub(crate) fn patterns() -> Vec<Pattern> {
     vec![
         // Email addresses
@@ -23,13 +23,20 @@ pub(crate) fn patterns() -> Vec<Pattern> {
             confidence: 0.85,
             validator: Some(validate_luhn_cc),
         },
-        // International phone — E.164 with optional separators
-        // 7-15 digits total, first digit non-zero, separators (space/dash/dot) allowed
+        // International phone - E.164 with optional separators
+        // 7-15 digits total, country code 1-3 digits, separators (space/dash/dot) allowed
         Pattern {
-            regex: Regex::new(r"\+[1-9]\d(?:[\s\-.]?\d){5,13}\b").unwrap(),
+            regex: Regex::new(r"\+[1-9]\d{0,2}(?:[\s\-.]?\d){6,14}\b").unwrap(),
             pii_type: PiiType::Phone,
             confidence: 0.9,
-            validator: None,
+            validator: Some(validate_phone),
+        },
+        // NANP with parenthesized area code (common CA/US format): +1 (514) 555-0199
+        Pattern {
+            regex: Regex::new(r"\+?1?[\s\-.]?\(\d{3}\)[\s\-.]?\d{3}[\s\-.]?\d{4}\b").unwrap(),
+            pii_type: PiiType::Phone,
+            confidence: 0.9,
+            validator: Some(validate_phone),
         },
         // IPv4 addresses
         Pattern {
@@ -48,7 +55,7 @@ pub(crate) fn patterns() -> Vec<Pattern> {
             confidence: 0.5,
             validator: None,
         },
-        // IBAN — 2 letters + 2 digits + 11-30 alphanumeric (case-insensitive)
+        // IBAN - 2 letters + 2 digits + 11-30 alphanumeric (case-insensitive)
         Pattern {
             regex: Regex::new(r"(?i)\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b").unwrap(),
             pii_type: PiiType::Iban,

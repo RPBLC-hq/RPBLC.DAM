@@ -232,6 +232,18 @@ mod tests {
     }
 
     #[test]
+    fn detect_phone_ca_with_country_code_dashes() {
+        let (_, detections) = detect("Call me at +1-514-555-0199", &all_patterns());
+        assert!(detections.iter().any(|d| d.pii_type == PiiType::Phone));
+    }
+
+    #[test]
+    fn detect_phone_ca_with_parentheses() {
+        let (_, detections) = detect("Call me at +1 (514) 555-0199", &all_patterns());
+        assert!(detections.iter().any(|d| d.pii_type == PiiType::Phone));
+    }
+
+    #[test]
     fn detect_ssn() {
         let (_, detections) = detect("SSN: 123-45-6789", &all_patterns());
         assert!(detections.iter().any(|d| d.pii_type == PiiType::Ssn));
