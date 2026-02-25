@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`X-DAM-Upstream` header routing** — per-request upstream URL override via `X-DAM-Upstream` header, enabling multi-provider setups (e.g. xAI + OpenAI) without extra config
 - **OpenAI Responses API proxy** (`POST /v1/responses`) — PII redaction and streaming SSE resolution for OpenAI's Responses API, enabling DAM to proxy codex/responses traffic (e.g. OpenClaw's `openai-codex` provider)
 
+### Fixed
+
+- **PII format preservation** — vault now stores the original format of PII values (e.g. `(555) 867-5309`) instead of the normalized form (`5558675309`); normalization is used only for deduplication comparison
+
 ## [0.2.0] — 2026-02-19
 
 ### Added

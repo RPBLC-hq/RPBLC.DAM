@@ -61,8 +61,8 @@ mod tests {
             phone_ref.display()
         );
         let resolved = resolve_text(&vault, &text);
-        // Note: Phone is normalized (dashes removed) for consistent deduplication
-        assert_eq!(resolved, "Email: bob@test.com, Phone: 5551234");
+        // Original format is preserved through the vault round-trip
+        assert_eq!(resolved, "Email: bob@test.com, Phone: 555-1234");
     }
 
     #[test]

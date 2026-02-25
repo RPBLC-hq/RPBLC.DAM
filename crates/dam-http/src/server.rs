@@ -50,7 +50,9 @@ fn extract_upstream_override(headers: &HeaderMap) -> Result<Option<String>, AppE
 
     let s = value
         .to_str()
-        .map_err(|_| AppError::BadRequest("X-DAM-Upstream header contains invalid characters".into()))?
+        .map_err(|_| {
+            AppError::BadRequest("X-DAM-Upstream header contains invalid characters".into())
+        })?
         .trim();
 
     if s.is_empty() {
@@ -396,8 +398,8 @@ async fn handle_chat_completions(
     redact_chat_request(&state.pipeline, &state.vault, &mut request)?;
     tracing::debug!("openai request redacted");
 
-    let base = extract_upstream_override(&headers)?
-        .unwrap_or_else(|| state.openai_upstream_url.clone());
+    let base =
+        extract_upstream_override(&headers)?.unwrap_or_else(|| state.openai_upstream_url.clone());
     let upstream_url = format!("{base}/v1/chat/completions");
     let mut upstream_req = state.client.post(&upstream_url);
 
@@ -647,8 +649,8 @@ async fn handle_responses(
     redact_responses_request(&state.pipeline, &state.vault, &mut request)?;
     tracing::debug!("responses request redacted");
 
-    let base = extract_upstream_override(&headers)?
-        .unwrap_or_else(|| state.openai_upstream_url.clone());
+    let base =
+        extract_upstream_override(&headers)?.unwrap_or_else(|| state.openai_upstream_url.clone());
     let upstream_url = format!("{base}/v1/responses");
     let mut upstream_req = state.client.post(&upstream_url);
 
@@ -964,8 +966,8 @@ async fn handle_codex_responses(
     redact_responses_request(&state.pipeline, &state.vault, &mut request)?;
     tracing::debug!("codex request redacted");
 
-    let base = extract_upstream_override(&headers)?
-        .unwrap_or_else(|| state.codex_upstream_url.clone());
+    let base =
+        extract_upstream_override(&headers)?.unwrap_or_else(|| state.codex_upstream_url.clone());
     let upstream_url = format!("{base}/codex/responses");
     let mut upstream_req = state.client.post(&upstream_url);
 
