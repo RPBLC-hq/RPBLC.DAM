@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **`X-DAM-Upstream` header routing** — per-request upstream URL override via `X-DAM-Upstream` header, enabling multi-provider setups (e.g. xAI + OpenAI) without extra config
 - **OpenAI Responses API proxy** (`POST /v1/responses`) — PII redaction and streaming SSE resolution for OpenAI's Responses API, enabling DAM to proxy codex/responses traffic (e.g. OpenClaw's `openai-codex` provider)
 
 ## [0.2.0] — 2026-02-19
