@@ -126,6 +126,8 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:7828      # Anthropic
 
 That's it. All messages now flow through DAM. User messages are scanned and redacted before reaching the LLM. Responses are resolved back to real values before reaching you.
 
+> **Multiple providers?** If you use providers that share the same API format (e.g. xAI and OpenAI both use `/v1/chat/completions`), add the `X-DAM-Upstream` header to route per-request. See [Upstream Routing](#upstream-routing) below.
+
 ### Try it with curl
 
 ```bash
@@ -185,8 +187,8 @@ dam vault delete email:a3f71bc9   # remove permanently
 ### Control consent
 
 ```bash
-dam consent grant email:a3f71bc9 claude send_email    # specific
-dam consent grant email:a3f71bc9 "*" "*"              # blanket
+dam consent grant email:a3f71bc9 claude send_email --ttl 1h   # specific, 1 hour
+dam consent grant email:a3f71bc9 "*" "*" --ttl 24h            # blanket, 24 hours
 dam consent revoke email:a3f71bc9 claude send_email   # revoke
 dam consent list                                      # view all rules
 ```
@@ -208,13 +210,40 @@ The proxy is the primary integration path. It provides a hard security boundary:
 dam serve
 ```
 
-The proxy:
-- Intercepts `POST /v1/chat/completions` (OpenAI) and `POST /v1/messages` (Anthropic) requests
-- Scans **user** messages for PII, replaces with vault references
-- Forwards redacted requests to the upstream provider
-- Resolves references in the response before returning to the client
-- Handles both streaming (SSE) and non-streaming responses
-- Passes through `authorization`, `x-api-key`, and `anthropic-version` headers
+#### Routes and defaults
+
+| Route | Format | Default upstream |
+|-------|--------|-----------------|
+| `POST /v1/messages` | Anthropic Messages | `https://api.anthropic.com` |
+| `POST /v1/chat/completions` | OpenAI Chat | `https://api.openai.com` |
+| `POST /v1/responses` | OpenAI Responses | `https://api.openai.com` |
+| `POST /codex/responses` | Codex | `https://chatgpt.com/backend-api` |
+
+Each route scans **user** messages for PII, replaces values with vault references, forwards the redacted request upstream, and resolves references in the response before returning to the client. Both streaming (SSE) and non-streaming responses are supported.
+
+Override default upstreams globally via CLI flags or config:
+
+```bash
+dam serve --openai-upstream https://openrouter.ai/api
+```
+
+#### Upstream routing
+
+When multiple providers share the same API format (e.g. xAI and OpenAI both use `/v1/chat/completions`), set the `X-DAM-Upstream` header to route a request to a specific provider:
+
+```bash
+# Route this request to xAI instead of the default OpenAI upstream
+curl http://127.0.0.1:7828/v1/chat/completions \
+  -H "Authorization: Bearer $XAI_API_KEY" \
+  -H "X-DAM-Upstream: https://api.x.ai" \
+  -H "content-type: application/json" \
+  -d '{"model": "grok-3", "messages": [{"role": "user", "content": "..."}]}'
+```
+
+- If the header is absent or empty, the request goes to the configured default
+- Path prefixes are preserved: `X-DAM-Upstream: https://gateway.corp.com/openai` produces `https://gateway.corp.com/openai/v1/chat/completions`
+- Only `http://` and `https://` schemes are allowed
+- URLs with credentials (`@`), query strings (`?`), or fragments (`#`) are rejected
 
 Works with `curl`, Python SDK, TypeScript SDK — anything that calls the OpenAI or Anthropic API.
 
@@ -311,6 +340,7 @@ The server injects these instructions into the LLM context:
 ### Consent
 
 - **Default-denied** — no tool can resolve PII without explicit consent
+- **Time-limited** — all consent grants require a TTL (`30m`, `1h`, `24h`, `7d`); no infinite consent
 - Granular: per-reference, per-accessor, per-purpose
 - Wildcards supported for convenience (`"*"`)
 - `dam_reveal` bypasses consent for emergencies — but always logs a reason
@@ -379,6 +409,9 @@ whitelist = []                # terms to never flag
 
 [server]
 http_port = 7828
+# anthropic_upstream_url = "https://api.anthropic.com"
+# openai_upstream_url = "https://api.openai.com"
+# codex_upstream_url = "https://chatgpt.com/backend-api"
 ```
 
 ### Key sources
@@ -410,7 +443,10 @@ description = "Internal employee ID"
 
 ```
 dam init                                          Initialize vault, config, and KEK
-dam serve [--port PORT]                           Start HTTP proxy (default: 7828)
+dam serve [--port PORT] [--verbose]                Start HTTP proxy (default: 7828)
+          [--anthropic-upstream URL]                  Override upstream URLs
+          [--openai-upstream URL]
+          [--codex-upstream URL]
 dam mcp                                           Start MCP server (stdio)
 dam scan [TEXT]                                    Scan text for PII (stdin if omitted)
 dam vault list [--type TYPE]                       List vault entries
@@ -418,7 +454,7 @@ dam vault show REF                                 Decrypt and display entry
 dam vault delete REF                               Delete entry
 dam vault clear                                    Delete ALL entries (with confirmation)
 dam consent list [--ref REF_ID]                    List consent rules
-dam consent grant REF_ID ACCESSOR PURPOSE          Grant consent
+dam consent grant REF_ID ACCESSOR PURPOSE --ttl D  Grant consent (30m, 1h, 24h, 7d)
 dam consent revoke REF_ID ACCESSOR PURPOSE         Revoke consent
 dam audit [--ref REF_ID] [--limit N]               View audit trail (default: 50)
 dam config show                                    Display current configuration
@@ -436,7 +472,7 @@ dam-vault      Encrypted SQLite storage, envelope crypto, keychain, consent, aud
 dam-detect     PII detection pipeline (regex + locale patterns + user rules)
 dam-resolve    Outbound resolution with consent checking and audit
 dam-mcp        MCP server — 7 tools over stdio transport
-dam-http       HTTP proxy — streaming SSE, Anthropic API passthrough
+dam-http       HTTP proxy — streaming SSE, Anthropic + OpenAI + Responses + Codex
 dam-cli        CLI binary — wires everything together
 ```
 
@@ -444,7 +480,7 @@ dam-cli        CLI binary — wires everything together
 
 ```bash
 cargo build --release            # single ~6MB binary
-cargo test --workspace           # 496 tests
+cargo test --workspace           # 570+ tests
 cargo clippy --workspace         # lint
 cargo fmt --check                # format check
 ```
@@ -454,7 +490,7 @@ cargo fmt --check                # format check
 - [ ] NER-based detection (names, addresses, organizations)
 - [ ] Vault cross-reference (flag values similar to known PII)
 - [ ] Derived operations (compare, compute on encrypted values)
-- [ ] Multi-provider proxy support (Google, etc.)
+- [ ] Additional provider formats (Google Gemini, etc.)
 - [ ] Web dashboard for vault and consent management
 - [ ] Team/org vault with shared consent policies
 

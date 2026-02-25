@@ -31,6 +31,63 @@ pub fn router(state: AppState) -> Router {
 }
 
 // ---------------------------------------------------------------------------
+// Upstream override
+// ---------------------------------------------------------------------------
+
+const DAM_UPSTREAM_HEADER: &str = "x-dam-upstream";
+const MAX_UPSTREAM_URL_LEN: usize = 2048;
+
+/// Extract an optional upstream URL override from the `X-DAM-Upstream` header.
+///
+/// Returns `None` if the header is absent or empty, allowing fallback to the
+/// configured default. Validates scheme, rejects credentials/query/fragment,
+/// and strips trailing slashes.
+fn extract_upstream_override(headers: &HeaderMap) -> Result<Option<String>, AppError> {
+    let value = match headers.get(DAM_UPSTREAM_HEADER) {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+
+    let s = value
+        .to_str()
+        .map_err(|_| {
+            AppError::BadRequest("X-DAM-Upstream header contains invalid characters".into())
+        })?
+        .trim();
+
+    if s.is_empty() {
+        return Ok(None);
+    }
+
+    if s.len() > MAX_UPSTREAM_URL_LEN {
+        return Err(AppError::BadRequest(format!(
+            "X-DAM-Upstream URL exceeds {MAX_UPSTREAM_URL_LEN} character limit"
+        )));
+    }
+
+    if s.contains('@') {
+        return Err(AppError::BadRequest(
+            "X-DAM-Upstream URL must not contain credentials (@)".into(),
+        ));
+    }
+
+    if s.contains('?') || s.contains('#') {
+        return Err(AppError::BadRequest(
+            "X-DAM-Upstream URL must not contain query string or fragment".into(),
+        ));
+    }
+
+    if !s.starts_with("http://") && !s.starts_with("https://") {
+        return Err(AppError::BadRequest(
+            "X-DAM-Upstream URL must use http:// or https:// scheme".into(),
+        ));
+    }
+
+    let trimmed = s.trim_end_matches('/');
+    Ok(Some(trimmed.to_string()))
+}
+
+// ---------------------------------------------------------------------------
 // Shared SSE buffer
 // ---------------------------------------------------------------------------
 
@@ -104,7 +161,9 @@ async fn handle_messages(
     redact_request(&state.pipeline, &state.vault, &mut request)?;
     tracing::debug!("request redacted");
 
-    let upstream_url = format!("{}/v1/messages", state.anthropic_upstream_url);
+    let base = extract_upstream_override(&headers)?
+        .unwrap_or_else(|| state.anthropic_upstream_url.clone());
+    let upstream_url = format!("{base}/v1/messages");
     let mut upstream_req = state.client.post(&upstream_url);
 
     for &name in ANTHROPIC_FORWARD_HEADERS {
@@ -339,7 +398,9 @@ async fn handle_chat_completions(
     redact_chat_request(&state.pipeline, &state.vault, &mut request)?;
     tracing::debug!("openai request redacted");
 
-    let upstream_url = format!("{}/v1/chat/completions", state.openai_upstream_url);
+    let base =
+        extract_upstream_override(&headers)?.unwrap_or_else(|| state.openai_upstream_url.clone());
+    let upstream_url = format!("{base}/v1/chat/completions");
     let mut upstream_req = state.client.post(&upstream_url);
 
     for &name in OPENAI_FORWARD_HEADERS {
@@ -588,7 +649,9 @@ async fn handle_responses(
     redact_responses_request(&state.pipeline, &state.vault, &mut request)?;
     tracing::debug!("responses request redacted");
 
-    let upstream_url = format!("{}/v1/responses", state.openai_upstream_url);
+    let base =
+        extract_upstream_override(&headers)?.unwrap_or_else(|| state.openai_upstream_url.clone());
+    let upstream_url = format!("{base}/v1/responses");
     let mut upstream_req = state.client.post(&upstream_url);
 
     for &name in OPENAI_FORWARD_HEADERS {
@@ -903,7 +966,9 @@ async fn handle_codex_responses(
     redact_responses_request(&state.pipeline, &state.vault, &mut request)?;
     tracing::debug!("codex request redacted");
 
-    let upstream_url = format!("{}/codex/responses", state.codex_upstream_url);
+    let base =
+        extract_upstream_override(&headers)?.unwrap_or_else(|| state.codex_upstream_url.clone());
+    let upstream_url = format!("{base}/codex/responses");
     let mut upstream_req = state.client.post(&upstream_url);
 
     for &name in CODEX_FORWARD_HEADERS {
@@ -1220,6 +1285,135 @@ mod tests {
             "should resolve ref in function call args: {output_str}"
         );
         assert!(output_str.starts_with("event: response.function_call_arguments.delta\n"));
+    }
+
+    // --- extract_upstream_override tests ---
+
+    fn headers_with(name: &str, value: &str) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        map.insert(
+            axum::http::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            axum::http::header::HeaderValue::from_str(value).unwrap(),
+        );
+        map
+    }
+
+    #[test]
+    fn upstream_override_absent() {
+        let headers = HeaderMap::new();
+        assert!(extract_upstream_override(&headers).unwrap().is_none());
+    }
+
+    #[test]
+    fn upstream_override_https() {
+        let headers = headers_with("x-dam-upstream", "https://api.x.ai");
+        assert_eq!(
+            extract_upstream_override(&headers).unwrap().as_deref(),
+            Some("https://api.x.ai")
+        );
+    }
+
+    #[test]
+    fn upstream_override_http_localhost() {
+        let headers = headers_with("x-dam-upstream", "http://localhost:8080");
+        assert_eq!(
+            extract_upstream_override(&headers).unwrap().as_deref(),
+            Some("http://localhost:8080")
+        );
+    }
+
+    #[test]
+    fn upstream_override_strips_trailing_slash() {
+        let headers = headers_with("x-dam-upstream", "https://api.x.ai/");
+        assert_eq!(
+            extract_upstream_override(&headers).unwrap().as_deref(),
+            Some("https://api.x.ai")
+        );
+    }
+
+    #[test]
+    fn upstream_override_trims_whitespace() {
+        let headers = headers_with("x-dam-upstream", "  https://api.x.ai  ");
+        assert_eq!(
+            extract_upstream_override(&headers).unwrap().as_deref(),
+            Some("https://api.x.ai")
+        );
+    }
+
+    #[test]
+    fn upstream_override_empty_string() {
+        let headers = headers_with("x-dam-upstream", "");
+        assert!(extract_upstream_override(&headers).unwrap().is_none());
+    }
+
+    #[test]
+    fn upstream_override_whitespace_only() {
+        let headers = headers_with("x-dam-upstream", "   ");
+        assert!(extract_upstream_override(&headers).unwrap().is_none());
+    }
+
+    #[test]
+    fn upstream_override_rejects_ftp() {
+        let headers = headers_with("x-dam-upstream", "ftp://evil.com");
+        assert!(extract_upstream_override(&headers).is_err());
+    }
+
+    #[test]
+    fn upstream_override_rejects_no_scheme() {
+        let headers = headers_with("x-dam-upstream", "not a url");
+        assert!(extract_upstream_override(&headers).is_err());
+    }
+
+    #[test]
+    fn upstream_override_rejects_credentials() {
+        let headers = headers_with("x-dam-upstream", "https://user:pass@api.x.ai");
+        assert!(extract_upstream_override(&headers).is_err());
+    }
+
+    #[test]
+    fn upstream_override_rejects_query_string() {
+        let headers = headers_with("x-dam-upstream", "https://api.x.ai?key=val");
+        assert!(extract_upstream_override(&headers).is_err());
+    }
+
+    #[test]
+    fn upstream_override_rejects_fragment() {
+        let headers = headers_with("x-dam-upstream", "https://api.x.ai#frag");
+        assert!(extract_upstream_override(&headers).is_err());
+    }
+
+    #[test]
+    fn upstream_override_rejects_too_long() {
+        let long_url = format!("https://example.com/{}", "a".repeat(MAX_UPSTREAM_URL_LEN));
+        let headers = headers_with("x-dam-upstream", &long_url);
+        assert!(extract_upstream_override(&headers).is_err());
+    }
+
+    #[test]
+    fn upstream_override_allows_path_prefix() {
+        let headers = headers_with("x-dam-upstream", "https://gateway.corp.com/openai-proxy");
+        assert_eq!(
+            extract_upstream_override(&headers).unwrap().as_deref(),
+            Some("https://gateway.corp.com/openai-proxy")
+        );
+    }
+
+    #[test]
+    fn upstream_override_allows_local_ip() {
+        let headers = headers_with("x-dam-upstream", "http://127.0.0.1:11434");
+        assert_eq!(
+            extract_upstream_override(&headers).unwrap().as_deref(),
+            Some("http://127.0.0.1:11434")
+        );
+    }
+
+    #[test]
+    fn upstream_override_strips_multiple_trailing_slashes() {
+        let headers = headers_with("x-dam-upstream", "https://api.x.ai///");
+        assert_eq!(
+            extract_upstream_override(&headers).unwrap().as_deref(),
+            Some("https://api.x.ai")
+        );
     }
 
     #[test]

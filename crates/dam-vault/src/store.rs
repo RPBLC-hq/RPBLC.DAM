@@ -6,8 +6,11 @@ use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
 
-/// Normalize PII values for consistent deduplication.
+/// Normalize PII values for deduplication comparison only.
+///
 /// Strips spaces and dashes. Uppercases types that contain letters.
+/// The original value is stored in the vault — this function is only used
+/// to compare whether two differently-formatted values are equivalent.
 fn normalize_pii(pii_type: PiiType, value: &str) -> String {
     match pii_type {
         PiiType::CreditCard
@@ -84,7 +87,9 @@ impl VaultStore {
     /// Store a PII value in the vault. Returns the generated reference.
     ///
     /// Performs deduplication: if the exact same value+type already exists, returns the existing ref.
-    /// Values are normalized before storage (e.g., credit cards and phones have spaces/dashes removed).
+    /// Deduplication normalizes values (e.g., strips spaces/dashes from phone numbers) so that
+    /// `555-867-5309` and `5558675309` map to the same entry. The **original** format is preserved
+    /// in the vault and returned by [`retrieve_pii`].
     pub fn store_pii(
         &self,
         pii_type: PiiType,
@@ -97,16 +102,16 @@ impl VaultStore {
             .lock()
             .map_err(|e| DamError::Vault(e.to_string()))?;
 
-        // Normalize the value for consistent deduplication and storage
+        // Normalize for deduplication comparison only — original is stored
         let normalized = normalize_pii(pii_type, plaintext);
 
-        // Check for duplicates: decrypt existing entries of same type and compare
+        // Check for duplicates: decrypt existing entries of same type, normalize, and compare
         if let Some(existing_ref) = self.find_duplicate(&conn, pii_type, &normalized)? {
             return Ok(existing_ref);
         }
 
-        // Generate a new reference with collision retry
-        let encrypted = self.crypto.encrypt(normalized.as_bytes())?;
+        // Generate a new reference with collision retry — store original format
+        let encrypted = self.crypto.encrypt(plaintext.as_bytes())?;
         let now = chrono::Utc::now().timestamp();
 
         const MAX_RETRIES: usize = 5;
@@ -347,12 +352,15 @@ impl VaultStore {
         &self.conn
     }
 
-    /// Check for a duplicate entry of the same type and value.
+    /// Check for a duplicate entry of the same type and normalized value.
+    ///
+    /// Compares the normalized form of stored values against `normalized_value`
+    /// so that formatting differences (spaces, dashes, case) don't prevent dedup.
     fn find_duplicate(
         &self,
         conn: &Connection,
         pii_type: PiiType,
-        plaintext: &str,
+        normalized_value: &str,
     ) -> DamResult<Option<PiiRef>> {
         let mut stmt = conn
             .prepare("SELECT ref_id, ciphertext, dek_enc, iv FROM entries WHERE pii_type = ?1")
@@ -375,7 +383,7 @@ impl VaultStore {
 
             if let Ok(decrypted) = self.crypto.decrypt(&ciphertext, &dek_enc, &iv)
                 && let Ok(existing_value) = String::from_utf8(decrypted)
-                && existing_value == plaintext
+                && normalize_pii(pii_type, &existing_value) == normalized_value
             {
                 return Ok(Some(PiiRef::from_key(&ref_id)?));
             }
@@ -444,9 +452,9 @@ mod tests {
         assert_eq!(ref1.key(), ref2.key());
         assert_eq!(ref2.key(), ref3.key());
 
-        // Retrieve should return normalized value
+        // Retrieve should return the original format (first stored)
         let value = store.retrieve_pii(&ref1).unwrap();
-        assert_eq!(value, "4111111111111111");
+        assert_eq!(value, "4111 1111 1111 1111");
     }
 
     #[test]
@@ -466,8 +474,9 @@ mod tests {
         assert_eq!(ref1.key(), ref2.key());
         assert_eq!(ref2.key(), ref3.key());
 
+        // Retrieve should return the original format (first stored)
         let value = store.retrieve_pii(&ref1).unwrap();
-        assert_eq!(value, "5558675309");
+        assert_eq!(value, "555-867-5309");
     }
 
     #[test]
@@ -596,7 +605,7 @@ mod tests {
         assert_eq!(ref2.key(), ref3.key());
 
         let value = store.retrieve_pii(&ref1).unwrap();
-        assert_eq!(value, "DE89370400440532013000");
+        assert_eq!(value, "DE89 3704 0044 0532 0130 00");
     }
 
     #[test]
@@ -616,7 +625,7 @@ mod tests {
         assert_eq!(ref2.key(), ref3.key());
 
         let value = store.retrieve_pii(&ref1).unwrap();
-        assert_eq!(value, "130692544");
+        assert_eq!(value, "130-692-544");
     }
 
     #[test]
@@ -636,7 +645,7 @@ mod tests {
         assert_eq!(ref2.key(), ref3.key());
 
         let value = store.retrieve_pii(&ref1).unwrap();
-        assert_eq!(value, "K1A0B1");
+        assert_eq!(value, "K1A 0B1");
     }
 
     #[test]
@@ -656,7 +665,7 @@ mod tests {
         assert_eq!(ref2.key(), ref3.key());
 
         let value = store.retrieve_pii(&ref1).unwrap();
-        assert_eq!(value, "AB123456C");
+        assert_eq!(value, "AB 123 456 C");
     }
 
     #[test]
@@ -672,7 +681,7 @@ mod tests {
         assert_eq!(ref1.key(), ref2.key());
 
         let value = store.retrieve_pii(&ref1).unwrap();
-        assert_eq!(value, "DE123456789");
+        assert_eq!(value, "de 123 456 789");
     }
 
     #[test]
@@ -688,7 +697,7 @@ mod tests {
         assert_eq!(ref1.key(), ref2.key());
 
         let value = store.retrieve_pii(&ref1).unwrap();
-        assert_eq!(value, "DEUTDEFF");
+        assert_eq!(value, "deut de ff");
     }
 
     #[test]
@@ -708,7 +717,7 @@ mod tests {
         assert_eq!(ref2.key(), ref3.key());
 
         let value = store.retrieve_pii(&ref1).unwrap();
-        assert_eq!(value, "9434765919");
+        assert_eq!(value, "943 476 5919");
     }
 
     #[test]
@@ -724,7 +733,7 @@ mod tests {
         assert_eq!(ref1.key(), ref2.key());
 
         let value = store.retrieve_pii(&ref1).unwrap();
-        assert_eq!(value, "MORGA657054SM9IJ");
+        assert_eq!(value, "morga657054sm9ij");
     }
 
     #[test]
