@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Auto-init** — `dam serve` and `dam mcp` now auto-create config, vault, and KEK if they don't exist, eliminating the mandatory `dam init` step and preventing agents from bricking themselves during proxy setup
+- **`dam daemon` subcommand** — manage DAM as a persistent background service that survives reboots and auto-restarts on crash; supports `install`, `uninstall`, `start`, `stop`, `status` with platform-native backends (systemd on Linux, launchd on macOS, Registry Run key on Windows)
+- **PID file + graceful shutdown** — `dam serve` writes `~/.dam/dam.pid` on startup and removes it on clean shutdown; handles SIGTERM (Unix) and ctrl-c for graceful request draining
+- **npm distribution** — install via `npm install -g @rpblc/dam` or `npx @rpblc/dam daemon install`; platform-specific binary packages for Linux x64, macOS ARM64/x64, and Windows x64
 - **`X-DAM-Upstream` header routing** — per-request upstream URL override via `X-DAM-Upstream` header, enabling multi-provider setups (e.g. xAI + OpenAI) without extra config
 - **OpenAI Responses API proxy** (`POST /v1/responses`) — PII redaction and streaming SSE resolution for OpenAI's Responses API, enabling DAM to proxy codex/responses traffic (e.g. OpenClaw's `openai-codex` provider)
 

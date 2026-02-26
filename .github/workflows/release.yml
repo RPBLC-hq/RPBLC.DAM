@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -91,3 +92,64 @@ jobs:
         with:
           generate_release_notes: true
           files: release/*
+
+  npm-publish:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Copy binaries into npm packages
+        run: |
+          cp artifacts/dam-x86_64-unknown-linux-musl/dam-x86_64-unknown-linux-musl npm/dam-linux-x64/bin/dam
+          chmod +x npm/dam-linux-x64/bin/dam
+
+          cp artifacts/dam-aarch64-apple-darwin/dam-aarch64-apple-darwin npm/dam-darwin-arm64/bin/dam
+          chmod +x npm/dam-darwin-arm64/bin/dam
+
+          cp artifacts/dam-x86_64-apple-darwin/dam-x86_64-apple-darwin npm/dam-darwin-x64/bin/dam
+          chmod +x npm/dam-darwin-x64/bin/dam
+
+          cp artifacts/dam-x86_64-pc-windows-msvc.exe/dam-x86_64-pc-windows-msvc.exe npm/dam-win32-x64/bin/dam.exe
+
+      - name: Set versions in package.json files
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          for pkg in npm/dam npm/dam-linux-x64 npm/dam-darwin-arm64 npm/dam-darwin-x64 npm/dam-win32-x64; do
+            jq --arg v "$VERSION" '.version = $v' "$pkg/package.json" > tmp.json && mv tmp.json "$pkg/package.json"
+          done
+          # Update all optionalDependencies versions in root package atomically
+          jq --arg v "$VERSION" '.optionalDependencies = (.optionalDependencies | with_entries(.value = $v))' npm/dam/package.json > tmp.json && mv tmp.json npm/dam/package.json
+
+      # Authentication via npm Trusted Publishers (OIDC). The id-token:write
+      # permission + --provenance flag exchange a GitHub OIDC token for a
+      # short-lived npm publish token. No NPM_TOKEN secret needed.
+      - name: Publish platform packages
+        run: |
+          for pkg in dam-linux-x64 dam-darwin-arm64 dam-darwin-x64 dam-win32-x64; do
+            cd npm/$pkg
+            npm publish --access public --provenance
+            cd ../..
+          done
+
+      - name: Publish root package
+        working-directory: npm/dam
+        run: npm publish --access public --provenance

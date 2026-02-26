@@ -1,0 +1,20 @@
+{
+  "name": "@rpblc/dam",
+  "version": "0.1.0",
+  "description": "DAM — PII firewall for AI agents",
+  "bin": {
+    "dam": "bin.js"
+  },
+  "optionalDependencies": {
+    "@rpblc/dam-linux-x64": "0.1.0",
+    "@rpblc/dam-darwin-arm64": "0.1.0",
+    "@rpblc/dam-darwin-x64": "0.1.0",
+    "@rpblc/dam-win32-x64": "0.1.0"
+  },
+  "keywords": ["pii", "privacy", "ai", "llm", "firewall", "proxy", "redaction"],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RPBLC-hq/RPBLC.DAM.git"
+  }
+}
