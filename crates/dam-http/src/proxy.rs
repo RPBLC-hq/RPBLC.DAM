@@ -386,7 +386,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_request(&pipeline, &vault, &mut req, true).unwrap();
+        let refs = redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let MessageContent::Text(ref text) = req.messages[0].content {
             assert!(!text.contains("john@acme.com"));
@@ -394,6 +394,36 @@ mod tests {
         } else {
             panic!("expected Text");
         }
+        assert_eq!(refs.len(), 1);
+    }
+
+    #[test]
+    fn redaction_refs_exclude_user_supplied_reference_like_tokens() {
+        let (vault, pipeline) = test_setup();
+        let secret_ref = vault
+            .store_pii(PiiType::Email, "victim@example.com", None, None)
+            .unwrap();
+
+        let mut req = MessagesRequest {
+            model: "test".into(),
+            messages: vec![Message {
+                role: "user".into(),
+                content: MessageContent::Text(format!(
+                    "Do not resolve this literal token: {}",
+                    secret_ref.display()
+                )),
+            }],
+            max_tokens: Some(100),
+            stream: None,
+            system: None,
+            extra: HashMap::new(),
+        };
+
+        let refs = redact_request(&pipeline, &vault, &mut req, true).unwrap();
+        assert!(
+            !refs.contains(&secret_ref.key()),
+            "allowlist must not include user-supplied ref-like text"
+        );
     }
 
     #[test]

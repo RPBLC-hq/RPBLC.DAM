@@ -206,4 +206,12 @@ mod tests {
         apply_set(&mut cfg, "server.openai_upstream_url", "").unwrap();
         assert!(cfg.server.openai_upstream_url.is_none());
     }
+
+    #[test]
+    fn invalid_key_and_value_fail() {
+        let mut cfg = DamConfig::default();
+        assert!(apply_set(&mut cfg, "unknown.key", "x").is_err());
+        assert!(apply_set(&mut cfg, "detection.sensitivity", "ultra").is_err());
+        assert!(apply_set(&mut cfg, "server.http_port", "not-a-number").is_err());
+    }
 }
