@@ -80,9 +80,7 @@ pub fn redact_request(
     request: &mut MessagesRequest,
     consent_passthrough: bool,
 ) -> Result<(), dam_core::DamError> {
-    // Scan model field
-    let result = pipeline.scan(&request.model, Some("http-proxy"))?;
-    request.model = apply_consent_passthrough(vault, &result, consent_passthrough)?;
+    // Intentionally do NOT scan model identifiers.
 
     // Scan system message if present
     if let Some(ref mut system) = request.system {
@@ -299,8 +297,6 @@ fn collect_refs_from_json(value: &Value, refs: &mut HashSet<String>) {
 /// Collect all references present in a redacted Anthropic request.
 pub fn collect_request_refs(request: &MessagesRequest) -> HashSet<String> {
     let mut refs = HashSet::new();
-    collect_refs_from_text(&request.model, &mut refs);
-
     if let Some(system) = &request.system {
         collect_refs_from_text(system, &mut refs);
     }
@@ -539,8 +535,7 @@ mod tests {
 
         redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
-        assert!(!req.model.contains("leak@evil.com"));
-        assert!(req.model.contains("[email:"));
+        assert_eq!(req.model, "leak@evil.com");
     }
 
     #[test]
