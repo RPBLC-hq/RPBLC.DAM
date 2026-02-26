@@ -3,8 +3,10 @@ pub mod config;
 pub mod consent;
 pub mod init;
 pub mod mcp;
+pub mod health;
 pub mod scan;
 pub mod serve;
+pub mod status;
 pub mod vault;
 
 use anyhow::Result;

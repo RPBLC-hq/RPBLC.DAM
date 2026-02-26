@@ -9,6 +9,9 @@ pub enum ConfigAction {
     /// Show the current configuration
     Show,
 
+    /// Validate configuration and required files
+    Validate,
+
     /// Get a configuration value
     Get {
         /// Configuration key (e.g., "detection.locales")
@@ -24,10 +27,36 @@ pub enum ConfigAction {
     },
 }
 
-pub async fn run(action: ConfigAction) -> Result<()> {
+pub async fn run(action: ConfigAction, json: bool) -> Result<()> {
     let config_path = DamConfig::default_config_path();
 
     match action {
+        ConfigAction::Validate => {
+            let config = DamConfig::load(&config_path)?;
+            let vault_parent_exists = config
+                .vault
+                .path
+                .parent()
+                .map(|p| p.exists())
+                .unwrap_or(false);
+
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "ok": true,
+                        "config_path": config_path,
+                        "vault_path": config.vault.path,
+                        "vault_parent_exists": vault_parent_exists,
+                        "http_port": config.server.http_port,
+                    })
+                );
+            } else {
+                println!("Config OK: {}", config_path.display());
+                println!("Vault path: {}", config.vault.path.display());
+                println!("HTTP port: {}", config.server.http_port);
+            }
+        }
         ConfigAction::Show => {
             if config_path.exists() {
                 let contents = std::fs::read_to_string(&config_path)?;
@@ -63,6 +92,18 @@ pub async fn run(action: ConfigAction) -> Result<()> {
                 "server.http_port" => {
                     println!("{}", config.server.http_port);
                 }
+                "server.consent_passthrough" => {
+                    println!("{}", config.server.consent_passthrough);
+                }
+                "server.anthropic_upstream_url" => {
+                    println!("{}", config.server.anthropic_upstream_url.unwrap_or_default());
+                }
+                "server.openai_upstream_url" => {
+                    println!("{}", config.server.openai_upstream_url.unwrap_or_default());
+                }
+                "server.codex_upstream_url" => {
+                    println!("{}", config.server.codex_upstream_url.unwrap_or_default());
+                }
                 _ => {
                     anyhow::bail!("Unknown config key: {key}");
                 }
@@ -88,6 +129,30 @@ pub async fn run(action: ConfigAction) -> Result<()> {
                 }
                 "server.http_port" => {
                     config.server.http_port = value.parse()?;
+                }
+                "server.consent_passthrough" => {
+                    config.server.consent_passthrough = value.parse()?;
+                }
+                "server.anthropic_upstream_url" => {
+                    config.server.anthropic_upstream_url = if value.trim().is_empty() {
+                        None
+                    } else {
+                        Some(value.clone())
+                    };
+                }
+                "server.openai_upstream_url" => {
+                    config.server.openai_upstream_url = if value.trim().is_empty() {
+                        None
+                    } else {
+                        Some(value.clone())
+                    };
+                }
+                "server.codex_upstream_url" => {
+                    config.server.codex_upstream_url = if value.trim().is_empty() {
+                        None
+                    } else {
+                        Some(value.clone())
+                    };
                 }
                 _ => {
                     anyhow::bail!("Unknown config key: {key}");
