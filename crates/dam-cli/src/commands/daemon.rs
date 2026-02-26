@@ -31,22 +31,11 @@ pub async fn run(action: DaemonAction) -> Result<()> {
     }
 }
 
+use super::{pid_file_path, read_pid};
+
 /// Resolve the path to the current `dam` binary.
 fn dam_exe_path() -> Result<PathBuf> {
     std::env::current_exe().context("could not determine dam binary path")
-}
-
-/// Path to the PID file: `~/.dam/dam.pid`
-fn pid_file_path() -> PathBuf {
-    DamConfig::default_home().join("dam.pid")
-}
-
-/// Read PID from the PID file, if it exists and is valid.
-fn read_pid() -> Option<u32> {
-    let path = pid_file_path();
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
 }
 
 /// Check whether a process with the given PID is running.
@@ -144,6 +133,7 @@ mod platform {
              ExecStart={exe} serve --port {port}\n\
              Restart=on-failure\n\
              RestartSec=5\n\
+             # Override with: systemctl --user edit dam → [Service] Environment=RUST_LOG=debug\n\
              Environment=RUST_LOG=warn\n\
              \n\
              [Install]\n\
@@ -244,7 +234,7 @@ mod platform {
 
     fn plist_path() -> PathBuf {
         dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("~"))
+            .expect("Failed to determine home directory for launchd plist")
             .join("Library/LaunchAgents/dev.rpblc.dam.plist")
     }
 
@@ -294,10 +284,16 @@ mod platform {
         std::fs::write(&path, plist)?;
         eprintln!("  Wrote {}", path.display());
 
-        Command::new("launchctl")
+        let status = Command::new("launchctl")
             .args(["load", "-w"])
             .arg(&path)
             .status()?;
+        if !status.success() {
+            anyhow::bail!(
+                "launchctl load failed — check the plist at {}",
+                path.display()
+            );
+        }
         Ok(())
     }
 
@@ -417,7 +413,10 @@ mod platform {
             .map(|p| p.display().to_string())
             .or_else(read_exe_from_registry)
             .unwrap_or_else(|| "dam".to_string());
-        let port = read_port_from_registry().unwrap_or(7828);
+        let port = read_port_from_registry().unwrap_or_else(|| {
+            eprintln!("  Warning: could not read port from registry, using default 7828");
+            7828
+        });
         spawn_detached(&exe, port)
     }
 
@@ -451,11 +450,38 @@ mod platform {
             .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
             .spawn()
             .context("failed to spawn detached dam process")?;
+
+        // Wait briefly for the child to write its PID file so that
+        // subsequent status checks can find it immediately.
+        for _ in 0..10 {
+            if pid_file_path().exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
         Ok(())
+    }
+
+    /// Check whether the given PID belongs to a dam process.
+    fn is_dam_process(pid: u32) -> bool {
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .output()
+            .map(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                // CSV output: "dam.exe","<pid>",... — verify it's actually dam
+                stdout.contains("dam.exe") || stdout.contains("dam\"")
+            })
+            .unwrap_or(false)
     }
 
     fn stop_process() -> Result<()> {
         if let Some(pid) = read_pid() {
+            if !is_dam_process(pid) {
+                eprintln!("  PID {pid} is not a dam process (stale PID file). Cleaning up.");
+                let _ = std::fs::remove_file(pid_file_path());
+                return Ok(());
+            }
             let status = Command::new("taskkill")
                 .args(["/PID", &pid.to_string(), "/F"])
                 .status()?;
@@ -506,9 +532,19 @@ mod platform {
 
     fn read_port_from_registry() -> Option<u16> {
         let val = read_reg_value()?;
-        let parts: Vec<&str> = val.split_whitespace().collect();
+        // Handle quoted exe paths: "C:\Program Files\dam.exe" serve --port 7828
+        // Skip past the closing quote to get the arguments portion.
+        let args_portion = if let Some(after_open) = val.strip_prefix('"') {
+            match after_open.find('"') {
+                Some(close) => &after_open[close + 1..],
+                None => val.as_str(),
+            }
+        } else {
+            val.as_str()
+        };
+        let parts: Vec<&str> = args_portion.split_whitespace().collect();
         for (i, part) in parts.iter().enumerate() {
-            if *part == "--port" {
+            if part == &"--port" {
                 return parts.get(i + 1).and_then(|s| s.parse().ok());
             }
         }

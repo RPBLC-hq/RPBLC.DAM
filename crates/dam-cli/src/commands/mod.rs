@@ -13,7 +13,35 @@ pub mod vault;
 use anyhow::Result;
 use dam_core::config::{DamConfig, KeySource};
 use dam_vault::{KeychainManager, VaultStore};
+use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Path to the PID file: `~/.dam/dam.pid`
+pub fn pid_file_path() -> PathBuf {
+    DamConfig::default_home().join("dam.pid")
+}
+
+/// Write current process PID to the PID file.
+pub fn write_pid_file() -> Result<()> {
+    let path = pid_file_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, std::process::id().to_string())?;
+    Ok(())
+}
+
+/// Remove the PID file if it exists.
+pub fn remove_pid_file() {
+    let _ = std::fs::remove_file(pid_file_path());
+}
+
+/// Read PID from the PID file, if it exists and is valid.
+pub fn read_pid() -> Option<u32> {
+    std::fs::read_to_string(pid_file_path())
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
 
 /// Load config from the default path or return defaults.
 pub fn load_config() -> Result<DamConfig> {
@@ -50,9 +78,20 @@ pub fn open_vault(config: &DamConfig) -> Result<Arc<VaultStore>> {
     let kek = match &config.vault.key_source {
         KeySource::OsKeychain => match KeychainManager::get_kek() {
             Ok(kek) => kek,
-            Err(_) => {
-                eprintln!("  [auto-init] KEK not found in OS keychain, creating...");
-                KeychainManager::get_or_create_kek()?
+            Err(err) => {
+                let msg = err.to_string();
+                // Only auto-create if the KEK genuinely doesn't exist.
+                // Transient errors (locked keychain, permissions) must surface
+                // to avoid creating a new KEK that orphans existing vault data.
+                if msg.contains("No matching entry found") {
+                    eprintln!("  [auto-init] KEK not found in OS keychain, creating...");
+                    KeychainManager::get_or_create_kek()?
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "Failed to access KEK in OS keychain: {msg}\n\
+                         Ensure your OS keychain is unlocked and accessible, then retry."
+                    ));
+                }
             }
         },
         KeySource::Passphrase => {

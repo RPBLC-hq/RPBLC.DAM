@@ -1,30 +1,8 @@
 use anyhow::Result;
-use dam_core::config::DamConfig;
 use dam_http::proxy::AppState;
 use dam_http::router::router;
 
-use super::{load_config_auto_init, open_vault};
-
-/// Path to the PID file: `~/.dam/dam.pid`
-fn pid_file_path() -> std::path::PathBuf {
-    DamConfig::default_home().join("dam.pid")
-}
-
-/// Write current process PID to the PID file.
-fn write_pid_file() -> Result<()> {
-    let path = pid_file_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, std::process::id().to_string())?;
-    Ok(())
-}
-
-/// Remove the PID file if it exists.
-fn remove_pid_file() {
-    let path = pid_file_path();
-    let _ = std::fs::remove_file(path);
-}
+use super::{load_config_auto_init, open_vault, remove_pid_file, write_pid_file};
 
 /// Wait for a shutdown signal (ctrl-c on all platforms, SIGTERM on Unix).
 async fn shutdown_signal() {
@@ -75,10 +53,17 @@ pub async fn run(
     let app = router(state);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    // Write PID file after successfully binding
+    // Write PID file before binding so daemon commands can find us even if
+    // we crash between bind and serve. Cleaned up on bind failure.
     write_pid_file()?;
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            remove_pid_file();
+            return Err(e.into());
+        }
+    };
 
     eprintln!("DAM proxy listening on http://{addr}");
     eprintln!();

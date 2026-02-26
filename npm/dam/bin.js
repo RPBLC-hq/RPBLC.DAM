@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { execFileSync } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 
 const PLATFORMS = {
@@ -34,6 +35,13 @@ function getBinaryPath() {
 }
 
 const binary = getBinaryPath();
+
+if (!fs.existsSync(binary)) {
+  console.error(`Binary not found at ${binary}`);
+  console.error(`The package may be corrupted. Try reinstalling: npm install -g @rpblc/dam`);
+  process.exit(1);
+}
+
 const args = process.argv.slice(2);
 
 try {
