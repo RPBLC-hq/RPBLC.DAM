@@ -14,3 +14,4 @@ pub mod responses;
 pub mod routes;
 pub mod server;
 pub mod streaming;
+pub mod upstream;
