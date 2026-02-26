@@ -25,6 +25,8 @@ use crate::upstream::extract_upstream_override;
 /// Build the axum router.
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/healthz", axum::routing::get(handle_healthz))
+        .route("/readyz", axum::routing::get(handle_readyz))
         .route("/v1/messages", post(handle_messages))
         .route("/v1/chat/completions", post(handle_chat_completions))
         .route("/v1/responses", post(handle_responses))
@@ -119,6 +121,17 @@ fn forward_request_headers(
         }
     }
     upstream_req
+}
+
+async fn handle_healthz() -> impl IntoResponse {
+    (StatusCode::OK, "ok")
+}
+
+async fn handle_readyz(State(state): State<AppState>) -> impl IntoResponse {
+    match state.vault.conn().lock() {
+        Ok(_) => (StatusCode::OK, "ready"),
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "not ready"),
+    }
 }
 
 /// POST /v1/messages handler.
