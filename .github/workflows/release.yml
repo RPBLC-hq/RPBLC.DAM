@@ -29,7 +29,7 @@ jobs:
             binary: dam
             asset: dam-aarch64-apple-darwin
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-15
             binary: dam
             asset: dam-x86_64-apple-darwin
           - target: x86_64-pc-windows-msvc
@@ -41,7 +41,7 @@ jobs:
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools libdbus-1-dev pkg-config
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
