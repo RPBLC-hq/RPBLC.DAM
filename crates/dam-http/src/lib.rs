@@ -7,11 +7,14 @@
 
 pub mod anthropic;
 pub mod error;
+pub mod health;
+pub mod headers;
 pub mod openai;
 pub mod proxy;
 pub mod resolve;
 pub mod responses;
 pub mod routes;
 pub mod server;
+pub mod sse_buffer;
 pub mod streaming;
 pub mod upstream;

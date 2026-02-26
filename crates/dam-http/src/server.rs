@@ -4,13 +4,14 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use bytes::BytesMut;
 use futures_util::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::anthropic::{Delta, MessagesRequest, MessagesResponse, StreamEvent};
 use crate::error::AppError;
+use crate::health::{handle_healthz, handle_readyz};
+use crate::headers::forward_request_headers;
 use crate::openai::{ChatChunk, ChatRequest, ChatResponse};
 use crate::proxy::{
     AppState, collect_chat_request_refs, collect_request_refs, collect_responses_request_refs,
@@ -19,6 +20,7 @@ use crate::proxy::{
 };
 use crate::resolve::resolve_text;
 use crate::responses::{ResponsesRequest, ResponsesResponse, ResponsesStreamDelta};
+use crate::sse_buffer::SseBuffer;
 use crate::streaming::StreamingResolver;
 use crate::upstream::extract_upstream_override;
 
@@ -35,104 +37,8 @@ pub fn router(state: AppState) -> Router {
 }
 
 // ---------------------------------------------------------------------------
-// Shared SSE buffer
-// ---------------------------------------------------------------------------
-
-/// Reusable SSE byte buffer that splits raw bytes into complete events.
-///
-/// An SSE event is terminated by `\n\n` (or `\r\n\r\n`). This struct buffers
-/// incoming bytes and yields complete events one at a time.
-pub(crate) struct SseBuffer {
-    pub(crate) raw_buf: BytesMut,
-    scan_from: usize,
-}
-
-impl SseBuffer {
-    pub(crate) fn new() -> Self {
-        Self {
-            raw_buf: BytesMut::new(),
-            scan_from: 0,
-        }
-    }
-
-    /// Feed raw bytes from the upstream response.
-    pub(crate) fn feed(&mut self, chunk: &[u8]) {
-        self.raw_buf.extend_from_slice(chunk);
-    }
-
-    /// Extract the next complete SSE event (terminated by `\n\n`).
-    pub(crate) fn next_event(&mut self) -> Option<Vec<u8>> {
-        let buf = &self.raw_buf[..];
-        let start = self.scan_from.min(buf.len());
-
-        // Look for \n\n first
-        for i in start..buf.len().saturating_sub(1) {
-            if buf[i] == b'\n' && buf[i + 1] == b'\n' {
-                let event = self.raw_buf.split_to(i + 2).to_vec();
-                self.scan_from = 0;
-                return Some(event);
-            }
-        }
-
-        // Also check for \r\n\r\n
-        for i in start.saturating_sub(2)..buf.len().saturating_sub(3) {
-            if buf[i] == b'\r' && buf[i + 1] == b'\n' && buf[i + 2] == b'\r' && buf[i + 3] == b'\n'
-            {
-                let event = self.raw_buf.split_to(i + 4).to_vec();
-                self.scan_from = 0;
-                return Some(event);
-            }
-        }
-
-        self.scan_from = buf.len().saturating_sub(3);
-        None
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Anthropic SSE handler
 // ---------------------------------------------------------------------------
-
-fn should_forward_header(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    !matches!(
-        n.as_str(),
-        "connection"
-            | "keep-alive"
-            | "proxy-authenticate"
-            | "proxy-authorization"
-            | "te"
-            | "trailers"
-            | "transfer-encoding"
-            | "upgrade"
-            | "host"
-            | "content-length"
-            | "x-dam-upstream"
-    )
-}
-
-fn forward_request_headers(
-    mut upstream_req: reqwest::RequestBuilder,
-    headers: &HeaderMap,
-) -> reqwest::RequestBuilder {
-    for (name, value) in headers {
-        if should_forward_header(name.as_str()) {
-            upstream_req = upstream_req.header(name, value);
-        }
-    }
-    upstream_req
-}
-
-async fn handle_healthz() -> impl IntoResponse {
-    (StatusCode::OK, "ok")
-}
-
-async fn handle_readyz(State(state): State<AppState>) -> impl IntoResponse {
-    match state.vault.conn().lock() {
-        Ok(_) => (StatusCode::OK, "ready"),
-        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "not ready"),
-    }
-}
 
 /// POST /v1/messages handler.
 async fn handle_messages(
