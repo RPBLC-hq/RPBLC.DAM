@@ -1,6 +1,6 @@
 use anyhow::Result;
 use dam_http::proxy::AppState;
-use dam_http::server::router;
+use dam_http::router::router;
 
 use super::{load_config, open_vault};
 

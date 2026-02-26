@@ -1,16 +1,13 @@
-use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
 use futures_util::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::anthropic::{Delta, MessagesRequest, MessagesResponse, StreamEvent};
 use crate::error::AppError;
-use crate::health::{handle_healthz, handle_readyz};
 use crate::headers::forward_request_headers;
 use crate::openai::{ChatChunk, ChatRequest, ChatResponse};
 use crate::proxy::{
@@ -24,24 +21,12 @@ use crate::sse_buffer::SseBuffer;
 use crate::streaming::StreamingResolver;
 use crate::upstream::extract_upstream_override;
 
-/// Build the axum router.
-pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/healthz", axum::routing::get(handle_healthz))
-        .route("/readyz", axum::routing::get(handle_readyz))
-        .route("/v1/messages", post(handle_messages))
-        .route("/v1/chat/completions", post(handle_chat_completions))
-        .route("/v1/responses", post(handle_responses))
-        .route("/codex/responses", post(handle_codex_responses))
-        .with_state(state)
-}
-
 // ---------------------------------------------------------------------------
 // Anthropic SSE handler
 // ---------------------------------------------------------------------------
 
 /// POST /v1/messages handler.
-async fn handle_messages(
+pub(crate) async fn handle_messages(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: String,
@@ -274,7 +259,7 @@ impl AnthropicSseState {
 // ---------------------------------------------------------------------------
 
 /// POST /v1/chat/completions handler.
-async fn handle_chat_completions(
+pub(crate) async fn handle_chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: String,
@@ -529,7 +514,7 @@ impl OpenAiSseState {
 // ---------------------------------------------------------------------------
 
 /// POST /v1/responses handler.
-async fn handle_responses(
+pub(crate) async fn handle_responses(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: String,
@@ -846,7 +831,7 @@ impl ResponsesSseState {
 /// Reuses the same Responses API types and redaction/resolution logic,
 /// but forwards to the Codex backend API (`chatgpt.com/backend-api`)
 /// instead of OpenAI's standard API.
-async fn handle_codex_responses(
+pub(crate) async fn handle_codex_responses(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: String,

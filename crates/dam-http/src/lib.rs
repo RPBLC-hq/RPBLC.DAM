@@ -13,6 +13,7 @@ pub mod openai;
 pub mod proxy;
 pub mod resolve;
 pub mod responses;
+pub mod router;
 pub mod routes;
 pub mod server;
 pub mod sse_buffer;
