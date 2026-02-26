@@ -8,8 +8,12 @@ pub(crate) async fn handle_healthz() -> impl IntoResponse {
 }
 
 pub(crate) async fn handle_readyz(State(state): State<AppState>) -> impl IntoResponse {
-    match state.vault.conn().lock() {
-        Ok(_) => (StatusCode::OK, "ready"),
+    let Ok(conn) = state.vault.conn().lock() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "not ready");
+    };
+
+    match conn.query_row("SELECT 1", [], |_row| Ok(())) {
+        Ok(()) => (StatusCode::OK, "ready"),
         Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "not ready"),
     }
 }

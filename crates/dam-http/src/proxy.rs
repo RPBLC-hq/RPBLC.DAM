@@ -6,7 +6,7 @@ use crate::resolve::resolve_text;
 use crate::responses::{ResponsesRequest, ResponsesResponse};
 use dam_core::{
     DamConfig,
-    reference::{extract_refs, replace_refs},
+    reference::replace_refs,
 };
 use dam_detect::{DetectionPipeline, ScanResult};
 use dam_vault::{ConsentManager, VaultStore};
@@ -16,6 +16,12 @@ use std::sync::Arc;
 
 /// After scanning, check consent for each detection. For consented refs, replace the
 /// `[type:id]` token back with the original value.
+fn collect_scan_refs(scan_result: &ScanResult, refs: &mut HashSet<String>) {
+    for detection in &scan_result.detections {
+        refs.insert(detection.pii_ref.key());
+    }
+}
+
 fn apply_consent_passthrough(
     vault: &VaultStore,
     scan_result: &ScanResult,
@@ -48,20 +54,22 @@ pub(crate) fn scan_json_value(
     vault: &VaultStore,
     value: &mut Value,
     consent_passthrough: bool,
+    refs: &mut HashSet<String>,
 ) -> Result<(), dam_core::DamError> {
     match value {
         Value::String(s) => {
             let result = pipeline.scan(s, Some("http-proxy"))?;
+            collect_scan_refs(&result, refs);
             *s = apply_consent_passthrough(vault, &result, consent_passthrough)?;
         }
         Value::Array(arr) => {
             for item in arr {
-                scan_json_value(pipeline, vault, item, consent_passthrough)?;
+                scan_json_value(pipeline, vault, item, consent_passthrough, refs)?;
             }
         }
         Value::Object(map) => {
             for val in map.values_mut() {
-                scan_json_value(pipeline, vault, val, consent_passthrough)?;
+                scan_json_value(pipeline, vault, val, consent_passthrough, refs)?;
             }
         }
         _ => {} // Numbers, booleans, null - skip
@@ -79,18 +87,20 @@ pub fn redact_request(
     vault: &VaultStore,
     request: &mut MessagesRequest,
     consent_passthrough: bool,
-) -> Result<(), dam_core::DamError> {
+) -> Result<HashSet<String>, dam_core::DamError> {
+    let mut refs = HashSet::new();
     // Intentionally do NOT scan model identifiers.
 
     // Scan system message if present
     if let Some(ref mut system) = request.system {
         let result = pipeline.scan(system, Some("http-proxy"))?;
+        collect_scan_refs(&result, &mut refs);
         *system = apply_consent_passthrough(vault, &result, consent_passthrough)?;
     }
 
     // Scan all extra fields (metadata, etc.)
     for value in request.extra.values_mut() {
-        scan_json_value(pipeline, vault, value, consent_passthrough)?;
+        scan_json_value(pipeline, vault, value, consent_passthrough, &mut refs)?;
     }
 
     // Scan user messages
@@ -102,19 +112,21 @@ pub fn redact_request(
         match &mut message.content {
             MessageContent::Text(text) => {
                 let result = pipeline.scan(text, Some("http-proxy"))?;
+                collect_scan_refs(&result, &mut refs);
                 *text = apply_consent_passthrough(vault, &result, consent_passthrough)?;
             }
             MessageContent::Blocks(blocks) => {
                 for block in blocks {
                     if let ContentBlock::Text { text, .. } = block {
                         let result = pipeline.scan(text, Some("http-proxy"))?;
+                        collect_scan_refs(&result, &mut refs);
                         *text = apply_consent_passthrough(vault, &result, consent_passthrough)?;
                     }
                 }
             }
         }
     }
-    Ok(())
+    Ok(refs)
 }
 
 /// Resolve PII references in a non-streaming Anthropic response.
@@ -160,17 +172,20 @@ fn redact_chat_message(
     vault: &VaultStore,
     message: &mut ChatMessage,
     consent_passthrough: bool,
+    refs: &mut HashSet<String>,
 ) -> Result<(), dam_core::DamError> {
     if let Some(ref mut content) = message.content {
         match content {
             ChatContent::Text(text) => {
                 let result = pipeline.scan(text, Some("http-proxy"))?;
+                collect_scan_refs(&result, refs);
                 *text = apply_consent_passthrough(vault, &result, consent_passthrough)?;
             }
             ChatContent::Parts(parts) => {
                 for part in parts {
                     if let ContentPart::Text { text, .. } = part {
                         let result = pipeline.scan(text, Some("http-proxy"))?;
+                        collect_scan_refs(&result, refs);
                         *text = apply_consent_passthrough(vault, &result, consent_passthrough)?;
                     }
                 }
@@ -179,7 +194,7 @@ fn redact_chat_message(
     }
     // Scan extra fields (e.g. name, tool_call arguments)
     for value in message.extra.values_mut() {
-        scan_json_value(pipeline, vault, value, consent_passthrough)?;
+        scan_json_value(pipeline, vault, value, consent_passthrough, refs)?;
     }
     Ok(())
 }
@@ -194,22 +209,23 @@ pub fn redact_chat_request(
     vault: &VaultStore,
     request: &mut ChatRequest,
     consent_passthrough: bool,
-) -> Result<(), dam_core::DamError> {
+) -> Result<HashSet<String>, dam_core::DamError> {
+    let mut refs = HashSet::new();
     // Scan all extra fields
     for value in request.extra.values_mut() {
-        scan_json_value(pipeline, vault, value, consent_passthrough)?;
+        scan_json_value(pipeline, vault, value, consent_passthrough, &mut refs)?;
     }
 
     // Scan user and system messages
     for message in &mut request.messages {
         match message.role.as_str() {
             "user" | "system" => {
-                redact_chat_message(pipeline, vault, message, consent_passthrough)?;
+                redact_chat_message(pipeline, vault, message, consent_passthrough, &mut refs)?;
             }
             _ => {} // Skip assistant, tool messages
         }
     }
-    Ok(())
+    Ok(refs)
 }
 
 /// Resolve PII references in a non-streaming OpenAI ChatResponse.
@@ -242,22 +258,24 @@ pub fn redact_responses_request(
     vault: &VaultStore,
     request: &mut ResponsesRequest,
     consent_passthrough: bool,
-) -> Result<(), dam_core::DamError> {
+) -> Result<HashSet<String>, dam_core::DamError> {
+    let mut refs = HashSet::new();
     // Scan instructions if present
     if let Some(ref mut instructions) = request.instructions {
         let result = pipeline.scan(instructions, Some("http-proxy"))?;
+        collect_scan_refs(&result, &mut refs);
         *instructions = apply_consent_passthrough(vault, &result, consent_passthrough)?;
     }
 
     // Scan input recursively
-    scan_json_value(pipeline, vault, &mut request.input, consent_passthrough)?;
+    scan_json_value(pipeline, vault, &mut request.input, consent_passthrough, &mut refs)?;
 
     // Scan all extra fields
     for value in request.extra.values_mut() {
-        scan_json_value(pipeline, vault, value, consent_passthrough)?;
+        scan_json_value(pipeline, vault, value, consent_passthrough, &mut refs)?;
     }
 
-    Ok(())
+    Ok(refs)
 }
 
 /// Resolve PII references in a non-streaming OpenAI Responses API response.
@@ -269,103 +287,6 @@ pub fn resolve_responses_response(
     for item in &mut response.output {
         resolve_json_value(vault, item, allowed_refs);
     }
-}
-
-fn collect_refs_from_text(text: &str, refs: &mut HashSet<String>) {
-    for pii_ref in extract_refs(text) {
-        refs.insert(pii_ref.key());
-    }
-}
-
-fn collect_refs_from_json(value: &Value, refs: &mut HashSet<String>) {
-    match value {
-        Value::String(s) => collect_refs_from_text(s, refs),
-        Value::Array(arr) => {
-            for item in arr {
-                collect_refs_from_json(item, refs);
-            }
-        }
-        Value::Object(map) => {
-            for val in map.values() {
-                collect_refs_from_json(val, refs);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Collect all references present in a redacted Anthropic request.
-pub fn collect_request_refs(request: &MessagesRequest) -> HashSet<String> {
-    let mut refs = HashSet::new();
-    if let Some(system) = &request.system {
-        collect_refs_from_text(system, &mut refs);
-    }
-
-    for value in request.extra.values() {
-        collect_refs_from_json(value, &mut refs);
-    }
-
-    for message in &request.messages {
-        match &message.content {
-            MessageContent::Text(text) => collect_refs_from_text(text, &mut refs),
-            MessageContent::Blocks(blocks) => {
-                for block in blocks {
-                    if let ContentBlock::Text { text, .. } = block {
-                        collect_refs_from_text(text, &mut refs);
-                    }
-                }
-            }
-        }
-    }
-
-    refs
-}
-
-/// Collect all references present in a redacted OpenAI chat request.
-pub fn collect_chat_request_refs(request: &ChatRequest) -> HashSet<String> {
-    let mut refs = HashSet::new();
-
-    for value in request.extra.values() {
-        collect_refs_from_json(value, &mut refs);
-    }
-
-    for message in &request.messages {
-        if let Some(content) = &message.content {
-            match content {
-                ChatContent::Text(text) => collect_refs_from_text(text, &mut refs),
-                ChatContent::Parts(parts) => {
-                    for part in parts {
-                        if let ContentPart::Text { text, .. } = part {
-                            collect_refs_from_text(text, &mut refs);
-                        }
-                    }
-                }
-            }
-        }
-
-        for value in message.extra.values() {
-            collect_refs_from_json(value, &mut refs);
-        }
-    }
-
-    refs
-}
-
-/// Collect all references present in a redacted OpenAI responses request.
-pub fn collect_responses_request_refs(request: &ResponsesRequest) -> HashSet<String> {
-    let mut refs = HashSet::new();
-
-    if let Some(instructions) = &request.instructions {
-        collect_refs_from_text(instructions, &mut refs);
-    }
-
-    collect_refs_from_json(&request.input, &mut refs);
-
-    for value in request.extra.values() {
-        collect_refs_from_json(value, &mut refs);
-    }
-
-    refs
 }
 
 /// Shared application state passed to axum handlers.

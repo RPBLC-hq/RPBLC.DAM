@@ -14,6 +14,8 @@ pub(crate) fn should_forward_header(name: &str) -> bool {
             | "upgrade"
             | "host"
             | "content-length"
+            | "content-type"
+            | "cookie"
             | "x-dam-upstream"
     )
 }

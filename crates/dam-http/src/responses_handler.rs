@@ -10,8 +10,7 @@ use std::sync::Arc;
 use crate::error::AppError;
 use crate::headers::forward_request_headers;
 use crate::proxy::{
-    AppState, collect_responses_request_refs, redact_responses_request, resolve_json_value,
-    resolve_responses_response,
+    AppState, redact_responses_request, resolve_json_value, resolve_responses_response,
 };
 use crate::resolve::resolve_text;
 use crate::responses::{ResponsesRequest, ResponsesResponse, ResponsesStreamDelta};
@@ -35,13 +34,12 @@ pub(crate) async fn handle_responses(
         "incoming responses api request"
     );
 
-    redact_responses_request(
+    let allowed_refs = Arc::new(redact_responses_request(
         &state.pipeline,
         &state.vault,
         &mut request,
         state.consent_passthrough,
-    )?;
-    let allowed_refs = Arc::new(collect_responses_request_refs(&request));
+    )?);
     tracing::debug!(allowed_refs = allowed_refs.len(), "responses request redacted");
 
     let base =
@@ -81,13 +79,12 @@ pub(crate) async fn handle_codex_responses(
     let is_streaming = request.stream.unwrap_or(false);
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming codex request");
 
-    redact_responses_request(
+    let allowed_refs = Arc::new(redact_responses_request(
         &state.pipeline,
         &state.vault,
         &mut request,
         state.consent_passthrough,
-    )?;
-    let allowed_refs = Arc::new(collect_responses_request_refs(&request));
+    )?);
     tracing::debug!(allowed_refs = allowed_refs.len(), "codex request redacted");
 
     let base =

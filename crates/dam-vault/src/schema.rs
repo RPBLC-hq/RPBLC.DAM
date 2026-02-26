@@ -38,7 +38,19 @@ pub fn apply_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             detail      TEXT,
             prev_hash   TEXT
         );
+        ",
+    )?;
 
+    // Migration path for older vaults created before `normalized_hash` existed.
+    match conn.execute("ALTER TABLE entries ADD COLUMN normalized_hash TEXT", []) {
+        Ok(_) => {}
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+            if msg.contains("duplicate column name") => {}
+        Err(e) => return Err(e),
+    }
+
+    conn.execute_batch(
+        "
         CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(pii_type);
         CREATE INDEX IF NOT EXISTS idx_entries_type_hash ON entries(pii_type, normalized_hash);
         CREATE INDEX IF NOT EXISTS idx_entries_expires ON entries(expires_at)
@@ -48,9 +60,6 @@ pub fn apply_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
         CREATE INDEX IF NOT EXISTS idx_consent_accessor ON consent(accessor);
         ",
     )?;
-
-    // Migration path for older vaults created before `normalized_hash` existed.
-    let _ = conn.execute("ALTER TABLE entries ADD COLUMN normalized_hash TEXT", []);
 
     Ok(())
 }

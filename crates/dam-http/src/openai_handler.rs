@@ -9,9 +9,7 @@ use std::sync::Arc;
 use crate::error::AppError;
 use crate::headers::forward_request_headers;
 use crate::openai::{ChatChunk, ChatRequest, ChatResponse};
-use crate::proxy::{
-    AppState, collect_chat_request_refs, redact_chat_request, resolve_chat_response,
-};
+use crate::proxy::{AppState, redact_chat_request, resolve_chat_response};
 use crate::sse_buffer::SseBuffer;
 use crate::streaming::StreamingResolver;
 use crate::upstream::extract_upstream_override;
@@ -28,13 +26,12 @@ pub(crate) async fn handle_chat_completions(
     let is_streaming = request.stream.unwrap_or(false);
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming openai request");
 
-    redact_chat_request(
+    let allowed_refs = Arc::new(redact_chat_request(
         &state.pipeline,
         &state.vault,
         &mut request,
         state.consent_passthrough,
-    )?;
-    let allowed_refs = Arc::new(collect_chat_request_refs(&request));
+    )?);
     tracing::debug!(allowed_refs = allowed_refs.len(), "openai request redacted");
 
     let base =

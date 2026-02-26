@@ -9,9 +9,7 @@ use std::sync::Arc;
 use crate::anthropic::{Delta, MessagesRequest, MessagesResponse, StreamEvent};
 use crate::error::AppError;
 use crate::headers::forward_request_headers;
-use crate::proxy::{
-    AppState, collect_request_refs, redact_request, resolve_response,
-};
+use crate::proxy::{AppState, redact_request, resolve_response};
 use crate::sse_buffer::SseBuffer;
 use crate::streaming::StreamingResolver;
 use crate::upstream::extract_upstream_override;
@@ -28,13 +26,12 @@ pub(crate) async fn handle_messages(
     let is_streaming = request.stream.unwrap_or(false);
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming request");
 
-    redact_request(
+    let allowed_refs = Arc::new(redact_request(
         &state.pipeline,
         &state.vault,
         &mut request,
         state.consent_passthrough,
-    )?;
-    let allowed_refs = Arc::new(collect_request_refs(&request));
+    )?);
     tracing::debug!(allowed_refs = allowed_refs.len(), "request redacted");
 
     let base = extract_upstream_override(&headers)?

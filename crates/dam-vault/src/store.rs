@@ -5,6 +5,7 @@ use dam_core::{DamError, DamResult, PiiRef, PiiType};
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::Mutex;
 
 /// Normalize PII values for deduplication comparison only.
@@ -87,10 +88,66 @@ impl VaultStore {
 
         apply_schema(&conn).map_err(|e| DamError::Database(e.to_string()))?;
 
-        Ok(Self {
+        let store = Self {
             conn: Mutex::new(conn),
             crypto: EnvelopeCrypto::new(kek),
-        })
+        };
+        store.backfill_normalized_hashes()?;
+        Ok(store)
+    }
+
+    fn backfill_normalized_hashes(&self) -> DamResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DamError::Vault(e.to_string()))?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT ref_id, pii_type, ciphertext, dek_enc, iv
+                 FROM entries
+                 WHERE normalized_hash IS NULL",
+            )
+            .map_err(|e| DamError::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                ))
+            })
+            .map_err(|e| DamError::Database(e.to_string()))?;
+
+        for row in rows {
+            let (ref_id, pii_type_raw, ciphertext, dek_enc, iv) =
+                row.map_err(|e| DamError::Database(e.to_string()))?;
+            let pii_type = PiiType::from_str(&pii_type_raw)
+                .map_err(|e| DamError::Validation(format!("invalid pii_type for {ref_id}: {e}")))?;
+
+            let plaintext = self
+                .crypto
+                .decrypt_entry(EncryptedEntry {
+                    ciphertext,
+                    dek_encrypted: dek_enc,
+                    iv,
+                })
+                .map_err(|e| DamError::Crypto(e.to_string()))?;
+
+            let normalized = normalize_pii(pii_type, &plaintext);
+            let normalized_hash = hash_normalized(pii_type, &normalized);
+
+            conn.execute(
+                "UPDATE entries SET normalized_hash = ?1 WHERE ref_id = ?2",
+                rusqlite::params![normalized_hash, ref_id],
+            )
+            .map_err(|e| DamError::Database(e.to_string()))?;
+        }
+
+        Ok(())
     }
 
     /// Store a PII value in the vault. Returns the generated reference.
