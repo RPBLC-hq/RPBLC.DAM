@@ -342,13 +342,17 @@ description = "Internal employee ID"
 
 ## CLI Reference
 
+Global automation flags (where supported): `--json`, `--verbose`.
+
 ```
-dam init                                          Initialize vault, config, and KEK
-dam serve [--port PORT] [--verbose]                Start HTTP proxy (default: 7828)
-          [--anthropic-upstream URL]                  Override upstream URLs
+dam init                                           Initialize vault, config, and KEK
+dam serve [--port PORT]                            Start HTTP proxy (default: 7828)
+          [--anthropic-upstream URL]
           [--openai-upstream URL]
           [--codex-upstream URL]
-dam mcp                                           Start MCP server (stdio)
+dam status [--json]                                Show local config + vault status
+dam health [--port PORT] [--json]                  Probe /healthz and /readyz
+dam mcp                                            Start MCP server (stdio)
 dam scan [TEXT]                                    Scan text for PII (stdin if omitted)
 dam vault list [--type TYPE]                       List vault entries
 dam vault show REF                                 Decrypt and display entry
@@ -359,6 +363,7 @@ dam consent grant REF_ID ACCESSOR PURPOSE --ttl D  Grant consent (30m, 1h, 24h, 
 dam consent revoke REF_ID ACCESSOR PURPOSE         Revoke consent
 dam audit [--ref REF_ID] [--limit N]               View audit trail (default: 50)
 dam config show                                    Display current configuration
+dam config validate [--json]                       Validate config + key paths
 dam config get KEY                                 Get a config value
 dam config set KEY VALUE                           Update a config value
 ```
