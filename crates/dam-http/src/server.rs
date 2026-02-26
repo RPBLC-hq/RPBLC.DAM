@@ -91,14 +91,35 @@ impl SseBuffer {
 // Anthropic SSE handler
 // ---------------------------------------------------------------------------
 
-/// Headers to forward from the client to Anthropic.
-const ANTHROPIC_FORWARD_HEADERS: &[&str] = &[
-    "x-api-key",
-    "authorization",
-    "anthropic-version",
-    "anthropic-beta",
-    "content-type",
-];
+fn should_forward_header(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    !matches!(
+        n.as_str(),
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailers"
+            | "transfer-encoding"
+            | "upgrade"
+            | "host"
+            | "content-length"
+            | "x-dam-upstream"
+    )
+}
+
+fn forward_request_headers(
+    mut upstream_req: reqwest::RequestBuilder,
+    headers: &HeaderMap,
+) -> reqwest::RequestBuilder {
+    for (name, value) in headers {
+        if should_forward_header(name.as_str()) {
+            upstream_req = upstream_req.header(name, value);
+        }
+    }
+    upstream_req
+}
 
 /// POST /v1/messages handler.
 async fn handle_messages(
@@ -120,12 +141,7 @@ async fn handle_messages(
         .unwrap_or_else(|| state.anthropic_upstream_url.clone());
     let upstream_url = format!("{base}/v1/messages");
     let mut upstream_req = state.client.post(&upstream_url);
-
-    for &name in ANTHROPIC_FORWARD_HEADERS {
-        if let Some(value) = headers.get(name) {
-            upstream_req = upstream_req.header(name, value);
-        }
-    }
+    upstream_req = forward_request_headers(upstream_req, &headers);
     upstream_req = upstream_req.header("content-type", "application/json");
 
     let upstream_body =
@@ -334,14 +350,6 @@ impl AnthropicSseState {
 // OpenAI SSE handler
 // ---------------------------------------------------------------------------
 
-/// Headers to forward from the client to OpenAI-compatible APIs.
-const OPENAI_FORWARD_HEADERS: &[&str] = &[
-    "authorization",
-    "openai-organization",
-    "openai-project",
-    "x-request-id",
-];
-
 /// POST /v1/chat/completions handler.
 async fn handle_chat_completions(
     State(state): State<AppState>,
@@ -362,12 +370,7 @@ async fn handle_chat_completions(
         extract_upstream_override(&headers)?.unwrap_or_else(|| state.openai_upstream_url.clone());
     let upstream_url = format!("{base}/v1/chat/completions");
     let mut upstream_req = state.client.post(&upstream_url);
-
-    for &name in OPENAI_FORWARD_HEADERS {
-        if let Some(value) = headers.get(name) {
-            upstream_req = upstream_req.header(name, value);
-        }
-    }
+    upstream_req = forward_request_headers(upstream_req, &headers);
     upstream_req = upstream_req.header("content-type", "application/json");
 
     let upstream_body =
@@ -618,12 +621,7 @@ async fn handle_responses(
         extract_upstream_override(&headers)?.unwrap_or_else(|| state.openai_upstream_url.clone());
     let upstream_url = format!("{base}/v1/responses");
     let mut upstream_req = state.client.post(&upstream_url);
-
-    for &name in OPENAI_FORWARD_HEADERS {
-        if let Some(value) = headers.get(name) {
-            upstream_req = upstream_req.header(name, value);
-        }
-    }
+    upstream_req = forward_request_headers(upstream_req, &headers);
     upstream_req = upstream_req.header("content-type", "application/json");
 
     let upstream_body =
@@ -905,17 +903,6 @@ impl ResponsesSseState {
 // OpenAI Codex Responses API handler
 // ---------------------------------------------------------------------------
 
-/// Headers to forward from the client to the Codex backend API.
-const CODEX_FORWARD_HEADERS: &[&str] = &[
-    "authorization",
-    "chatgpt-account-id",
-    "openai-beta",
-    "originator",
-    "user-agent",
-    "session_id",
-    "x-request-id",
-];
-
 /// POST /codex/responses handler.
 ///
 /// Reuses the same Responses API types and redaction/resolution logic,
@@ -940,12 +927,7 @@ async fn handle_codex_responses(
         extract_upstream_override(&headers)?.unwrap_or_else(|| state.codex_upstream_url.clone());
     let upstream_url = format!("{base}/codex/responses");
     let mut upstream_req = state.client.post(&upstream_url);
-
-    for &name in CODEX_FORWARD_HEADERS {
-        if let Some(value) = headers.get(name) {
-            upstream_req = upstream_req.header(name, value);
-        }
-    }
+    upstream_req = forward_request_headers(upstream_req, &headers);
     upstream_req = upstream_req.header("content-type", "application/json");
 
     let upstream_body =
