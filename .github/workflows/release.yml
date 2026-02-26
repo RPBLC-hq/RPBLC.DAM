@@ -139,9 +139,10 @@ jobs:
           # Update all optionalDependencies versions in root package atomically
           jq --arg v "$VERSION" '.optionalDependencies = (.optionalDependencies | with_entries(.value = $v))' npm/dam/package.json > tmp.json && mv tmp.json npm/dam/package.json
 
+      # Authentication via npm Trusted Publishers (OIDC). The id-token:write
+      # permission + --provenance flag exchange a GitHub OIDC token for a
+      # short-lived npm publish token. No NPM_TOKEN secret needed.
       - name: Publish platform packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           for pkg in dam-linux-x64 dam-darwin-arm64 dam-darwin-x64 dam-win32-x64; do
             cd npm/$pkg
@@ -151,6 +152,4 @@ jobs:
 
       - name: Publish root package
         working-directory: npm/dam
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --provenance
