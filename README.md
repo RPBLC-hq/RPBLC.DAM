@@ -224,6 +224,7 @@ Roadmap: [`docs/cli-roadmap.md`](docs/cli-roadmap.md).
 
 ### Advanced docs
 
+- Proxy data-flow walkthrough: [`docs/proxy-walkthrough.md`](docs/proxy-walkthrough.md)
 - Detailed client integrations: [`docs/integrations.md`](docs/integrations.md)
 - Upstream routing (`X-DAM-Upstream`): [`docs/routing.md`](docs/routing.md)
 - Security model details: [`docs/security-model.md`](docs/security-model.md)
