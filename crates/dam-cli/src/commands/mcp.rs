@@ -6,7 +6,7 @@ use rmcp::ServiceExt;
 use std::sync::Arc;
 
 pub async fn run() -> Result<()> {
-    let config = super::load_config()?;
+    let (config, _auto_inited) = super::load_config_auto_init()?;
     let vault = super::open_vault(&config)?;
 
     let pipeline = Arc::new(DetectionPipeline::new(&config, vault.clone()));

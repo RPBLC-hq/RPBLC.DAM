@@ -93,6 +93,12 @@ enum Commands {
         #[arg(long)]
         codex_upstream: Option<String>,
     },
+
+    /// Manage DAM as a background service (auto-starts on login, restarts on crash)
+    Daemon {
+        #[command(subcommand)]
+        action: commands::daemon::DaemonAction,
+    },
 }
 
 #[tokio::main]
@@ -133,5 +139,6 @@ async fn main() -> Result<()> {
             openai_upstream,
             codex_upstream,
         } => commands::serve::run(port, anthropic_upstream, openai_upstream, codex_upstream).await,
+        Commands::Daemon { action } => commands::daemon::run(action).await,
     }
 }

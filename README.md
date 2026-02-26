@@ -90,15 +90,15 @@ No code changes needed. Point your API client at DAM instead of the provider, an
 
 ## Quick Start
 
-### Prerequisites
-
-- [Rust](https://rustup.rs/) 1.88+ (edition 2024)
-- A C compiler (for bundled SQLite)
-  - **Windows**: MSVC via Visual Studio Build Tools
-  - **macOS**: `xcode-select --install`
-  - **Linux**: `build-essential`
-
 ### Install
+
+**npm** (recommended — prebuilt binaries, no compiler needed):
+
+```bash
+npm install -g @rpblc/dam
+```
+
+**From source** (requires Rust 1.88+):
 
 ```bash
 git clone https://github.com/alexyboyer/RPBLC.DAM.git
@@ -108,14 +108,6 @@ cargo install --path crates/dam-cli
 
 Single binary. ~6 MB. No runtime dependencies.
 
-### Initialize
-
-```bash
-dam init
-```
-
-This creates your encrypted vault, config, and stores a 256-bit master key in your OS keychain. You'll select which regional PII patterns to enable (global patterns are always on).
-
 ### Start the proxy
 
 ```bash
@@ -124,7 +116,21 @@ export OPENAI_BASE_URL=http://127.0.0.1:7828/v1     # OpenAI, OpenRouter, xAI, e
 export ANTHROPIC_BASE_URL=http://127.0.0.1:7828      # Anthropic
 ```
 
-That's it. All messages now flow through DAM. User messages are scanned and redacted before reaching the LLM. Responses are resolved back to real values before reaching you.
+That's it — no `dam init` needed. On first run, DAM auto-creates config, vault, and encryption keys. All messages now flow through DAM. User messages are scanned and redacted before reaching the LLM. Responses are resolved back to real values before reaching you.
+
+### Run as a background service
+
+```bash
+dam daemon install       # register as OS service + start + verify health
+```
+
+DAM will auto-start on login and restart on crash. See `dam daemon --help` for `start`, `stop`, `status`, and `uninstall`.
+
+### Customize (optional)
+
+```bash
+dam init                 # interactive setup: select locales, review config
+```
 
 > **Multiple providers?** If you use providers that share the same API format (e.g. xAI and OpenAI both use `/v1/chat/completions`), add the `X-DAM-Upstream` header to route per-request. See [Upstream Routing](#upstream-routing) below.
 
@@ -351,6 +357,11 @@ dam serve [--port PORT]                            Start HTTP proxy (default: 78
           [--anthropic-upstream URL]
           [--openai-upstream URL]
           [--codex-upstream URL]
+dam daemon install [--port PORT]                   Register + start as OS service
+dam daemon uninstall                               Stop + remove service
+dam daemon start                                   Start registered service
+dam daemon stop                                    Stop running service
+dam daemon status                                  Show service status
 dam status [--json]                                Show local config + vault status
 dam health [--port PORT] [--json]                  Probe /healthz and /readyz
 dam mcp                                            Start MCP server (stdio)

@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod config;
 pub mod consent;
+pub mod daemon;
 pub mod health;
 pub mod init;
 pub mod mcp;
@@ -21,10 +22,39 @@ pub fn load_config() -> Result<DamConfig> {
     Ok(config)
 }
 
+/// Load config, auto-creating a default config file if none exists.
+///
+/// Returns `(config, auto_inited)` where `auto_inited` is true if the config
+/// file was created by this call. Use this for commands like `serve` and `mcp`
+/// that should just work without requiring `dam init` first.
+pub fn load_config_auto_init() -> Result<(DamConfig, bool)> {
+    let config_path = DamConfig::default_config_path();
+    if config_path.exists() {
+        let config = DamConfig::load(&config_path)?;
+        return Ok((config, false));
+    }
+
+    // Auto-create default config
+    let config = DamConfig::default();
+    config.save(&config_path)?;
+    eprintln!(
+        "  [auto-init] Created default config at {}",
+        config_path.display()
+    );
+    eprintln!("  [auto-init] Run `dam init` to customize settings.");
+    Ok((config, true))
+}
+
 /// Open the vault using the configured key source.
 pub fn open_vault(config: &DamConfig) -> Result<Arc<VaultStore>> {
     let kek = match &config.vault.key_source {
-        KeySource::OsKeychain => KeychainManager::get_kek()?,
+        KeySource::OsKeychain => match KeychainManager::get_kek() {
+            Ok(kek) => kek,
+            Err(_) => {
+                eprintln!("  [auto-init] KEK not found in OS keychain, creating...");
+                KeychainManager::get_or_create_kek()?
+            }
+        },
         KeySource::Passphrase => {
             // Read passphrase from stdin
             eprintln!("Enter vault passphrase: ");
