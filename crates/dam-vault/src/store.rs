@@ -126,16 +126,14 @@ impl VaultStore {
             let (ref_id, pii_type_raw, ciphertext, dek_enc, iv) =
                 row.map_err(|e| DamError::Database(e.to_string()))?;
             let pii_type = PiiType::from_str(&pii_type_raw)
-                .map_err(|e| DamError::Validation(format!("invalid pii_type for {ref_id}: {e}")))?;
+                .map_err(|e| DamError::InvalidPiiType(format!("{ref_id}: {e}")))?;
 
             let plaintext = self
                 .crypto
-                .decrypt_entry(EncryptedEntry {
-                    ciphertext,
-                    dek_encrypted: dek_enc,
-                    iv,
-                })
-                .map_err(|e| DamError::Crypto(e.to_string()))?;
+                .decrypt(&ciphertext, &dek_enc, &iv)
+                .map_err(|e| DamError::Encryption(e.to_string()))?;
+            let plaintext = String::from_utf8(plaintext)
+                .map_err(|e| DamError::Other(format!("invalid UTF-8 for {ref_id}: {e}")))?;
 
             let normalized = normalize_pii(pii_type, &plaintext);
             let normalized_hash = hash_normalized(pii_type, &normalized);

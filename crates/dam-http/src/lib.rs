@@ -6,10 +6,10 @@
 //! reference resolution via [`StreamingResolver`](streaming::StreamingResolver).
 
 pub mod anthropic;
-pub mod error;
 pub mod anthropic_handler;
-pub mod health;
+pub mod error;
 pub mod headers;
+pub mod health;
 pub mod openai;
 pub mod openai_handler;
 pub mod proxy;

@@ -4,10 +4,7 @@ use crate::anthropic::{
 use crate::openai::{ChatContent, ChatMessage, ChatRequest, ChatResponse, ContentPart};
 use crate::resolve::resolve_text;
 use crate::responses::{ResponsesRequest, ResponsesResponse};
-use dam_core::{
-    DamConfig,
-    reference::replace_refs,
-};
+use dam_core::{DamConfig, reference::replace_refs};
 use dam_detect::{DetectionPipeline, ScanResult};
 use dam_vault::{ConsentManager, VaultStore};
 use serde_json::Value;
@@ -268,7 +265,13 @@ pub fn redact_responses_request(
     }
 
     // Scan input recursively
-    scan_json_value(pipeline, vault, &mut request.input, consent_passthrough, &mut refs)?;
+    scan_json_value(
+        pipeline,
+        vault,
+        &mut request.input,
+        consent_passthrough,
+        &mut refs,
+    )?;
 
     // Scan all extra fields
     for value in request.extra.values_mut() {

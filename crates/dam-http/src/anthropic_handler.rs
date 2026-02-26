@@ -121,7 +121,10 @@ async fn handle_anthropic_streaming(
     let body = Body::from_stream(stream);
     Ok((
         StatusCode::OK,
-        [("content-type", "text/event-stream"), ("cache-control", "no-cache")],
+        [
+            ("content-type", "text/event-stream"),
+            ("cache-control", "no-cache"),
+        ],
         body,
     )
         .into_response())
@@ -135,7 +138,10 @@ pub(crate) struct AnthropicSseState {
 }
 
 impl AnthropicSseState {
-    pub(crate) fn new(vault: Arc<dam_vault::VaultStore>, allowed_refs: Arc<HashSet<String>>) -> Self {
+    pub(crate) fn new(
+        vault: Arc<dam_vault::VaultStore>,
+        allowed_refs: Arc<HashSet<String>>,
+    ) -> Self {
         Self {
             vault,
             allowed_refs,
@@ -182,10 +188,9 @@ impl AnthropicSseState {
             return original.as_bytes().to_vec();
         };
 
-        let resolver = self
-            .resolvers
-            .entry(*index)
-            .or_insert_with(|| StreamingResolver::new(self.vault.clone(), self.allowed_refs.clone()));
+        let resolver = self.resolvers.entry(*index).or_insert_with(|| {
+            StreamingResolver::new(self.vault.clone(), self.allowed_refs.clone())
+        });
         let resolved = resolver.push(text);
 
         let new_event = StreamEvent::ContentBlockDelta {

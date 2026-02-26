@@ -40,7 +40,10 @@ pub(crate) async fn handle_responses(
         &mut request,
         state.consent_passthrough,
     )?);
-    tracing::debug!(allowed_refs = allowed_refs.len(), "responses request redacted");
+    tracing::debug!(
+        allowed_refs = allowed_refs.len(),
+        "responses request redacted"
+    );
 
     let base =
         extract_upstream_override(&headers)?.unwrap_or_else(|| state.openai_upstream_url.clone());
@@ -179,7 +182,10 @@ async fn handle_responses_streaming(
     let body = Body::from_stream(stream);
     Ok((
         StatusCode::OK,
-        [("content-type", "text/event-stream"), ("cache-control", "no-cache")],
+        [
+            ("content-type", "text/event-stream"),
+            ("cache-control", "no-cache"),
+        ],
         body,
     )
         .into_response())
@@ -193,7 +199,10 @@ pub(crate) struct ResponsesSseState {
 }
 
 impl ResponsesSseState {
-    pub(crate) fn new(vault: Arc<dam_vault::VaultStore>, allowed_refs: Arc<HashSet<String>>) -> Self {
+    pub(crate) fn new(
+        vault: Arc<dam_vault::VaultStore>,
+        allowed_refs: Arc<HashSet<String>>,
+    ) -> Self {
         Self {
             vault,
             allowed_refs,
@@ -241,11 +250,13 @@ impl ResponsesSseState {
             return original.to_vec();
         };
 
-        let key = (delta.output_index.unwrap_or(0), delta.content_index.unwrap_or(0));
-        let resolver = self
-            .resolvers
-            .entry(key)
-            .or_insert_with(|| StreamingResolver::new(self.vault.clone(), self.allowed_refs.clone()));
+        let key = (
+            delta.output_index.unwrap_or(0),
+            delta.content_index.unwrap_or(0),
+        );
+        let resolver = self.resolvers.entry(key).or_insert_with(|| {
+            StreamingResolver::new(self.vault.clone(), self.allowed_refs.clone())
+        });
 
         let resolved = resolver.push(text);
         let mut new_delta = delta.clone();
@@ -262,7 +273,10 @@ impl ResponsesSseState {
             return original.to_vec();
         };
 
-        let key = (delta.output_index.unwrap_or(0), delta.content_index.unwrap_or(0));
+        let key = (
+            delta.output_index.unwrap_or(0),
+            delta.content_index.unwrap_or(0),
+        );
         if let Some(mut resolver) = self.resolvers.remove(&key) {
             let remaining = resolver.finish();
             if !remaining.is_empty() {
@@ -324,7 +338,8 @@ impl ResponsesSseState {
                 && let Ok(mut value) = serde_json::from_str::<serde_json::Value>(data_str)
             {
                 resolve_json_value(&self.vault, &mut value, &self.allowed_refs);
-                let new_data = serde_json::to_string(&value).unwrap_or_else(|_| data_str.to_string());
+                let new_data =
+                    serde_json::to_string(&value).unwrap_or_else(|_| data_str.to_string());
                 output.extend_from_slice(self.format_event(event_type, &new_data).as_slice());
                 return output;
             }

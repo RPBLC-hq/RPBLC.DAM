@@ -129,7 +129,10 @@ async fn handle_openai_streaming(
 
     Ok((
         StatusCode::OK,
-        [("content-type", "text/event-stream"), ("cache-control", "no-cache")],
+        [
+            ("content-type", "text/event-stream"),
+            ("cache-control", "no-cache"),
+        ],
         body,
     )
         .into_response())
@@ -143,7 +146,10 @@ pub(crate) struct OpenAiSseState {
 }
 
 impl OpenAiSseState {
-    pub(crate) fn new(vault: Arc<dam_vault::VaultStore>, allowed_refs: Arc<HashSet<String>>) -> Self {
+    pub(crate) fn new(
+        vault: Arc<dam_vault::VaultStore>,
+        allowed_refs: Arc<HashSet<String>>,
+    ) -> Self {
         Self {
             vault,
             allowed_refs,
@@ -234,7 +240,8 @@ impl OpenAiSseState {
         }
 
         if modified {
-            let new_data = serde_json::to_string(&chunk).unwrap_or_else(|_| original_data.to_string());
+            let new_data =
+                serde_json::to_string(&chunk).unwrap_or_else(|_| original_data.to_string());
             outputs.push(format!("data: {new_data}\n\n").into_bytes());
         } else {
             outputs.push(format!("data: {original_data}\n\n").into_bytes());

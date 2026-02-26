@@ -106,7 +106,10 @@ mod tests {
         assert_eq!(outputs.len(), 1);
 
         let output_str = String::from_utf8(outputs[0].clone()).unwrap();
-        assert!(output_str.contains("alice@example.com"), "should resolve ref: {output_str}");
+        assert!(
+            output_str.contains("alice@example.com"),
+            "should resolve ref: {output_str}"
+        );
         assert!(!output_str.contains(&format!("[{ref_key}]")));
     }
 
@@ -145,7 +148,9 @@ mod tests {
         let (vault, ref_key) = test_vault_with_entry();
         let mut state = ResponsesSseState::new(vault, allowlist_for(&ref_key));
 
-        let data = format!(r#"{{"delta":"Hello [{ref_key}] world","output_index":0,"content_index":0}}"#,);
+        let data = format!(
+            r#"{{"delta":"Hello [{ref_key}] world","output_index":0,"content_index":0}}"#,
+        );
         let event = format!("event: response.output_text.delta\ndata: {data}\n\n");
         state.buf.feed(event.as_bytes());
 
@@ -153,7 +158,10 @@ mod tests {
         let output = state.process_event(&ev);
         let output_str = String::from_utf8(output).unwrap();
 
-        assert!(output_str.contains("alice@example.com"), "should resolve ref: {output_str}");
+        assert!(
+            output_str.contains("alice@example.com"),
+            "should resolve ref: {output_str}"
+        );
         assert!(!output_str.contains(&format!("[{ref_key}]")));
         assert!(output_str.starts_with("event: response.output_text.delta\n"));
     }
@@ -199,7 +207,10 @@ mod tests {
         let output_str = String::from_utf8(output).unwrap();
 
         assert!(output_str.contains("response.output_text.done"));
-        assert!(state.resolvers.is_empty(), "resolver should be removed after done");
+        assert!(
+            state.resolvers.is_empty(),
+            "resolver should be removed after done"
+        );
     }
 
     #[test]
@@ -221,7 +232,10 @@ mod tests {
         let output_str = String::from_utf8(output).unwrap();
 
         assert!(output_str.contains("response.completed"));
-        assert!(state.resolvers.is_empty(), "all resolvers should be flushed on completed");
+        assert!(
+            state.resolvers.is_empty(),
+            "all resolvers should be flushed on completed"
+        );
     }
 
     #[test]

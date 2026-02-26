@@ -113,7 +113,10 @@ mod tests {
     #[test]
     fn single_chunk_complete_ref() {
         let (vault, display) = test_vault_with_entry();
-        let key = display.trim_start_matches('[').trim_end_matches(']').to_string();
+        let key = display
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
         let mut resolver = StreamingResolver::new(vault, allowlist_for(&[key]));
         let result = resolver.push(&format!("Hello {display} world"));
         assert_eq!(result, "Hello alice@example.com world");
@@ -123,7 +126,10 @@ mod tests {
     #[test]
     fn ref_split_across_two_chunks() {
         let (vault, display) = test_vault_with_entry();
-        let key = display.trim_start_matches('[').trim_end_matches(']').to_string();
+        let key = display
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
         // display is like "[email:a3f71bc9]"
         let mid = display.len() / 2;
         let part1 = &format!("Hello {}", &display[..mid]);
@@ -141,7 +147,10 @@ mod tests {
     #[test]
     fn ref_split_across_three_chunks() {
         let (vault, display) = test_vault_with_entry();
-        let key = display.trim_start_matches('[').trim_end_matches(']').to_string();
+        let key = display
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
         // Split "[email:a3f71bc9]" into three parts
         let third = display.len() / 3;
         let p1 = &display[..third];
@@ -199,7 +208,10 @@ mod tests {
             .store_pii(PiiType::Phone, "555-1234", None, None)
             .unwrap();
         let phone_display = phone_ref.display();
-        let key1 = display.trim_start_matches('[').trim_end_matches(']').to_string();
+        let key1 = display
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
         let key2 = phone_display
             .trim_start_matches('[')
             .trim_end_matches(']')
