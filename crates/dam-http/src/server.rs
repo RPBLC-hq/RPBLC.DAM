@@ -159,7 +159,7 @@ async fn handle_messages(
     let is_streaming = request.stream.unwrap_or(false);
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming request");
 
-    redact_request(&state.pipeline, &state.vault, &mut request)?;
+    redact_request(&state.pipeline, &state.vault, &mut request, state.consent_passthrough)?;
     let allowed_refs = Arc::new(collect_request_refs(&request));
     tracing::debug!(allowed_refs = allowed_refs.len(), "request redacted");
 
@@ -401,7 +401,7 @@ async fn handle_chat_completions(
     let is_streaming = request.stream.unwrap_or(false);
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming openai request");
 
-    redact_chat_request(&state.pipeline, &state.vault, &mut request)?;
+    redact_chat_request(&state.pipeline, &state.vault, &mut request, state.consent_passthrough)?;
     let allowed_refs = Arc::new(collect_chat_request_refs(&request));
     tracing::debug!(allowed_refs = allowed_refs.len(), "openai request redacted");
 
@@ -657,7 +657,7 @@ async fn handle_responses(
     let is_streaming = request.stream.unwrap_or(false);
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming responses api request");
 
-    redact_responses_request(&state.pipeline, &state.vault, &mut request)?;
+    redact_responses_request(&state.pipeline, &state.vault, &mut request, state.consent_passthrough)?;
     let allowed_refs = Arc::new(collect_responses_request_refs(&request));
     tracing::debug!(allowed_refs = allowed_refs.len(), "responses request redacted");
 
@@ -979,7 +979,7 @@ async fn handle_codex_responses(
     let is_streaming = request.stream.unwrap_or(false);
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming codex request");
 
-    redact_responses_request(&state.pipeline, &state.vault, &mut request)?;
+    redact_responses_request(&state.pipeline, &state.vault, &mut request, state.consent_passthrough)?;
     let allowed_refs = Arc::new(collect_responses_request_refs(&request));
     tracing::debug!(allowed_refs = allowed_refs.len(), "codex request redacted");
 

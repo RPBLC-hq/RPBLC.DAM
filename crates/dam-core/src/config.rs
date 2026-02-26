@@ -177,6 +177,10 @@ pub struct ServerConfig {
     /// Upstream Codex API base URL (defaults to `https://chatgpt.com/backend-api`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_upstream_url: Option<String>,
+    /// If true, values with explicit consent may pass upstream un-redacted.
+    /// Defaults to false for strict privacy.
+    #[serde(default)]
+    pub consent_passthrough: bool,
 }
 
 impl Default for ServerConfig {
@@ -187,6 +191,7 @@ impl Default for ServerConfig {
             anthropic_upstream_url: None,
             openai_upstream_url: None,
             codex_upstream_url: None,
+            consent_passthrough: false,
         }
     }
 }

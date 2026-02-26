@@ -409,6 +409,7 @@ whitelist = []                # terms to never flag
 
 [server]
 http_port = 7828
+consent_passthrough = false  # strict default: keep PII redacted upstream
 # anthropic_upstream_url = "https://api.anthropic.com"
 # openai_upstream_url = "https://api.openai.com"
 # codex_upstream_url = "https://chatgpt.com/backend-api"
