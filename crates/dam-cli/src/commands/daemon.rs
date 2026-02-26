@@ -31,7 +31,7 @@ pub async fn run(action: DaemonAction) -> Result<()> {
     }
 }
 
-use super::{pid_file_path, read_pid};
+use super::read_pid;
 
 /// Resolve the path to the current `dam` binary.
 fn dam_exe_path() -> Result<PathBuf> {
@@ -371,6 +371,7 @@ mod platform {
 #[cfg(target_os = "windows")]
 mod platform {
     use super::*;
+    use crate::commands::pid_file_path;
     use std::process::Command;
 
     const REG_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
