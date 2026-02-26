@@ -146,7 +146,12 @@ async fn handle_messages(
     let is_streaming = request.stream.unwrap_or(false);
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming request");
 
-    redact_request(&state.pipeline, &state.vault, &mut request, state.consent_passthrough)?;
+    redact_request(
+        &state.pipeline,
+        &state.vault,
+        &mut request,
+        state.consent_passthrough,
+    )?;
     let allowed_refs = Arc::new(collect_request_refs(&request));
     tracing::debug!(allowed_refs = allowed_refs.len(), "request redacted");
 
@@ -312,10 +317,9 @@ impl AnthropicSseState {
             return original.as_bytes().to_vec();
         };
 
-        let resolver = self
-            .resolvers
-            .entry(*index)
-            .or_insert_with(|| StreamingResolver::new(self.vault.clone(), self.allowed_refs.clone()));
+        let resolver = self.resolvers.entry(*index).or_insert_with(|| {
+            StreamingResolver::new(self.vault.clone(), self.allowed_refs.clone())
+        });
 
         let resolved = resolver.push(text);
 
@@ -375,7 +379,12 @@ async fn handle_chat_completions(
     let is_streaming = request.stream.unwrap_or(false);
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming openai request");
 
-    redact_chat_request(&state.pipeline, &state.vault, &mut request, state.consent_passthrough)?;
+    redact_chat_request(
+        &state.pipeline,
+        &state.vault,
+        &mut request,
+        state.consent_passthrough,
+    )?;
     let allowed_refs = Arc::new(collect_chat_request_refs(&request));
     tracing::debug!(allowed_refs = allowed_refs.len(), "openai request redacted");
 
@@ -560,10 +569,9 @@ impl OpenAiSseState {
 
         for choice in &mut chunk.choices {
             if let Some(ref text) = choice.delta.content {
-                let resolver = self
-                    .resolvers
-                    .entry(choice.index)
-                    .or_insert_with(|| StreamingResolver::new(self.vault.clone(), self.allowed_refs.clone()));
+                let resolver = self.resolvers.entry(choice.index).or_insert_with(|| {
+                    StreamingResolver::new(self.vault.clone(), self.allowed_refs.clone())
+                });
                 let resolved = resolver.push(text);
                 choice.delta.content = Some(resolved);
                 modified = true;
@@ -624,11 +632,23 @@ async fn handle_responses(
         serde_json::from_str(&body).map_err(|e| AppError::BadRequest(e.to_string()))?;
 
     let is_streaming = request.stream.unwrap_or(false);
-    tracing::debug!(model = %request.model, streaming = is_streaming, "incoming responses api request");
+    tracing::debug!(
+        model = %request.model,
+        streaming = is_streaming,
+        "incoming responses api request"
+    );
 
-    redact_responses_request(&state.pipeline, &state.vault, &mut request, state.consent_passthrough)?;
+    redact_responses_request(
+        &state.pipeline,
+        &state.vault,
+        &mut request,
+        state.consent_passthrough,
+    )?;
     let allowed_refs = Arc::new(collect_responses_request_refs(&request));
-    tracing::debug!(allowed_refs = allowed_refs.len(), "responses request redacted");
+    tracing::debug!(
+        allowed_refs = allowed_refs.len(),
+        "responses request redacted"
+    );
 
     let base =
         extract_upstream_override(&headers)?.unwrap_or_else(|| state.openai_upstream_url.clone());
@@ -804,10 +824,9 @@ impl ResponsesSseState {
             delta.output_index.unwrap_or(0),
             delta.content_index.unwrap_or(0),
         );
-        let resolver = self
-            .resolvers
-            .entry(key)
-            .or_insert_with(|| StreamingResolver::new(self.vault.clone(), self.allowed_refs.clone()));
+        let resolver = self.resolvers.entry(key).or_insert_with(|| {
+            StreamingResolver::new(self.vault.clone(), self.allowed_refs.clone())
+        });
 
         let resolved = resolver.push(text);
 
@@ -932,7 +951,12 @@ async fn handle_codex_responses(
     let is_streaming = request.stream.unwrap_or(false);
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming codex request");
 
-    redact_responses_request(&state.pipeline, &state.vault, &mut request, state.consent_passthrough)?;
+    redact_responses_request(
+        &state.pipeline,
+        &state.vault,
+        &mut request,
+        state.consent_passthrough,
+    )?;
     let allowed_refs = Arc::new(collect_responses_request_refs(&request));
     tracing::debug!(allowed_refs = allowed_refs.len(), "codex request redacted");
 
@@ -991,6 +1015,7 @@ async fn pass_through_error(upstream_resp: reqwest::Response) -> Result<Response
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::upstream::MAX_UPSTREAM_URL_LEN;
     use dam_core::PiiType;
     use dam_vault::generate_kek;
     use std::collections::HashSet;

@@ -2,7 +2,7 @@ use crate::error::AppError;
 use axum::http::HeaderMap;
 
 pub(crate) const DAM_UPSTREAM_HEADER: &str = "x-dam-upstream";
-const MAX_UPSTREAM_URL_LEN: usize = 2048;
+pub(crate) const MAX_UPSTREAM_URL_LEN: usize = 2048;
 
 /// Extract an optional upstream URL override from the `X-DAM-Upstream` header.
 ///
@@ -17,7 +17,9 @@ pub(crate) fn extract_upstream_override(headers: &HeaderMap) -> Result<Option<St
 
     let s = value
         .to_str()
-        .map_err(|_| AppError::BadRequest("X-DAM-Upstream header contains invalid characters".into()))?
+        .map_err(|_| {
+            AppError::BadRequest("X-DAM-Upstream header contains invalid characters".into())
+        })?
         .trim();
 
     if s.is_empty() {

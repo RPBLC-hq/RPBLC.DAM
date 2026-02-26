@@ -250,7 +250,7 @@ pub fn redact_responses_request(
     }
 
     // Scan input recursively
-    scan_json_value(pipeline, vault, &mut request.input)?;
+    scan_json_value(pipeline, vault, &mut request.input, consent_passthrough)?;
 
     // Scan all extra fields
     for value in request.extra.values_mut() {
@@ -1484,5 +1484,4 @@ mod tests {
         let text = resp.output[0]["content"][0]["text"].as_str().unwrap();
         assert_eq!(text, "Contact alice@test.com");
     }
-
 }

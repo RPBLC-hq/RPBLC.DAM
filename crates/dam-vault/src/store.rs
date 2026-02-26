@@ -116,7 +116,9 @@ impl VaultStore {
         let normalized_hash = hash_normalized(pii_type, &normalized);
 
         // Fast path: indexed hash lookup.
-        if let Some(existing_ref) = self.find_duplicate_by_hash(&conn, pii_type, &normalized_hash)? {
+        if let Some(existing_ref) =
+            self.find_duplicate_by_hash(&conn, pii_type, &normalized_hash)?
+        {
             return Ok(existing_ref);
         }
 
