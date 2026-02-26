@@ -1,6 +1,6 @@
 use anyhow::Result;
 use dam_http::proxy::AppState;
-use dam_http::server::router;
+use dam_http::router::router;
 
 use super::{load_config, open_vault};
 
@@ -37,6 +37,8 @@ pub async fn run(
     eprintln!("  Codex:     set baseUrl=http://{addr}");
     eprintln!();
     eprintln!("Routes:");
+    eprintln!("  GET  /healthz               (liveness)");
+    eprintln!("  GET  /readyz                (readiness)");
     eprintln!("  POST /v1/messages           (Anthropic Messages API)");
     eprintln!("  POST /v1/chat/completions   (OpenAI Chat Completions API)");
     eprintln!("  POST /v1/responses          (OpenAI Responses API)");

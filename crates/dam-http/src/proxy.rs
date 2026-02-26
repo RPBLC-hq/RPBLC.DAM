@@ -8,16 +8,23 @@ use dam_core::{DamConfig, reference::replace_refs};
 use dam_detect::{DetectionPipeline, ScanResult};
 use dam_vault::{ConsentManager, VaultStore};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// After scanning, check consent for each detection. For consented refs, replace the
 /// `[type:id]` token back with the original value.
+fn collect_scan_refs(scan_result: &ScanResult, refs: &mut HashSet<String>) {
+    for detection in &scan_result.detections {
+        refs.insert(detection.pii_ref.key());
+    }
+}
+
 fn apply_consent_passthrough(
     vault: &VaultStore,
     scan_result: &ScanResult,
+    enabled: bool,
 ) -> Result<String, dam_core::DamError> {
-    if scan_result.detections.is_empty() {
+    if !enabled || scan_result.detections.is_empty() {
         return Ok(scan_result.redacted_text.clone());
     }
 
@@ -43,20 +50,23 @@ pub(crate) fn scan_json_value(
     pipeline: &DetectionPipeline,
     vault: &VaultStore,
     value: &mut Value,
+    consent_passthrough: bool,
+    refs: &mut HashSet<String>,
 ) -> Result<(), dam_core::DamError> {
     match value {
         Value::String(s) => {
             let result = pipeline.scan(s, Some("http-proxy"))?;
-            *s = apply_consent_passthrough(vault, &result)?;
+            collect_scan_refs(&result, refs);
+            *s = apply_consent_passthrough(vault, &result, consent_passthrough)?;
         }
         Value::Array(arr) => {
             for item in arr {
-                scan_json_value(pipeline, vault, item)?;
+                scan_json_value(pipeline, vault, item, consent_passthrough, refs)?;
             }
         }
         Value::Object(map) => {
             for val in map.values_mut() {
-                scan_json_value(pipeline, vault, val)?;
+                scan_json_value(pipeline, vault, val, consent_passthrough, refs)?;
             }
         }
         _ => {} // Numbers, booleans, null - skip
@@ -73,20 +83,21 @@ pub fn redact_request(
     pipeline: &DetectionPipeline,
     vault: &VaultStore,
     request: &mut MessagesRequest,
-) -> Result<(), dam_core::DamError> {
-    // Scan model field
-    let result = pipeline.scan(&request.model, Some("http-proxy"))?;
-    request.model = apply_consent_passthrough(vault, &result)?;
+    consent_passthrough: bool,
+) -> Result<HashSet<String>, dam_core::DamError> {
+    let mut refs = HashSet::new();
+    // Intentionally do NOT scan model identifiers.
 
     // Scan system message if present
     if let Some(ref mut system) = request.system {
         let result = pipeline.scan(system, Some("http-proxy"))?;
-        *system = apply_consent_passthrough(vault, &result)?;
+        collect_scan_refs(&result, &mut refs);
+        *system = apply_consent_passthrough(vault, &result, consent_passthrough)?;
     }
 
     // Scan all extra fields (metadata, etc.)
     for value in request.extra.values_mut() {
-        scan_json_value(pipeline, vault, value)?;
+        scan_json_value(pipeline, vault, value, consent_passthrough, &mut refs)?;
     }
 
     // Scan user messages
@@ -98,44 +109,54 @@ pub fn redact_request(
         match &mut message.content {
             MessageContent::Text(text) => {
                 let result = pipeline.scan(text, Some("http-proxy"))?;
-                *text = apply_consent_passthrough(vault, &result)?;
+                collect_scan_refs(&result, &mut refs);
+                *text = apply_consent_passthrough(vault, &result, consent_passthrough)?;
             }
             MessageContent::Blocks(blocks) => {
                 for block in blocks {
                     if let ContentBlock::Text { text, .. } = block {
                         let result = pipeline.scan(text, Some("http-proxy"))?;
-                        *text = apply_consent_passthrough(vault, &result)?;
+                        collect_scan_refs(&result, &mut refs);
+                        *text = apply_consent_passthrough(vault, &result, consent_passthrough)?;
                     }
                 }
             }
         }
     }
-    Ok(())
+    Ok(refs)
 }
 
 /// Resolve PII references in a non-streaming Anthropic response.
-pub fn resolve_response(vault: &Arc<VaultStore>, response: &mut MessagesResponse) {
+pub fn resolve_response(
+    vault: &Arc<VaultStore>,
+    response: &mut MessagesResponse,
+    allowed_refs: &HashSet<String>,
+) {
     for block in &mut response.content {
         if let ResponseBlock::Text { text, .. } = block {
-            *text = resolve_text(vault, text);
+            *text = resolve_text(vault, text, Some(allowed_refs));
         }
     }
 }
 
 /// Recursively resolve PII references in a JSON value.
-pub(crate) fn resolve_json_value(vault: &Arc<VaultStore>, value: &mut Value) {
+pub(crate) fn resolve_json_value(
+    vault: &Arc<VaultStore>,
+    value: &mut Value,
+    allowed_refs: &HashSet<String>,
+) {
     match value {
         Value::String(s) => {
-            *s = resolve_text(vault, s);
+            *s = resolve_text(vault, s, Some(allowed_refs));
         }
         Value::Array(arr) => {
             for item in arr {
-                resolve_json_value(vault, item);
+                resolve_json_value(vault, item, allowed_refs);
             }
         }
         Value::Object(map) => {
             for val in map.values_mut() {
-                resolve_json_value(vault, val);
+                resolve_json_value(vault, val, allowed_refs);
             }
         }
         _ => {}
@@ -147,18 +168,22 @@ fn redact_chat_message(
     pipeline: &DetectionPipeline,
     vault: &VaultStore,
     message: &mut ChatMessage,
+    consent_passthrough: bool,
+    refs: &mut HashSet<String>,
 ) -> Result<(), dam_core::DamError> {
     if let Some(ref mut content) = message.content {
         match content {
             ChatContent::Text(text) => {
                 let result = pipeline.scan(text, Some("http-proxy"))?;
-                *text = apply_consent_passthrough(vault, &result)?;
+                collect_scan_refs(&result, refs);
+                *text = apply_consent_passthrough(vault, &result, consent_passthrough)?;
             }
             ChatContent::Parts(parts) => {
                 for part in parts {
                     if let ContentPart::Text { text, .. } = part {
                         let result = pipeline.scan(text, Some("http-proxy"))?;
-                        *text = apply_consent_passthrough(vault, &result)?;
+                        collect_scan_refs(&result, refs);
+                        *text = apply_consent_passthrough(vault, &result, consent_passthrough)?;
                     }
                 }
             }
@@ -166,7 +191,7 @@ fn redact_chat_message(
     }
     // Scan extra fields (e.g. name, tool_call arguments)
     for value in message.extra.values_mut() {
-        scan_json_value(pipeline, vault, value)?;
+        scan_json_value(pipeline, vault, value, consent_passthrough, refs)?;
     }
     Ok(())
 }
@@ -180,36 +205,42 @@ pub fn redact_chat_request(
     pipeline: &DetectionPipeline,
     vault: &VaultStore,
     request: &mut ChatRequest,
-) -> Result<(), dam_core::DamError> {
+    consent_passthrough: bool,
+) -> Result<HashSet<String>, dam_core::DamError> {
+    let mut refs = HashSet::new();
     // Scan all extra fields
     for value in request.extra.values_mut() {
-        scan_json_value(pipeline, vault, value)?;
+        scan_json_value(pipeline, vault, value, consent_passthrough, &mut refs)?;
     }
 
     // Scan user and system messages
     for message in &mut request.messages {
         match message.role.as_str() {
             "user" | "system" => {
-                redact_chat_message(pipeline, vault, message)?;
+                redact_chat_message(pipeline, vault, message, consent_passthrough, &mut refs)?;
             }
             _ => {} // Skip assistant, tool messages
         }
     }
-    Ok(())
+    Ok(refs)
 }
 
 /// Resolve PII references in a non-streaming OpenAI ChatResponse.
-pub fn resolve_chat_response(vault: &Arc<VaultStore>, response: &mut ChatResponse) {
+pub fn resolve_chat_response(
+    vault: &Arc<VaultStore>,
+    response: &mut ChatResponse,
+    allowed_refs: &HashSet<String>,
+) {
     for choice in &mut response.choices {
         if let Some(ref mut content) = choice.message.content {
-            *content = resolve_text(vault, content);
+            *content = resolve_text(vault, content, Some(allowed_refs));
         }
         // Resolve refs in choice extras (e.g. tool_calls arguments)
         for value in choice.message.extra.values_mut() {
-            resolve_json_value(vault, value);
+            resolve_json_value(vault, value, allowed_refs);
         }
         for value in choice.extra.values_mut() {
-            resolve_json_value(vault, value);
+            resolve_json_value(vault, value, allowed_refs);
         }
     }
 }
@@ -223,28 +254,41 @@ pub fn redact_responses_request(
     pipeline: &DetectionPipeline,
     vault: &VaultStore,
     request: &mut ResponsesRequest,
-) -> Result<(), dam_core::DamError> {
+    consent_passthrough: bool,
+) -> Result<HashSet<String>, dam_core::DamError> {
+    let mut refs = HashSet::new();
     // Scan instructions if present
     if let Some(ref mut instructions) = request.instructions {
         let result = pipeline.scan(instructions, Some("http-proxy"))?;
-        *instructions = apply_consent_passthrough(vault, &result)?;
+        collect_scan_refs(&result, &mut refs);
+        *instructions = apply_consent_passthrough(vault, &result, consent_passthrough)?;
     }
 
     // Scan input recursively
-    scan_json_value(pipeline, vault, &mut request.input)?;
+    scan_json_value(
+        pipeline,
+        vault,
+        &mut request.input,
+        consent_passthrough,
+        &mut refs,
+    )?;
 
     // Scan all extra fields
     for value in request.extra.values_mut() {
-        scan_json_value(pipeline, vault, value)?;
+        scan_json_value(pipeline, vault, value, consent_passthrough, &mut refs)?;
     }
 
-    Ok(())
+    Ok(refs)
 }
 
 /// Resolve PII references in a non-streaming OpenAI Responses API response.
-pub fn resolve_responses_response(vault: &Arc<VaultStore>, response: &mut ResponsesResponse) {
+pub fn resolve_responses_response(
+    vault: &Arc<VaultStore>,
+    response: &mut ResponsesResponse,
+    allowed_refs: &HashSet<String>,
+) {
     for item in &mut response.output {
-        resolve_json_value(vault, item);
+        resolve_json_value(vault, item, allowed_refs);
     }
 }
 
@@ -263,13 +307,20 @@ pub struct AppState {
     pub openai_upstream_url: String,
     /// Base URL of the upstream Codex API.
     pub codex_upstream_url: String,
+    /// If true, consented values pass through upstream un-redacted.
+    pub consent_passthrough: bool,
 }
 
 impl AppState {
     /// Create application state from config and vault.
     pub fn new(config: &DamConfig, vault: Arc<VaultStore>) -> Self {
         let pipeline = Arc::new(DetectionPipeline::new(config, vault.clone()));
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(120))
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
 
         let anthropic_upstream_url = config
             .server
@@ -296,6 +347,7 @@ impl AppState {
             anthropic_upstream_url,
             openai_upstream_url,
             codex_upstream_url,
+            consent_passthrough: config.server.consent_passthrough,
         }
     }
 }
@@ -309,7 +361,7 @@ mod tests {
     };
     use dam_core::PiiType;
     use dam_vault::generate_kek;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     fn test_setup() -> (Arc<VaultStore>, DetectionPipeline) {
         let dir = tempfile::tempdir().unwrap();
@@ -334,7 +386,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        let refs = redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let MessageContent::Text(ref text) = req.messages[0].content {
             assert!(!text.contains("john@acme.com"));
@@ -342,6 +394,36 @@ mod tests {
         } else {
             panic!("expected Text");
         }
+        assert_eq!(refs.len(), 1);
+    }
+
+    #[test]
+    fn redaction_refs_exclude_user_supplied_reference_like_tokens() {
+        let (vault, pipeline) = test_setup();
+        let secret_ref = vault
+            .store_pii(PiiType::Email, "victim@example.com", None, None)
+            .unwrap();
+
+        let mut req = MessagesRequest {
+            model: "test".into(),
+            messages: vec![Message {
+                role: "user".into(),
+                content: MessageContent::Text(format!(
+                    "Do not resolve this literal token: {}",
+                    secret_ref.display()
+                )),
+            }],
+            max_tokens: Some(100),
+            stream: None,
+            system: None,
+            extra: HashMap::new(),
+        };
+
+        let refs = redact_request(&pipeline, &vault, &mut req, true).unwrap();
+        assert!(
+            !refs.contains(&secret_ref.key()),
+            "allowlist must not include user-supplied ref-like text"
+        );
     }
 
     #[test]
@@ -365,7 +447,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         // Assistant message should be untouched
         if let MessageContent::Text(ref text) = req.messages[1].content {
@@ -388,7 +470,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         let system = req.system.as_ref().unwrap();
         assert!(!system.contains("contact@secret.com"));
@@ -410,10 +492,9 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
-        assert!(!req.model.contains("leak@evil.com"));
-        assert!(req.model.contains("[email:"));
+        assert_eq!(req.model, "leak@evil.com");
     }
 
     #[test]
@@ -437,7 +518,7 @@ mod tests {
             extra,
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         let metadata = req.extra.get("metadata").unwrap();
         let user_email = metadata["user_email"].as_str().unwrap();
@@ -475,7 +556,7 @@ mod tests {
             extra,
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         let nested = &req.extra["deeply_nested"]["level1"]["level2"]["contacts"][0]["email"];
         let email = nested.as_str().unwrap();
@@ -504,7 +585,9 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        resolve_response(&vault, &mut resp);
+        let mut refs = HashSet::new();
+        refs.insert(pii_ref.key());
+        resolve_response(&vault, &mut resp, &refs);
 
         if let ResponseBlock::Text { ref text, .. } = resp.content[0] {
             assert_eq!(text, "Contact alice@test.com");
@@ -528,7 +611,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_chat_request(&pipeline, &vault, &mut req).unwrap();
+        redact_chat_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let Some(ChatContent::Text(ref text)) = req.messages[0].content {
             assert!(!text.contains("john@acme.com"));
@@ -560,7 +643,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_chat_request(&pipeline, &vault, &mut req).unwrap();
+        redact_chat_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let Some(ChatContent::Text(ref text)) = req.messages[0].content {
             assert!(!text.contains("contact@secret.com"));
@@ -590,7 +673,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_chat_request(&pipeline, &vault, &mut req).unwrap();
+        redact_chat_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let Some(ChatContent::Text(ref text)) = req.messages[1].content {
             assert_eq!(text, "I see [email:abcd1234]");
@@ -620,7 +703,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_chat_request(&pipeline, &vault, &mut req).unwrap();
+        redact_chat_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let Some(ChatContent::Parts(ref parts)) = req.messages[0].content {
             if let ContentPart::Text { ref text, .. } = parts[0] {
@@ -653,7 +736,9 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        resolve_chat_response(&vault, &mut resp);
+        let mut refs = HashSet::new();
+        refs.insert(pii_ref.key());
+        resolve_chat_response(&vault, &mut resp, &refs);
 
         assert_eq!(
             resp.choices[0].message.content.as_deref(),
@@ -689,7 +774,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let MessageContent::Text(ref text) = req.messages[0].content {
             assert!(
@@ -720,7 +805,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let MessageContent::Text(ref text) = req.messages[0].content {
             assert!(!text.contains("noconsent@test.com"));
@@ -767,7 +852,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let MessageContent::Text(ref text) = req.messages[0].content {
             assert!(
@@ -812,7 +897,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let MessageContent::Text(ref text) = req.messages[0].content {
             assert!(
@@ -849,7 +934,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_chat_request(&pipeline, &vault, &mut req).unwrap();
+        redact_chat_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let Some(ChatContent::Text(ref text)) = req.messages[0].content {
             assert!(
@@ -890,7 +975,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         let system = req.system.as_ref().unwrap();
         assert!(
@@ -938,7 +1023,7 @@ mod tests {
             extra,
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         let email = req.extra["metadata"]["user_email"].as_str().unwrap();
         assert!(
@@ -979,7 +1064,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let MessageContent::Blocks(ref blocks) = req.messages[0].content {
             if let ContentBlock::Text { ref text, .. } = blocks[0] {
@@ -1027,7 +1112,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_chat_request(&pipeline, &vault, &mut req).unwrap();
+        redact_chat_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let Some(ChatContent::Parts(ref parts)) = req.messages[0].content {
             if let ContentPart::Text { ref text, .. } = parts[0] {
@@ -1065,7 +1150,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let MessageContent::Text(ref text) = req.messages[0].content {
             assert!(
@@ -1107,7 +1192,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_request(&pipeline, &vault, &mut req).unwrap();
+        redact_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let MessageContent::Text(ref text) = req.messages[0].content {
             assert!(
@@ -1145,7 +1230,7 @@ mod tests {
             system: None,
             extra: HashMap::new(),
         };
-        redact_request(&pipeline, &vault, &mut req1).unwrap();
+        redact_request(&pipeline, &vault, &mut req1, true).unwrap();
         if let MessageContent::Text(ref text) = req1.messages[0].content {
             assert!(
                 text.contains("revoke@test.com"),
@@ -1168,7 +1253,7 @@ mod tests {
             system: None,
             extra: HashMap::new(),
         };
-        redact_request(&pipeline, &vault, &mut req2).unwrap();
+        redact_request(&pipeline, &vault, &mut req2, true).unwrap();
         if let MessageContent::Text(ref text) = req2.messages[0].content {
             assert!(
                 !text.contains("revoke@test.com"),
@@ -1214,7 +1299,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_chat_request(&pipeline, &vault, &mut req).unwrap();
+        redact_chat_request(&pipeline, &vault, &mut req, true).unwrap();
 
         if let Some(ChatContent::Text(ref text)) = req.messages[0].content {
             assert!(
@@ -1237,7 +1322,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_responses_request(&pipeline, &vault, &mut req).unwrap();
+        redact_responses_request(&pipeline, &vault, &mut req, true).unwrap();
 
         let text = req.input.as_str().unwrap();
         assert!(!text.contains("john@acme.com"));
@@ -1255,7 +1340,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_responses_request(&pipeline, &vault, &mut req).unwrap();
+        redact_responses_request(&pipeline, &vault, &mut req, true).unwrap();
 
         let instructions = req.instructions.as_ref().unwrap();
         assert!(!instructions.contains("contact@secret.com"));
@@ -1281,7 +1366,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_responses_request(&pipeline, &vault, &mut req).unwrap();
+        redact_responses_request(&pipeline, &vault, &mut req, true).unwrap();
 
         let text = req.input[0]["content"][0]["text"].as_str().unwrap();
         assert!(!text.contains("bob@test.com"));
@@ -1299,7 +1384,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        redact_responses_request(&pipeline, &vault, &mut req).unwrap();
+        redact_responses_request(&pipeline, &vault, &mut req, true).unwrap();
         assert_eq!(req.model, "gpt-4o");
     }
 
@@ -1320,7 +1405,7 @@ mod tests {
             extra,
         };
 
-        redact_responses_request(&pipeline, &vault, &mut req).unwrap();
+        redact_responses_request(&pipeline, &vault, &mut req, true).unwrap();
 
         let email = req.extra["metadata"]["user_email"].as_str().unwrap();
         assert!(!email.contains("leak@metadata.com"));
@@ -1346,67 +1431,11 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        resolve_responses_response(&vault, &mut resp);
+        let mut refs = HashSet::new();
+        refs.insert(pii_ref.key());
+        resolve_responses_response(&vault, &mut resp, &refs);
 
         let text = resp.output[0]["content"][0]["text"].as_str().unwrap();
         assert_eq!(text, "Contact alice@test.com");
-    }
-
-    #[test]
-    fn consent_ttl_expires_in_real_time() {
-        let (vault, pipeline) = test_setup();
-        let pii_ref = vault
-            .store_pii(PiiType::Email, "ttltest@test.com", None, None)
-            .unwrap();
-        let ref_key = pii_ref.key();
-
-        // Grant consent that expires in 2 seconds
-        let expires_at = chrono::Utc::now().timestamp() + 2;
-        ConsentManager::grant_consent(vault.conn(), &ref_key, "http-proxy", "*", Some(expires_at))
-            .unwrap();
-
-        // Immediately: should pass through
-        let mut req1 = MessagesRequest {
-            model: "test".into(),
-            messages: vec![Message {
-                role: "user".into(),
-                content: MessageContent::Text("Email ttltest@test.com".into()),
-            }],
-            max_tokens: Some(100),
-            stream: None,
-            system: None,
-            extra: HashMap::new(),
-        };
-        redact_request(&pipeline, &vault, &mut req1).unwrap();
-        if let MessageContent::Text(ref text) = req1.messages[0].content {
-            assert!(
-                text.contains("ttltest@test.com"),
-                "Should pass through before TTL expires, got: {text}"
-            );
-        }
-
-        // Wait for expiration
-        std::thread::sleep(std::time::Duration::from_secs(3));
-
-        // After expiry: should be redacted
-        let mut req2 = MessagesRequest {
-            model: "test".into(),
-            messages: vec![Message {
-                role: "user".into(),
-                content: MessageContent::Text("Email ttltest@test.com".into()),
-            }],
-            max_tokens: Some(100),
-            stream: None,
-            system: None,
-            extra: HashMap::new(),
-        };
-        redact_request(&pipeline, &vault, &mut req2).unwrap();
-        if let MessageContent::Text(ref text) = req2.messages[0].content {
-            assert!(
-                !text.contains("ttltest@test.com"),
-                "Should be redacted after TTL expires, got: {text}"
-            );
-            assert!(text.contains("[email:"));
-        }
     }
 }

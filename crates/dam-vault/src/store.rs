@@ -3,7 +3,9 @@ use crate::encryption::EnvelopeCrypto;
 use crate::schema::apply_schema;
 use dam_core::{DamError, DamResult, PiiRef, PiiType};
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::Mutex;
 
 /// Normalize PII values for deduplication comparison only.
@@ -32,6 +34,14 @@ fn normalize_pii(pii_type: PiiType, value: &str) -> String {
             .collect(),
         _ => value.to_string(),
     }
+}
+
+fn hash_normalized(pii_type: PiiType, normalized: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(pii_type.tag().as_bytes());
+    hasher.update(b":");
+    hasher.update(normalized.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 /// Metadata about a vault entry (no decrypted values).
@@ -78,10 +88,64 @@ impl VaultStore {
 
         apply_schema(&conn).map_err(|e| DamError::Database(e.to_string()))?;
 
-        Ok(Self {
+        let store = Self {
             conn: Mutex::new(conn),
             crypto: EnvelopeCrypto::new(kek),
-        })
+        };
+        store.backfill_normalized_hashes()?;
+        Ok(store)
+    }
+
+    fn backfill_normalized_hashes(&self) -> DamResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DamError::Vault(e.to_string()))?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT ref_id, pii_type, ciphertext, dek_enc, iv
+                 FROM entries
+                 WHERE normalized_hash IS NULL",
+            )
+            .map_err(|e| DamError::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                ))
+            })
+            .map_err(|e| DamError::Database(e.to_string()))?;
+
+        for row in rows {
+            let (ref_id, pii_type_raw, ciphertext, dek_enc, iv) =
+                row.map_err(|e| DamError::Database(e.to_string()))?;
+            let pii_type = PiiType::from_str(&pii_type_raw)
+                .map_err(|e| DamError::InvalidPiiType(format!("{ref_id}: {e}")))?;
+
+            let plaintext = self
+                .crypto
+                .decrypt(&ciphertext, &dek_enc, &iv)
+                .map_err(|e| DamError::Encryption(e.to_string()))?;
+            let plaintext = String::from_utf8(plaintext)
+                .map_err(|e| DamError::Other(format!("invalid UTF-8 for {ref_id}: {e}")))?;
+
+            let normalized = normalize_pii(pii_type, &plaintext);
+            let normalized_hash = hash_normalized(pii_type, &normalized);
+
+            conn.execute(
+                "UPDATE entries SET normalized_hash = ?1 WHERE ref_id = ?2",
+                rusqlite::params![normalized_hash, ref_id],
+            )
+            .map_err(|e| DamError::Database(e.to_string()))?;
+        }
+
+        Ok(())
     }
 
     /// Store a PII value in the vault. Returns the generated reference.
@@ -104,8 +168,16 @@ impl VaultStore {
 
         // Normalize for deduplication comparison only — original is stored
         let normalized = normalize_pii(pii_type, plaintext);
+        let normalized_hash = hash_normalized(pii_type, &normalized);
 
-        // Check for duplicates: decrypt existing entries of same type, normalize, and compare
+        // Fast path: indexed hash lookup.
+        if let Some(existing_ref) =
+            self.find_duplicate_by_hash(&conn, pii_type, &normalized_hash)?
+        {
+            return Ok(existing_ref);
+        }
+
+        // Compatibility fallback for older rows created before hash backfill.
         if let Some(existing_ref) = self.find_duplicate(&conn, pii_type, &normalized)? {
             return Ok(existing_ref);
         }
@@ -119,14 +191,15 @@ impl VaultStore {
 
         for attempt in 0..MAX_RETRIES {
             match conn.execute(
-                "INSERT INTO entries (ref_id, pii_type, ciphertext, dek_enc, iv, created_at, source, label)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO entries (ref_id, pii_type, ciphertext, dek_enc, iv, normalized_hash, created_at, source, label)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 rusqlite::params![
                     pii_ref.key(),
                     pii_type.to_string(),
                     encrypted.ciphertext,
                     encrypted.dek_encrypted,
                     encrypted.iv,
+                    normalized_hash,
                     now,
                     source,
                     label,
@@ -350,6 +423,26 @@ impl VaultStore {
     /// Access the database connection (for consent/audit modules).
     pub fn conn(&self) -> &Mutex<Connection> {
         &self.conn
+    }
+
+    /// Check for a duplicate entry by indexed normalized hash.
+    fn find_duplicate_by_hash(
+        &self,
+        conn: &Connection,
+        pii_type: PiiType,
+        normalized_hash: &str,
+    ) -> DamResult<Option<PiiRef>> {
+        let result: Result<String, rusqlite::Error> = conn.query_row(
+            "SELECT ref_id FROM entries WHERE pii_type = ?1 AND normalized_hash = ?2 LIMIT 1",
+            rusqlite::params![pii_type.to_string(), normalized_hash],
+            |row| row.get(0),
+        );
+
+        match result {
+            Ok(ref_id) => Ok(Some(PiiRef::from_key(&ref_id)?)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(DamError::Database(e.to_string())),
+        }
     }
 
     /// Check for a duplicate entry of the same type and normalized value.

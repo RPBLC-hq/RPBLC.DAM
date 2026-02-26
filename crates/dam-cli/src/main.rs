@@ -14,6 +14,10 @@ struct Cli {
     #[arg(long, short, global = true)]
     verbose: bool,
 
+    /// Emit machine-readable JSON output when supported.
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -59,6 +63,16 @@ enum Commands {
     Config {
         #[command(subcommand)]
         action: commands::config::ConfigAction,
+    },
+
+    /// Show local DAM status (config + vault)
+    Status,
+
+    /// Probe DAM HTTP health endpoints
+    Health {
+        /// DAM HTTP port
+        #[arg(long, default_value = "7828")]
+        port: u16,
     },
 
     /// Start the HTTP proxy (Anthropic + OpenAI API passthrough with PII redaction)
@@ -110,7 +124,9 @@ async fn main() -> Result<()> {
         Commands::Vault { action } => commands::vault::run(action).await,
         Commands::Consent { action } => commands::consent::run(action).await,
         Commands::Audit { r#ref, limit } => commands::audit::run(r#ref, limit).await,
-        Commands::Config { action } => commands::config::run(action).await,
+        Commands::Config { action } => commands::config::run(action, cli.json).await,
+        Commands::Status => commands::status::run(cli.json).await,
+        Commands::Health { port } => commands::health::run(port, cli.json).await,
         Commands::Serve {
             port,
             anthropic_upstream,

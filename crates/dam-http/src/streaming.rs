@@ -1,4 +1,5 @@
 use dam_vault::VaultStore;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::resolve::resolve_text;
@@ -13,13 +14,15 @@ use crate::resolve::resolve_text;
 ///   buffer (resolving any complete refs, leaving partials as-is).
 pub struct StreamingResolver {
     vault: Arc<VaultStore>,
+    allowed_refs: Arc<HashSet<String>>,
     buffer: String,
 }
 
 impl StreamingResolver {
-    pub fn new(vault: Arc<VaultStore>) -> Self {
+    pub fn new(vault: Arc<VaultStore>, allowed_refs: Arc<HashSet<String>>) -> Self {
         Self {
             vault,
+            allowed_refs,
             buffer: String::new(),
         }
     }
@@ -40,11 +43,11 @@ impl StreamingResolver {
             let emittable = self.buffer[..pos].to_string();
             let held = self.buffer[pos..].to_string();
             self.buffer = held;
-            resolve_text(&self.vault, &emittable)
+            resolve_text(&self.vault, &emittable, Some(&self.allowed_refs))
         } else {
             // No partial ref — resolve and emit the entire buffer
             let emittable = std::mem::take(&mut self.buffer);
-            resolve_text(&self.vault, &emittable)
+            resolve_text(&self.vault, &emittable, Some(&self.allowed_refs))
         }
     }
 
@@ -55,7 +58,7 @@ impl StreamingResolver {
         if remaining.is_empty() {
             return String::new();
         }
-        resolve_text(&self.vault, &remaining)
+        resolve_text(&self.vault, &remaining, Some(&self.allowed_refs))
     }
 
     /// Find the byte offset of a potential partial reference at the end
@@ -91,6 +94,11 @@ mod tests {
     use super::*;
     use dam_core::PiiType;
     use dam_vault::generate_kek;
+    use std::collections::HashSet;
+
+    fn allowlist_for(keys: &[String]) -> Arc<HashSet<String>> {
+        Arc::new(keys.iter().cloned().collect())
+    }
 
     fn test_vault_with_entry() -> (Arc<VaultStore>, String) {
         let dir = tempfile::tempdir().unwrap();
@@ -105,7 +113,11 @@ mod tests {
     #[test]
     fn single_chunk_complete_ref() {
         let (vault, display) = test_vault_with_entry();
-        let mut resolver = StreamingResolver::new(vault);
+        let key = display
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
+        let mut resolver = StreamingResolver::new(vault, allowlist_for(&[key]));
         let result = resolver.push(&format!("Hello {display} world"));
         assert_eq!(result, "Hello alice@example.com world");
         assert_eq!(resolver.finish(), "");
@@ -114,12 +126,16 @@ mod tests {
     #[test]
     fn ref_split_across_two_chunks() {
         let (vault, display) = test_vault_with_entry();
+        let key = display
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
         // display is like "[email:a3f71bc9]"
         let mid = display.len() / 2;
         let part1 = &format!("Hello {}", &display[..mid]);
         let part2 = &format!("{} world", &display[mid..]);
 
-        let mut resolver = StreamingResolver::new(vault);
+        let mut resolver = StreamingResolver::new(vault, allowlist_for(&[key]));
         let out1 = resolver.push(part1);
         assert_eq!(out1, "Hello ");
 
@@ -131,13 +147,17 @@ mod tests {
     #[test]
     fn ref_split_across_three_chunks() {
         let (vault, display) = test_vault_with_entry();
+        let key = display
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
         // Split "[email:a3f71bc9]" into three parts
         let third = display.len() / 3;
         let p1 = &display[..third];
         let p2 = &display[third..third * 2];
         let p3 = &display[third * 2..];
 
-        let mut resolver = StreamingResolver::new(vault);
+        let mut resolver = StreamingResolver::new(vault, allowlist_for(&[key]));
 
         let out1 = resolver.push(p1);
         assert_eq!(out1, "");
@@ -152,7 +172,7 @@ mod tests {
     #[test]
     fn no_refs_pass_through() {
         let (vault, _) = test_vault_with_entry();
-        let mut resolver = StreamingResolver::new(vault);
+        let mut resolver = StreamingResolver::new(vault, Arc::new(HashSet::new()));
         assert_eq!(resolver.push("Hello "), "Hello ");
         assert_eq!(resolver.push("world"), "world");
         assert_eq!(resolver.finish(), "");
@@ -164,7 +184,7 @@ mod tests {
         // Push only the start of a ref (no closing bracket)
         let partial = &display[..display.len() - 1]; // missing `]`
 
-        let mut resolver = StreamingResolver::new(vault);
+        let mut resolver = StreamingResolver::new(vault, Arc::new(HashSet::new()));
         let out = resolver.push(partial);
         assert_eq!(out, "");
 
@@ -176,7 +196,7 @@ mod tests {
     #[test]
     fn unknown_ref_left_intact() {
         let (vault, _) = test_vault_with_entry();
-        let mut resolver = StreamingResolver::new(vault);
+        let mut resolver = StreamingResolver::new(vault, Arc::new(HashSet::new()));
         let out = resolver.push("See [phone:deadbeef] here");
         assert_eq!(out, "See [phone:deadbeef] here");
     }
@@ -188,8 +208,16 @@ mod tests {
             .store_pii(PiiType::Phone, "555-1234", None, None)
             .unwrap();
         let phone_display = phone_ref.display();
+        let key1 = display
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
+        let key2 = phone_display
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
 
-        let mut resolver = StreamingResolver::new(vault);
+        let mut resolver = StreamingResolver::new(vault, allowlist_for(&[key1, key2]));
         let out = resolver.push(&format!("{display} and {phone_display}"));
         // Original format is preserved through the vault round-trip
         assert_eq!(out, "alice@example.com and 555-1234");
@@ -198,7 +226,7 @@ mod tests {
     #[test]
     fn bracket_in_normal_text_not_held_forever() {
         let (vault, _) = test_vault_with_entry();
-        let mut resolver = StreamingResolver::new(vault);
+        let mut resolver = StreamingResolver::new(vault, Arc::new(HashSet::new()));
 
         // A `[` without reference format — gets held initially
         let out1 = resolver.push("array[0");
