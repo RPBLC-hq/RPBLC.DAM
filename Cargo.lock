@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "dam-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "dam-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "dam-detect"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dam-core",
  "dam-vault",
@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "dam-http"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-stream",
  "axum",
@@ -579,7 +579,7 @@ dependencies = [
 
 [[package]]
 name = "dam-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dam-core",
@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "dam-resolve"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dam-core",
  "dam-vault",
@@ -609,7 +609,7 @@ dependencies = [
 
 [[package]]
 name = "dam-vault"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "argon2",
