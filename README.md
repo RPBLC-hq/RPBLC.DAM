@@ -202,15 +202,9 @@ dam audit --ref email:a3f71bc9     # filter by reference
 
 ## Integration
 
-### HTTP Proxy (primary)
+Use DAM primarily as an HTTP proxy (`dam serve`) for the strongest boundary.
 
-The proxy is the primary integration path. It provides a hard security boundary: PII is intercepted and redacted *before* the request leaves your machine, with no reliance on LLM behavior.
-
-```bash
-dam serve
-```
-
-#### Routes and defaults
+### Routes and defaults
 
 | Route | Format | Default upstream |
 |-------|--------|-----------------|
@@ -219,115 +213,21 @@ dam serve
 | `POST /v1/responses` | OpenAI Responses | `https://api.openai.com` |
 | `POST /codex/responses` | Codex | `https://chatgpt.com/backend-api` |
 
-Each route scans **user** messages for PII, replaces values with vault references, forwards the redacted request upstream, and resolves references in the response before returning to the client. Both streaming (SSE) and non-streaming responses are supported.
+Also exposed for ops:
+- `GET /healthz`
+- `GET /readyz`
 
-Override default upstreams globally via CLI flags or config:
+### Automation-first CLI
 
-```bash
-dam serve --openai-upstream https://openrouter.ai/api
-```
+For agent/CI use, prefer non-interactive commands with `--json` where available.
+Roadmap: [`docs/cli-roadmap.md`](docs/cli-roadmap.md).
 
-#### Upstream routing
+### Advanced docs
 
-When multiple providers share the same API format (e.g. xAI and OpenAI both use `/v1/chat/completions`), set the `X-DAM-Upstream` header to route a request to a specific provider:
-
-```bash
-# Route this request to xAI instead of the default OpenAI upstream
-curl http://127.0.0.1:7828/v1/chat/completions \
-  -H "Authorization: Bearer $XAI_API_KEY" \
-  -H "X-DAM-Upstream: https://api.x.ai" \
-  -H "content-type: application/json" \
-  -d '{"model": "grok-3", "messages": [{"role": "user", "content": "..."}]}'
-```
-
-- If the header is absent or empty, the request goes to the configured default
-- Path prefixes are preserved: `X-DAM-Upstream: https://gateway.corp.com/openai` produces `https://gateway.corp.com/openai/v1/chat/completions`
-- Only `http://` and `https://` schemes are allowed
-- URLs with credentials (`@`), query strings (`?`), or fragments (`#`) are rejected
-
-Works with `curl`, Python SDK, TypeScript SDK — anything that calls the OpenAI or Anthropic API.
-
-### MCP Server (supplementary agent tools)
-
-DAM also speaks the [Model Context Protocol](https://modelcontextprotocol.io/) over stdio, exposing vault tools to AI agents.
-
-**Important**: MCP tools are called *by* the LLM, which means the LLM has already seen the data in its context window by the time it calls a tool. MCP does **not** provide the same security boundary as the proxy. Use the proxy for PII interception; use MCP tools for supplementary operations like:
-
-- Scanning data fetched from external sources (files, APIs) before forwarding it elsewhere
-- Searching the vault for existing references
-- Managing consent and checking vault status
-- Resolving references when executing actions (consent-checked)
-
-<details>
-<summary><strong>Claude Code</strong> — <code>.mcp.json</code> in project root or <code>~/.claude/mcp.json</code></summary>
-
-```json
-{
-  "mcpServers": {
-    "dam": {
-      "command": "dam",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary><strong>Codex</strong> — <code>~/.codex/config.toml</code></summary>
-
-```toml
-[mcp_servers.dam]
-command = "dam"
-args = ["mcp"]
-```
-</details>
-
-<details>
-<summary><strong>OpenClaw</strong> — <code>mcp_config.json</code></summary>
-
-```json
-{
-  "mcpServers": {
-    "dam": {
-      "command": "dam",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-</details>
-
-### CLI (scripts and pipelines)
-
-Every operation is available as a CLI command. See the [full reference](#cli-reference) below.
-
-### Proxy vs. MCP: security comparison
-
-| | HTTP Proxy | MCP Tools |
-|---|---|---|
-| PII reaches the LLM | No — intercepted before the request | Yes — LLM sees data before calling tools |
-| Relies on LLM compliance | No — enforced at network layer | Yes — LLM must choose to call `dam_scan` |
-| Automatic | Yes — transparent, no code changes | No — requires LLM to follow instructions |
-| Best for | Primary PII protection | Vault operations, scanning external data, consent management |
-
-## MCP Tools
-
-When running as an MCP server, the agent receives these tools:
-
-| Tool | Purpose |
-|------|---------|
-| `dam_scan` | Scan text for PII, return redacted version |
-| `dam_resolve` | Resolve references for action execution (consent-checked) |
-| `dam_consent` | Grant or revoke consent for a specific ref + accessor + purpose |
-| `dam_vault_search` | Search vault by type — returns refs only, never values |
-| `dam_status` | Vault stats: entry counts, recent activity |
-| `dam_reveal` | Emergency override: reveal PII (bypasses consent, always audited) |
-| `dam_compare` | Derived operations without revealing values (Phase 2) |
-
-The server injects these instructions into the LLM context:
-
-> ALWAYS use `dam_scan` on user input before processing. Work with references like `[email:a3f71bc9]`, never raw values. Use `dam_resolve` only when executing actions that need real data. If consent is denied, ask the user to grant it via `dam_consent`. Never reconstruct or guess PII from references.
+- Detailed client integrations: [`docs/integrations.md`](docs/integrations.md)
+- Upstream routing (`X-DAM-Upstream`): [`docs/routing.md`](docs/routing.md)
+- Security model details: [`docs/security-model.md`](docs/security-model.md)
+- Troubleshooting: [`docs/troubleshooting.md`](docs/troubleshooting.md)
 
 ## Security Model
 
