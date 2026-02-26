@@ -1080,7 +1080,7 @@ mod tests {
     #[test]
     fn sse_state_resolves_text_delta() {
         let (vault, ref_key) = test_vault_with_entry();
-        let mut state = AnthropicSseState::new(vault, Arc::new(HashSet::new()));
+        let mut state = AnthropicSseState::new(vault, allowlist_for(&ref_key));
 
         let data = format!(
             r#"{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"Hello [{}] world"}}}}"#,
@@ -1102,7 +1102,7 @@ mod tests {
     #[test]
     fn openai_sse_resolves_text_delta() {
         let (vault, ref_key) = test_vault_with_entry();
-        let mut state = OpenAiSseState::new(vault, Arc::new(HashSet::new()));
+        let mut state = OpenAiSseState::new(vault, allowlist_for(&ref_key));
 
         let data = format!(
             r#"{{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{{"index":0,"delta":{{"content":"Hello [{ref_key}] world"}},"finish_reason":null}}]}}"#,
@@ -1161,7 +1161,7 @@ mod tests {
     #[test]
     fn responses_sse_resolves_text_delta() {
         let (vault, ref_key) = test_vault_with_entry();
-        let mut state = ResponsesSseState::new(vault, Arc::new(HashSet::new()));
+        let mut state = ResponsesSseState::new(vault, allowlist_for(&ref_key));
 
         let data =
             format!(r#"{{"delta":"Hello [{ref_key}] world","output_index":0,"content_index":0}}"#,);
@@ -1261,7 +1261,7 @@ mod tests {
     #[test]
     fn responses_sse_function_call_delta() {
         let (vault, ref_key) = test_vault_with_entry();
-        let mut state = ResponsesSseState::new(vault, Arc::new(HashSet::new()));
+        let mut state = ResponsesSseState::new(vault, allowlist_for(&ref_key));
 
         let data = format!(r#"{{"delta":"[{ref_key}]","output_index":0,"content_index":0}}"#,);
         let event = format!("event: response.function_call_arguments.delta\ndata: {data}\n\n");
@@ -1279,6 +1279,12 @@ mod tests {
     }
 
     // --- extract_upstream_override tests ---
+
+    fn allowlist_for(ref_key: &str) -> Arc<HashSet<String>> {
+        let mut set = HashSet::new();
+        set.insert(ref_key.to_string());
+        Arc::new(set)
+    }
 
     fn headers_with(name: &str, value: &str) -> HeaderMap {
         let mut map = HeaderMap::new();
@@ -1410,7 +1416,7 @@ mod tests {
     #[test]
     fn openai_sse_flush_on_stop() {
         let (vault, ref_key) = test_vault_with_entry();
-        let mut state = OpenAiSseState::new(vault, Arc::new(HashSet::new()));
+        let mut state = OpenAiSseState::new(vault, allowlist_for(&ref_key));
 
         // First chunk: partial ref (opens bracket, held by resolver)
         let partial = format!("[{}", &ref_key[..ref_key.len() / 2]);
