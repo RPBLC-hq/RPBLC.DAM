@@ -1,9 +1,9 @@
 pub mod audit;
 pub mod config;
 pub mod consent;
+pub mod health;
 pub mod init;
 pub mod mcp;
-pub mod health;
 pub mod scan;
 pub mod serve;
 pub mod status;

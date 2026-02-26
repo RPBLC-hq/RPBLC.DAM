@@ -23,7 +23,7 @@ fn build_status_json(config: &DamConfig, entry_count: usize) -> Value {
 pub async fn run(json: bool) -> Result<()> {
     let config = load_config()?;
     let vault = open_vault(&config)?;
-    let entry_count = vault.list_entries(None, 1_000_000)?.len();
+    let entry_count = vault.list_entries(None)?.len();
 
     if json {
         println!("{}", build_status_json(&config, entry_count));

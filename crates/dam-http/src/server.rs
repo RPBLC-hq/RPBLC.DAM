@@ -1,8 +1,13 @@
-pub(crate) use crate::anthropic_handler::{AnthropicSseState, handle_messages};
-pub(crate) use crate::openai_handler::{OpenAiSseState, handle_chat_completions};
-pub(crate) use crate::responses_handler::{
-    ResponsesSseState, handle_codex_responses, handle_responses,
-};
+pub(crate) use crate::anthropic_handler::handle_messages;
+pub(crate) use crate::openai_handler::handle_chat_completions;
+pub(crate) use crate::responses_handler::{handle_codex_responses, handle_responses};
+
+#[cfg(test)]
+pub(crate) use crate::anthropic_handler::AnthropicSseState;
+#[cfg(test)]
+pub(crate) use crate::openai_handler::OpenAiSseState;
+#[cfg(test)]
+pub(crate) use crate::responses_handler::ResponsesSseState;
 
 #[cfg(test)]
 mod tests {
@@ -148,9 +153,8 @@ mod tests {
         let (vault, ref_key) = test_vault_with_entry();
         let mut state = ResponsesSseState::new(vault, allowlist_for(&ref_key));
 
-        let data = format!(
-            r#"{{"delta":"Hello [{ref_key}] world","output_index":0,"content_index":0}}"#,
-        );
+        let data =
+            format!(r#"{{"delta":"Hello [{ref_key}] world","output_index":0,"content_index":0}}"#,);
         let event = format!("event: response.output_text.delta\ndata: {data}\n\n");
         state.buf.feed(event.as_bytes());
 

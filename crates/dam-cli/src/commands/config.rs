@@ -34,9 +34,9 @@ fn apply_set(config: &mut DamConfig, key: &str, value: &str) -> Result<()> {
                 "standard" => dam_core::config::Sensitivity::Standard,
                 "elevated" => dam_core::config::Sensitivity::Elevated,
                 "maximum" => dam_core::config::Sensitivity::Maximum,
-                _ => anyhow::bail!(
-                    "Invalid sensitivity: {value}. Use: standard, elevated, maximum"
-                ),
+                _ => {
+                    anyhow::bail!("Invalid sensitivity: {value}. Use: standard, elevated, maximum")
+                }
             };
         }
         "detection.locales" => {
@@ -143,7 +143,10 @@ pub async fn run(action: ConfigAction, json: bool) -> Result<()> {
                     println!("{}", config.server.consent_passthrough);
                 }
                 "server.anthropic_upstream_url" => {
-                    println!("{}", config.server.anthropic_upstream_url.unwrap_or_default());
+                    println!(
+                        "{}",
+                        config.server.anthropic_upstream_url.unwrap_or_default()
+                    );
                 }
                 "server.openai_upstream_url" => {
                     println!("{}", config.server.openai_upstream_url.unwrap_or_default());
@@ -197,7 +200,12 @@ mod tests {
     #[test]
     fn set_and_clear_upstream_url() {
         let mut cfg = DamConfig::default();
-        apply_set(&mut cfg, "server.openai_upstream_url", "https://api.example.com").unwrap();
+        apply_set(
+            &mut cfg,
+            "server.openai_upstream_url",
+            "https://api.example.com",
+        )
+        .unwrap();
         assert_eq!(
             cfg.server.openai_upstream_url.as_deref(),
             Some("https://api.example.com")
