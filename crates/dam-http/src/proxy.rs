@@ -391,7 +391,12 @@ impl AppState {
     /// Create application state from config and vault.
     pub fn new(config: &DamConfig, vault: Arc<VaultStore>) -> Self {
         let pipeline = Arc::new(DetectionPipeline::new(config, vault.clone()));
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(120))
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
 
         let anthropic_upstream_url = config
             .server
