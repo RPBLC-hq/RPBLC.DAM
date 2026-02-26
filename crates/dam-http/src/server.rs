@@ -20,6 +20,7 @@ use crate::responses::{ResponsesRequest, ResponsesResponse, ResponsesStreamDelta
 use crate::sse_buffer::SseBuffer;
 use crate::streaming::StreamingResolver;
 use crate::upstream::extract_upstream_override;
+use crate::upstream_error::pass_through_error;
 
 // ---------------------------------------------------------------------------
 // Anthropic SSE handler
@@ -875,32 +876,6 @@ pub(crate) async fn handle_codex_responses(
     } else {
         handle_responses_non_streaming(state, upstream_resp, &allowed_refs).await
     }
-}
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-/// Pass through an error response from upstream, preserving status and headers.
-async fn pass_through_error(upstream_resp: reqwest::Response) -> Result<Response, AppError> {
-    let status = upstream_resp.status();
-    let upstream_status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let mut builder = Response::builder().status(upstream_status);
-
-    for name in &["content-type", "x-request-id", "request-id", "retry-after"] {
-        if let Some(value) = upstream_resp.headers().get(*name) {
-            builder = builder.header(*name, value);
-        }
-    }
-
-    let body_bytes = upstream_resp.bytes().await.unwrap_or_default();
-    let response = builder.body(Body::from(body_bytes)).unwrap_or_else(|_| {
-        Response::builder()
-            .status(StatusCode::BAD_GATEWAY)
-            .body(Body::empty())
-            .unwrap()
-    });
-    Ok(response)
 }
 
 #[cfg(test)]

@@ -19,3 +19,4 @@ pub mod server;
 pub mod sse_buffer;
 pub mod streaming;
 pub mod upstream;
+pub mod upstream_error;
