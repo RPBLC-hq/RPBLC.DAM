@@ -4,11 +4,14 @@ use crate::anthropic::{
 use crate::openai::{ChatContent, ChatMessage, ChatRequest, ChatResponse, ContentPart};
 use crate::resolve::resolve_text;
 use crate::responses::{ResponsesRequest, ResponsesResponse};
-use dam_core::{DamConfig, reference::replace_refs};
+use dam_core::{
+    DamConfig,
+    reference::{extract_refs, replace_refs},
+};
 use dam_detect::{DetectionPipeline, ScanResult};
 use dam_vault::{ConsentManager, VaultStore};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// After scanning, check consent for each detection. For consented refs, replace the
@@ -114,28 +117,36 @@ pub fn redact_request(
 }
 
 /// Resolve PII references in a non-streaming Anthropic response.
-pub fn resolve_response(vault: &Arc<VaultStore>, response: &mut MessagesResponse) {
+pub fn resolve_response(
+    vault: &Arc<VaultStore>,
+    response: &mut MessagesResponse,
+    allowed_refs: &HashSet<String>,
+) {
     for block in &mut response.content {
         if let ResponseBlock::Text { text, .. } = block {
-            *text = resolve_text(vault, text);
+            *text = resolve_text(vault, text, Some(allowed_refs));
         }
     }
 }
 
 /// Recursively resolve PII references in a JSON value.
-pub(crate) fn resolve_json_value(vault: &Arc<VaultStore>, value: &mut Value) {
+pub(crate) fn resolve_json_value(
+    vault: &Arc<VaultStore>,
+    value: &mut Value,
+    allowed_refs: &HashSet<String>,
+) {
     match value {
         Value::String(s) => {
-            *s = resolve_text(vault, s);
+            *s = resolve_text(vault, s, Some(allowed_refs));
         }
         Value::Array(arr) => {
             for item in arr {
-                resolve_json_value(vault, item);
+                resolve_json_value(vault, item, allowed_refs);
             }
         }
         Value::Object(map) => {
             for val in map.values_mut() {
-                resolve_json_value(vault, val);
+                resolve_json_value(vault, val, allowed_refs);
             }
         }
         _ => {}
@@ -199,17 +210,21 @@ pub fn redact_chat_request(
 }
 
 /// Resolve PII references in a non-streaming OpenAI ChatResponse.
-pub fn resolve_chat_response(vault: &Arc<VaultStore>, response: &mut ChatResponse) {
+pub fn resolve_chat_response(
+    vault: &Arc<VaultStore>,
+    response: &mut ChatResponse,
+    allowed_refs: &HashSet<String>,
+) {
     for choice in &mut response.choices {
         if let Some(ref mut content) = choice.message.content {
-            *content = resolve_text(vault, content);
+            *content = resolve_text(vault, content, Some(allowed_refs));
         }
         // Resolve refs in choice extras (e.g. tool_calls arguments)
         for value in choice.message.extra.values_mut() {
-            resolve_json_value(vault, value);
+            resolve_json_value(vault, value, allowed_refs);
         }
         for value in choice.extra.values_mut() {
-            resolve_json_value(vault, value);
+            resolve_json_value(vault, value, allowed_refs);
         }
     }
 }
@@ -242,10 +257,113 @@ pub fn redact_responses_request(
 }
 
 /// Resolve PII references in a non-streaming OpenAI Responses API response.
-pub fn resolve_responses_response(vault: &Arc<VaultStore>, response: &mut ResponsesResponse) {
+pub fn resolve_responses_response(
+    vault: &Arc<VaultStore>,
+    response: &mut ResponsesResponse,
+    allowed_refs: &HashSet<String>,
+) {
     for item in &mut response.output {
-        resolve_json_value(vault, item);
+        resolve_json_value(vault, item, allowed_refs);
     }
+}
+
+fn collect_refs_from_text(text: &str, refs: &mut HashSet<String>) {
+    for pii_ref in extract_refs(text) {
+        refs.insert(pii_ref.key());
+    }
+}
+
+fn collect_refs_from_json(value: &Value, refs: &mut HashSet<String>) {
+    match value {
+        Value::String(s) => collect_refs_from_text(s, refs),
+        Value::Array(arr) => {
+            for item in arr {
+                collect_refs_from_json(item, refs);
+            }
+        }
+        Value::Object(map) => {
+            for val in map.values() {
+                collect_refs_from_json(val, refs);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect all references present in a redacted Anthropic request.
+pub fn collect_request_refs(request: &MessagesRequest) -> HashSet<String> {
+    let mut refs = HashSet::new();
+    collect_refs_from_text(&request.model, &mut refs);
+
+    if let Some(system) = &request.system {
+        collect_refs_from_text(system, &mut refs);
+    }
+
+    for value in request.extra.values() {
+        collect_refs_from_json(value, &mut refs);
+    }
+
+    for message in &request.messages {
+        match &message.content {
+            MessageContent::Text(text) => collect_refs_from_text(text, &mut refs),
+            MessageContent::Blocks(blocks) => {
+                for block in blocks {
+                    if let ContentBlock::Text { text, .. } = block {
+                        collect_refs_from_text(text, &mut refs);
+                    }
+                }
+            }
+        }
+    }
+
+    refs
+}
+
+/// Collect all references present in a redacted OpenAI chat request.
+pub fn collect_chat_request_refs(request: &ChatRequest) -> HashSet<String> {
+    let mut refs = HashSet::new();
+
+    for value in request.extra.values() {
+        collect_refs_from_json(value, &mut refs);
+    }
+
+    for message in &request.messages {
+        if let Some(content) = &message.content {
+            match content {
+                ChatContent::Text(text) => collect_refs_from_text(text, &mut refs),
+                ChatContent::Parts(parts) => {
+                    for part in parts {
+                        if let ContentPart::Text { text, .. } = part {
+                            collect_refs_from_text(text, &mut refs);
+                        }
+                    }
+                }
+            }
+        }
+
+        for value in message.extra.values() {
+            collect_refs_from_json(value, &mut refs);
+        }
+    }
+
+    refs
+}
+
+/// Collect all references present in a redacted OpenAI responses request.
+pub fn collect_responses_request_refs(request: &ResponsesRequest) -> HashSet<String> {
+    let mut refs = HashSet::new();
+
+    if let Some(instructions) = &request.instructions {
+        collect_refs_from_text(instructions, &mut refs);
+    }
+
+    collect_refs_from_json(&request.input, &mut refs);
+
+    for value in request.extra.values() {
+        collect_refs_from_json(value, &mut refs);
+    }
+
+    refs
 }
 
 /// Shared application state passed to axum handlers.
@@ -309,7 +427,7 @@ mod tests {
     };
     use dam_core::PiiType;
     use dam_vault::generate_kek;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     fn test_setup() -> (Arc<VaultStore>, DetectionPipeline) {
         let dir = tempfile::tempdir().unwrap();
@@ -504,7 +622,9 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        resolve_response(&vault, &mut resp);
+        let mut refs = HashSet::new();
+        refs.insert(pii_ref.key());
+        resolve_response(&vault, &mut resp, &refs);
 
         if let ResponseBlock::Text { ref text, .. } = resp.content[0] {
             assert_eq!(text, "Contact alice@test.com");
@@ -653,7 +773,9 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        resolve_chat_response(&vault, &mut resp);
+        let mut refs = HashSet::new();
+        refs.insert(pii_ref.key());
+        resolve_chat_response(&vault, &mut resp, &refs);
 
         assert_eq!(
             resp.choices[0].message.content.as_deref(),
@@ -1346,7 +1468,9 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        resolve_responses_response(&vault, &mut resp);
+        let mut refs = HashSet::new();
+        refs.insert(pii_ref.key());
+        resolve_responses_response(&vault, &mut resp, &refs);
 
         let text = resp.output[0]["content"][0]["text"].as_str().unwrap();
         assert_eq!(text, "Contact alice@test.com");

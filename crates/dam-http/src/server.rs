@@ -6,14 +6,15 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use bytes::BytesMut;
 use futures_util::StreamExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::anthropic::{Delta, MessagesRequest, MessagesResponse, StreamEvent};
 use crate::error::AppError;
 use crate::openai::{ChatChunk, ChatRequest, ChatResponse};
 use crate::proxy::{
-    AppState, redact_chat_request, redact_request, redact_responses_request, resolve_chat_response,
+    AppState, collect_chat_request_refs, collect_request_refs, collect_responses_request_refs,
+    redact_chat_request, redact_request, redact_responses_request, resolve_chat_response,
     resolve_json_value, resolve_response, resolve_responses_response,
 };
 use crate::resolve::resolve_text;
@@ -159,7 +160,8 @@ async fn handle_messages(
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming request");
 
     redact_request(&state.pipeline, &state.vault, &mut request)?;
-    tracing::debug!("request redacted");
+    let allowed_refs = Arc::new(collect_request_refs(&request));
+    tracing::debug!(allowed_refs = allowed_refs.len(), "request redacted");
 
     let base = extract_upstream_override(&headers)?
         .unwrap_or_else(|| state.anthropic_upstream_url.clone());
@@ -186,9 +188,9 @@ async fn handle_messages(
     }
 
     if is_streaming {
-        handle_anthropic_streaming(state, upstream_resp).await
+        handle_anthropic_streaming(state, upstream_resp, allowed_refs).await
     } else {
-        handle_anthropic_non_streaming(state, upstream_resp).await
+        handle_anthropic_non_streaming(state, upstream_resp, &allowed_refs).await
     }
 }
 
@@ -196,12 +198,13 @@ async fn handle_messages(
 async fn handle_anthropic_non_streaming(
     state: AppState,
     upstream_resp: reqwest::Response,
+    allowed_refs: &HashSet<String>,
 ) -> Result<Response, AppError> {
     let body = upstream_resp.text().await?;
     let mut response: MessagesResponse =
         serde_json::from_str(&body).map_err(|e| AppError::Upstream(e.to_string()))?;
 
-    resolve_response(&state.vault, &mut response);
+    resolve_response(&state.vault, &mut response, allowed_refs);
 
     let json = serde_json::to_string(&response).map_err(|e| AppError::Proxy(e.to_string()))?;
 
@@ -212,12 +215,13 @@ async fn handle_anthropic_non_streaming(
 async fn handle_anthropic_streaming(
     state: AppState,
     upstream_resp: reqwest::Response,
+    allowed_refs: Arc<HashSet<String>>,
 ) -> Result<Response, AppError> {
     let vault = state.vault.clone();
     let byte_stream = upstream_resp.bytes_stream();
 
     let stream = async_stream::stream! {
-        let mut sse_state = AnthropicSseState::new(vault);
+        let mut sse_state = AnthropicSseState::new(vault, allowed_refs.clone());
 
         tokio::pin!(byte_stream);
 
@@ -270,14 +274,16 @@ async fn handle_anthropic_streaming(
 /// Anthropic SSE state: buffer + per-content-block resolvers.
 struct AnthropicSseState {
     vault: Arc<dam_vault::VaultStore>,
+    allowed_refs: Arc<HashSet<String>>,
     buf: SseBuffer,
     resolvers: HashMap<usize, StreamingResolver>,
 }
 
 impl AnthropicSseState {
-    fn new(vault: Arc<dam_vault::VaultStore>) -> Self {
+    fn new(vault: Arc<dam_vault::VaultStore>, allowed_refs: Arc<HashSet<String>>) -> Self {
         Self {
             vault,
+            allowed_refs,
             buf: SseBuffer::new(),
             resolvers: HashMap::new(),
         }
@@ -327,7 +333,7 @@ impl AnthropicSseState {
         let resolver = self
             .resolvers
             .entry(*index)
-            .or_insert_with(|| StreamingResolver::new(self.vault.clone()));
+            .or_insert_with(|| StreamingResolver::new(self.vault.clone(), self.allowed_refs.clone()));
 
         let resolved = resolver.push(text);
 
@@ -396,7 +402,8 @@ async fn handle_chat_completions(
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming openai request");
 
     redact_chat_request(&state.pipeline, &state.vault, &mut request)?;
-    tracing::debug!("openai request redacted");
+    let allowed_refs = Arc::new(collect_chat_request_refs(&request));
+    tracing::debug!(allowed_refs = allowed_refs.len(), "openai request redacted");
 
     let base =
         extract_upstream_override(&headers)?.unwrap_or_else(|| state.openai_upstream_url.clone());
@@ -423,9 +430,9 @@ async fn handle_chat_completions(
     }
 
     if is_streaming {
-        handle_openai_streaming(state, upstream_resp).await
+        handle_openai_streaming(state, upstream_resp, allowed_refs).await
     } else {
-        handle_openai_non_streaming(state, upstream_resp).await
+        handle_openai_non_streaming(state, upstream_resp, &allowed_refs).await
     }
 }
 
@@ -433,12 +440,13 @@ async fn handle_chat_completions(
 async fn handle_openai_non_streaming(
     state: AppState,
     upstream_resp: reqwest::Response,
+    allowed_refs: &HashSet<String>,
 ) -> Result<Response, AppError> {
     let body = upstream_resp.text().await?;
     let mut response: ChatResponse =
         serde_json::from_str(&body).map_err(|e| AppError::Upstream(e.to_string()))?;
 
-    resolve_chat_response(&state.vault, &mut response);
+    resolve_chat_response(&state.vault, &mut response, allowed_refs);
 
     let json = serde_json::to_string(&response).map_err(|e| AppError::Proxy(e.to_string()))?;
 
@@ -449,12 +457,13 @@ async fn handle_openai_non_streaming(
 async fn handle_openai_streaming(
     state: AppState,
     upstream_resp: reqwest::Response,
+    allowed_refs: Arc<HashSet<String>>,
 ) -> Result<Response, AppError> {
     let vault = state.vault.clone();
     let byte_stream = upstream_resp.bytes_stream();
 
     let stream = async_stream::stream! {
-        let mut sse_state = OpenAiSseState::new(vault);
+        let mut sse_state = OpenAiSseState::new(vault, allowed_refs.clone());
 
         tokio::pin!(byte_stream);
 
@@ -513,14 +522,16 @@ async fn handle_openai_streaming(
 /// OpenAI SSE state: buffer + per-choice resolvers.
 struct OpenAiSseState {
     vault: Arc<dam_vault::VaultStore>,
+    allowed_refs: Arc<HashSet<String>>,
     buf: SseBuffer,
     resolvers: HashMap<usize, StreamingResolver>,
 }
 
 impl OpenAiSseState {
-    fn new(vault: Arc<dam_vault::VaultStore>) -> Self {
+    fn new(vault: Arc<dam_vault::VaultStore>, allowed_refs: Arc<HashSet<String>>) -> Self {
         Self {
             vault,
+            allowed_refs,
             buf: SseBuffer::new(),
             resolvers: HashMap::new(),
         }
@@ -583,7 +594,7 @@ impl OpenAiSseState {
                 let resolver = self
                     .resolvers
                     .entry(choice.index)
-                    .or_insert_with(|| StreamingResolver::new(self.vault.clone()));
+                    .or_insert_with(|| StreamingResolver::new(self.vault.clone(), self.allowed_refs.clone()));
                 let resolved = resolver.push(text);
                 choice.delta.content = Some(resolved);
                 modified = true;
@@ -647,7 +658,8 @@ async fn handle_responses(
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming responses api request");
 
     redact_responses_request(&state.pipeline, &state.vault, &mut request)?;
-    tracing::debug!("responses request redacted");
+    let allowed_refs = Arc::new(collect_responses_request_refs(&request));
+    tracing::debug!(allowed_refs = allowed_refs.len(), "responses request redacted");
 
     let base =
         extract_upstream_override(&headers)?.unwrap_or_else(|| state.openai_upstream_url.clone());
@@ -674,9 +686,9 @@ async fn handle_responses(
     }
 
     if is_streaming {
-        handle_responses_streaming(state, upstream_resp).await
+        handle_responses_streaming(state, upstream_resp, allowed_refs).await
     } else {
-        handle_responses_non_streaming(state, upstream_resp).await
+        handle_responses_non_streaming(state, upstream_resp, &allowed_refs).await
     }
 }
 
@@ -684,12 +696,13 @@ async fn handle_responses(
 async fn handle_responses_non_streaming(
     state: AppState,
     upstream_resp: reqwest::Response,
+    allowed_refs: &HashSet<String>,
 ) -> Result<Response, AppError> {
     let body = upstream_resp.text().await?;
     let mut response: ResponsesResponse =
         serde_json::from_str(&body).map_err(|e| AppError::Upstream(e.to_string()))?;
 
-    resolve_responses_response(&state.vault, &mut response);
+    resolve_responses_response(&state.vault, &mut response, allowed_refs);
 
     let json = serde_json::to_string(&response).map_err(|e| AppError::Proxy(e.to_string()))?;
 
@@ -700,12 +713,13 @@ async fn handle_responses_non_streaming(
 async fn handle_responses_streaming(
     state: AppState,
     upstream_resp: reqwest::Response,
+    allowed_refs: Arc<HashSet<String>>,
 ) -> Result<Response, AppError> {
     let vault = state.vault.clone();
     let byte_stream = upstream_resp.bytes_stream();
 
     let stream = async_stream::stream! {
-        let mut sse_state = ResponsesSseState::new(vault);
+        let mut sse_state = ResponsesSseState::new(vault, allowed_refs.clone());
 
         tokio::pin!(byte_stream);
 
@@ -767,14 +781,16 @@ async fn handle_responses_streaming(
 /// between concurrent output streams (e.g. text + function call arguments).
 struct ResponsesSseState {
     vault: Arc<dam_vault::VaultStore>,
+    allowed_refs: Arc<HashSet<String>>,
     buf: SseBuffer,
     resolvers: HashMap<(usize, usize), StreamingResolver>,
 }
 
 impl ResponsesSseState {
-    fn new(vault: Arc<dam_vault::VaultStore>) -> Self {
+    fn new(vault: Arc<dam_vault::VaultStore>, allowed_refs: Arc<HashSet<String>>) -> Self {
         Self {
             vault,
+            allowed_refs,
             buf: SseBuffer::new(),
             resolvers: HashMap::new(),
         }
@@ -827,7 +843,7 @@ impl ResponsesSseState {
         let resolver = self
             .resolvers
             .entry(key)
-            .or_insert_with(|| StreamingResolver::new(self.vault.clone()));
+            .or_insert_with(|| StreamingResolver::new(self.vault.clone(), self.allowed_refs.clone()));
 
         let resolved = resolver.push(text);
 
@@ -871,7 +887,7 @@ impl ResponsesSseState {
         if let serde_json::Value::Object(ref mut map) = done_value
             && let Some(serde_json::Value::String(text)) = map.get_mut("text")
         {
-            *text = resolve_text(&self.vault, text);
+            *text = resolve_text(&self.vault, text, Some(&self.allowed_refs));
         }
         let done_data = serde_json::to_string(&done_value).unwrap_or_else(|_| data.to_string());
         output.extend_from_slice(
@@ -915,7 +931,7 @@ impl ResponsesSseState {
             if let (Some(event_type), Some(data_str)) = (event_type, data)
                 && let Ok(mut value) = serde_json::from_str::<serde_json::Value>(data_str)
             {
-                resolve_json_value(&self.vault, &mut value);
+                resolve_json_value(&self.vault, &mut value, &self.allowed_refs);
                 let new_data =
                     serde_json::to_string(&value).unwrap_or_else(|_| data_str.to_string());
                 output.extend_from_slice(self.format_event(event_type, &new_data).as_slice());
@@ -964,7 +980,8 @@ async fn handle_codex_responses(
     tracing::debug!(model = %request.model, streaming = is_streaming, "incoming codex request");
 
     redact_responses_request(&state.pipeline, &state.vault, &mut request)?;
-    tracing::debug!("codex request redacted");
+    let allowed_refs = Arc::new(collect_responses_request_refs(&request));
+    tracing::debug!(allowed_refs = allowed_refs.len(), "codex request redacted");
 
     let base =
         extract_upstream_override(&headers)?.unwrap_or_else(|| state.codex_upstream_url.clone());
@@ -991,9 +1008,9 @@ async fn handle_codex_responses(
     }
 
     if is_streaming {
-        handle_responses_streaming(state, upstream_resp).await
+        handle_responses_streaming(state, upstream_resp, allowed_refs).await
     } else {
-        handle_responses_non_streaming(state, upstream_resp).await
+        handle_responses_non_streaming(state, upstream_resp, &allowed_refs).await
     }
 }
 
@@ -1028,6 +1045,7 @@ mod tests {
     use super::*;
     use dam_core::PiiType;
     use dam_vault::generate_kek;
+    use std::collections::HashSet;
 
     fn test_vault_with_entry() -> (Arc<dam_vault::VaultStore>, String) {
         let dir = tempfile::tempdir().unwrap();
@@ -1060,7 +1078,7 @@ mod tests {
     #[test]
     fn sse_state_splits_events() {
         let (vault, _) = test_vault_with_entry();
-        let mut state = AnthropicSseState::new(vault);
+        let mut state = AnthropicSseState::new(vault, Arc::new(HashSet::new()));
 
         state.buf.feed(b"event: ping\ndata: {}\n\nevent: message_start\ndata: {\"type\":\"message_start\",\"message\":{}}\n\n");
 
@@ -1076,7 +1094,7 @@ mod tests {
     #[test]
     fn sse_state_passthrough_non_text_events() {
         let (vault, _) = test_vault_with_entry();
-        let mut state = AnthropicSseState::new(vault);
+        let mut state = AnthropicSseState::new(vault, Arc::new(HashSet::new()));
 
         let ping = b"event: ping\ndata: {\"type\":\"ping\"}\n\n";
         state.buf.feed(ping);
@@ -1089,7 +1107,7 @@ mod tests {
     #[test]
     fn sse_state_resolves_text_delta() {
         let (vault, ref_key) = test_vault_with_entry();
-        let mut state = AnthropicSseState::new(vault);
+        let mut state = AnthropicSseState::new(vault, Arc::new(HashSet::new()));
 
         let data = format!(
             r#"{{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"Hello [{}] world"}}}}"#,
@@ -1111,7 +1129,7 @@ mod tests {
     #[test]
     fn openai_sse_resolves_text_delta() {
         let (vault, ref_key) = test_vault_with_entry();
-        let mut state = OpenAiSseState::new(vault);
+        let mut state = OpenAiSseState::new(vault, Arc::new(HashSet::new()));
 
         let data = format!(
             r#"{{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{{"index":0,"delta":{{"content":"Hello [{ref_key}] world"}},"finish_reason":null}}]}}"#,
@@ -1134,7 +1152,7 @@ mod tests {
     #[test]
     fn openai_sse_passthrough_non_content_chunk() {
         let (vault, _) = test_vault_with_entry();
-        let mut state = OpenAiSseState::new(vault);
+        let mut state = OpenAiSseState::new(vault, Arc::new(HashSet::new()));
 
         // A chunk with role only (first chunk in stream), no content
         let data = r#"{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}"#;
@@ -1152,7 +1170,7 @@ mod tests {
     #[test]
     fn openai_sse_done_termination() {
         let (vault, _) = test_vault_with_entry();
-        let mut state = OpenAiSseState::new(vault);
+        let mut state = OpenAiSseState::new(vault, Arc::new(HashSet::new()));
 
         let event = "data: [DONE]\n\n";
         state.buf.feed(event.as_bytes());
@@ -1170,7 +1188,7 @@ mod tests {
     #[test]
     fn responses_sse_resolves_text_delta() {
         let (vault, ref_key) = test_vault_with_entry();
-        let mut state = ResponsesSseState::new(vault);
+        let mut state = ResponsesSseState::new(vault, Arc::new(HashSet::new()));
 
         let data =
             format!(r#"{{"delta":"Hello [{ref_key}] world","output_index":0,"content_index":0}}"#,);
@@ -1192,7 +1210,7 @@ mod tests {
     #[test]
     fn responses_sse_passthrough_non_text_events() {
         let (vault, _) = test_vault_with_entry();
-        let mut state = ResponsesSseState::new(vault);
+        let mut state = ResponsesSseState::new(vault, Arc::new(HashSet::new()));
 
         let event =
             b"event: response.created\ndata: {\"type\":\"response\",\"id\":\"resp_abc\"}\n\n";
@@ -1206,7 +1224,7 @@ mod tests {
     #[test]
     fn responses_sse_flush_on_text_done() {
         let (vault, ref_key) = test_vault_with_entry();
-        let mut state = ResponsesSseState::new(vault);
+        let mut state = ResponsesSseState::new(vault, Arc::new(HashSet::new()));
 
         // First: partial ref in a delta
         let partial = format!("[{}", &ref_key[..ref_key.len() / 2]);
@@ -1243,7 +1261,7 @@ mod tests {
     #[test]
     fn responses_sse_flush_on_completed() {
         let (vault, ref_key) = test_vault_with_entry();
-        let mut state = ResponsesSseState::new(vault);
+        let mut state = ResponsesSseState::new(vault, Arc::new(HashSet::new()));
 
         // Push a partial ref
         let partial = format!("[{}", &ref_key[..ref_key.len() / 2]);
@@ -1270,7 +1288,7 @@ mod tests {
     #[test]
     fn responses_sse_function_call_delta() {
         let (vault, ref_key) = test_vault_with_entry();
-        let mut state = ResponsesSseState::new(vault);
+        let mut state = ResponsesSseState::new(vault, Arc::new(HashSet::new()));
 
         let data = format!(r#"{{"delta":"[{ref_key}]","output_index":0,"content_index":0}}"#,);
         let event = format!("event: response.function_call_arguments.delta\ndata: {data}\n\n");
@@ -1419,7 +1437,7 @@ mod tests {
     #[test]
     fn openai_sse_flush_on_stop() {
         let (vault, ref_key) = test_vault_with_entry();
-        let mut state = OpenAiSseState::new(vault);
+        let mut state = OpenAiSseState::new(vault, Arc::new(HashSet::new()));
 
         // First chunk: partial ref (opens bracket, held by resolver)
         let partial = format!("[{}", &ref_key[..ref_key.len() / 2]);
