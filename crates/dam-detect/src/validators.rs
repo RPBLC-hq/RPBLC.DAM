@@ -1031,6 +1031,358 @@ pub(crate) fn validate_ipv6(value: &str) -> bool {
     true
 }
 
+// ── Tier 2 validators ─────────────────────────────────────────────────────────
+
+/// Validate a VIN using the ISO 3779 check digit at position 8 (0-indexed).
+/// Weights: [8,7,6,5,4,3,2,10,0,9,8,7,6,5,4,3,2]; check = sum % 11.
+/// Position 8 must be '0'–'9' for check 0–9, or 'X'/'x' for check 10.
+pub(crate) fn validate_vin(s: &str) -> bool {
+    const WEIGHTS: [u32; 17] = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2];
+
+    fn vin_char_value(c: char) -> Option<u32> {
+        match c.to_ascii_uppercase() {
+            '0'..='9' => Some(c as u32 - '0' as u32),
+            'A' => Some(1),
+            'B' => Some(2),
+            'C' => Some(3),
+            'D' => Some(4),
+            'E' => Some(5),
+            'F' => Some(6),
+            'G' => Some(7),
+            'H' => Some(8),
+            'J' => Some(1),
+            'K' => Some(2),
+            'L' => Some(3),
+            'M' => Some(4),
+            'N' => Some(5),
+            'P' => Some(7),
+            'R' => Some(9),
+            'S' => Some(2),
+            'T' => Some(3),
+            'U' => Some(4),
+            'V' => Some(5),
+            'W' => Some(6),
+            'X' => Some(7),
+            'Y' => Some(8),
+            'Z' => Some(9),
+            _ => None, // I, O, Q are invalid in VINs
+        }
+    }
+
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() != 17 {
+        return false;
+    }
+
+    let sum: u32 = chars
+        .iter()
+        .zip(WEIGHTS.iter())
+        .filter_map(|(&c, &w)| vin_char_value(c).map(|v| v * w))
+        .sum();
+
+    if chars.iter().filter_map(|&c| vin_char_value(c)).count() != 17 {
+        return false;
+    }
+
+    let check = sum % 11;
+    let check_char = chars[8].to_ascii_uppercase();
+    match check {
+        10 => check_char == 'X',
+        n => check_char.to_digit(10) == Some(n),
+    }
+}
+
+/// Validate a Singapore NRIC/FIN number using the MOD-11 check letter algorithm.
+/// Format: [STFGM]\d{7}[A-Z] (9 characters total).
+pub(crate) fn validate_nric(s: &str) -> bool {
+    const WEIGHTS: [u32; 7] = [2, 7, 6, 5, 4, 3, 2];
+    const S_LETTERS: [char; 11] = ['J', 'Z', 'I', 'H', 'G', 'F', 'E', 'D', 'C', 'B', 'A'];
+    const T_LETTERS: [char; 11] = ['G', 'F', 'E', 'D', 'C', 'B', 'A', 'J', 'Z', 'I', 'H'];
+    const F_LETTERS: [char; 11] = ['X', 'W', 'U', 'T', 'R', 'Q', 'P', 'N', 'M', 'L', 'K'];
+    const G_LETTERS: [char; 11] = ['R', 'Q', 'P', 'N', 'M', 'L', 'K', 'X', 'W', 'U', 'T'];
+    const M_LETTERS: [char; 11] = ['K', 'L', 'J', 'N', 'P', 'Q', 'R', 'T', 'U', 'W', 'X'];
+
+    let s = s.to_ascii_uppercase();
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() != 9 {
+        return false;
+    }
+
+    let prefix = chars[0];
+    let offset: u32 = match prefix {
+        'S' | 'F' => 0,
+        'T' | 'G' => 4,
+        'M' => 3,
+        _ => return false,
+    };
+
+    let digit_sum: Option<u32> = chars[1..8]
+        .iter()
+        .zip(WEIGHTS.iter())
+        .map(|(&c, &w)| c.to_digit(10).map(|d| d * w))
+        .sum();
+
+    let digit_sum = match digit_sum {
+        Some(s) => s,
+        None => return false,
+    };
+
+    let remainder = ((digit_sum + offset) % 11) as usize;
+    let expected_letter = match prefix {
+        'S' => S_LETTERS[remainder],
+        'T' => T_LETTERS[remainder],
+        'F' => F_LETTERS[remainder],
+        'G' => G_LETTERS[remainder],
+        'M' => M_LETTERS[remainder],
+        _ => return false,
+    };
+
+    chars[8] == expected_letter
+}
+
+/// Validate a Spanish NIF (Número de Identificación Fiscal): 8 digits + check letter.
+/// check = TABLE[n % 23] where TABLE = "TRWAGMYFPDXBNJZSQVHLCKE".
+pub(crate) fn validate_nif(s: &str) -> bool {
+    const TABLE: &[u8] = b"TRWAGMYFPDXBNJZSQVHLCKE";
+    let s = s.to_ascii_uppercase();
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() != 9 {
+        return false;
+    }
+    let digits: String = chars[..8].iter().collect();
+    let n: u64 = match digits.parse() {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    let expected = TABLE[(n % 23) as usize] as char;
+    chars[8] == expected
+}
+
+/// Validate a Spanish NIE (Número de Identidad de Extranjero): [XYZ]\d{7}[check].
+/// Replace first char X→0, Y→1, Z→2, then apply NIF check.
+pub(crate) fn validate_nie(s: &str) -> bool {
+    const TABLE: &[u8] = b"TRWAGMYFPDXBNJZSQVHLCKE";
+    let s = s.to_ascii_uppercase();
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() != 9 {
+        return false;
+    }
+    let first_digit = match chars[0] {
+        'X' => '0',
+        'Y' => '1',
+        'Z' => '2',
+        _ => return false,
+    };
+    let digits: String = std::iter::once(first_digit)
+        .chain(chars[1..8].iter().copied())
+        .collect();
+    let n: u64 = match digits.parse() {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    let expected = TABLE[(n % 23) as usize] as char;
+    chars[8] == expected
+}
+
+/// Validate an Italian Codice Fiscale (16 alphanumeric characters).
+/// Uses 1-indexed odd/even position lookup tables; check = 'A' + (sum % 26).
+pub(crate) fn validate_codice_fiscale(s: &str) -> bool {
+    // Values for 1-indexed even positions (0-indexed odd: 1,3,5,...):
+    // digits = face value; letters A=0..Z=25
+    fn even_val(c: char) -> Option<u32> {
+        match c {
+            '0'..='9' => Some(c as u32 - '0' as u32),
+            'A'..='Z' => Some(c as u32 - 'A' as u32),
+            _ => None,
+        }
+    }
+
+    // Values for 1-indexed odd positions (0-indexed even: 0,2,4,...):
+    fn odd_val(c: char) -> Option<u32> {
+        match c {
+            '0' => Some(1),
+            '1' => Some(0),
+            '2' => Some(5),
+            '3' => Some(7),
+            '4' => Some(9),
+            '5' => Some(13),
+            '6' => Some(15),
+            '7' => Some(17),
+            '8' => Some(19),
+            '9' => Some(21),
+            'A' => Some(1),
+            'B' => Some(0),
+            'C' => Some(5),
+            'D' => Some(7),
+            'E' => Some(9),
+            'F' => Some(13),
+            'G' => Some(15),
+            'H' => Some(17),
+            'I' => Some(19),
+            'J' => Some(21),
+            'K' => Some(2),
+            'L' => Some(4),
+            'M' => Some(18),
+            'N' => Some(20),
+            'O' => Some(11),
+            'P' => Some(3),
+            'Q' => Some(6),
+            'R' => Some(8),
+            'S' => Some(12),
+            'T' => Some(14),
+            'U' => Some(16),
+            'V' => Some(10),
+            'W' => Some(22),
+            'X' => Some(25),
+            'Y' => Some(24),
+            'Z' => Some(23),
+            _ => None,
+        }
+    }
+
+    let s = s.to_ascii_uppercase();
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() != 16 {
+        return false;
+    }
+
+    let mut sum: u32 = 0;
+    for (i, &c) in chars[..15].iter().enumerate() {
+        let v = if i % 2 == 0 { odd_val(c) } else { even_val(c) };
+        match v {
+            Some(val) => sum += val,
+            None => return false,
+        }
+    }
+
+    let expected = (b'A' + (sum % 26) as u8) as char;
+    chars[15] == expected
+}
+
+/// Validate a Brazilian CPF (Cadastro de Pessoas Físicas) using the double mod-11 algorithm.
+/// Format: 11 digits; separators (`.` and `-`) are stripped before validation.
+pub(crate) fn validate_cpf(s: &str) -> bool {
+    let digits: Vec<u32> = s
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .filter_map(|c| c.to_digit(10))
+        .collect();
+
+    if digits.len() != 11 {
+        return false;
+    }
+
+    // Reject all-same-digit CPFs (e.g., 111.111.111-11)
+    if digits.windows(2).all(|w| w[0] == w[1]) {
+        return false;
+    }
+
+    // First check digit
+    let sum1: u32 = digits[..9]
+        .iter()
+        .enumerate()
+        .map(|(i, &d)| d * (10 - i as u32))
+        .sum();
+    let check1 = {
+        let r = (sum1 * 10) % 11;
+        if r >= 10 { 0 } else { r }
+    };
+    if digits[9] != check1 {
+        return false;
+    }
+
+    // Second check digit
+    let sum2: u32 = digits[..10]
+        .iter()
+        .enumerate()
+        .map(|(i, &d)| d * (11 - i as u32))
+        .sum();
+    let check2 = {
+        let r = (sum2 * 10) % 11;
+        if r >= 10 { 0 } else { r }
+    };
+    digits[10] == check2
+}
+
+/// Validate a Mexican CURP (Clave Única de Registro de Población).
+/// 18-character code; check digit at position 17 = sum_of(char_value * position) % 10
+/// where position is 1-indexed and the CURP alphabet (with Ñ) is used for char values.
+pub(crate) fn validate_curp(s: &str) -> bool {
+    // CURP alphabet: 0-9 then A-Z with Ñ between N and O
+    // Digits 0-9 = 0-9; A=10, B=11, ..., N=23, Ñ=24, O=25, ..., Z=36
+    fn curp_char_value(c: char) -> Option<u64> {
+        match c {
+            '0'..='9' => Some(c as u64 - '0' as u64),
+            'A'..='N' => Some(c as u64 - 'A' as u64 + 10),
+            '\u{00D1}' => Some(24),                        // Ñ
+            'O'..='Z' => Some(c as u64 - 'A' as u64 + 11), // shift by 1 to account for Ñ
+            _ => None,
+        }
+    }
+
+    let s_upper: String = s.chars().map(|c| c.to_ascii_uppercase()).collect();
+    let chars: Vec<char> = s_upper.chars().collect();
+    if chars.len() != 18 {
+        return false;
+    }
+
+    let sum: u64 = chars[..17]
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &c)| curp_char_value(c).map(|v| v * (i as u64 + 1)))
+        .sum();
+
+    if chars[..17]
+        .iter()
+        .filter(|&&c| curp_char_value(c).is_none())
+        .count()
+        > 0
+    {
+        return false;
+    }
+
+    let check = (sum % 10) as u32;
+    chars[17].to_digit(10) == Some(check)
+}
+
+/// Validate a UAE Emirates ID (15-digit number starting with 784) using the Luhn algorithm.
+/// Separators (hyphens, spaces) are stripped before validation.
+pub(crate) fn validate_emirates_id(s: &str) -> bool {
+    let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.len() != 15 {
+        return false;
+    }
+    validate_luhn(&digits)
+}
+
+/// Validate a US DEA registration number using the check digit algorithm.
+/// Format: 2 letters + 7 digits; check = (d1+d3+d5 + 2*(d2+d4+d6)) % 10 == d7.
+pub(crate) fn validate_dea_number(s: &str) -> bool {
+    let s_upper = s.to_ascii_uppercase();
+    let bytes = s_upper.as_bytes();
+    if bytes.len() != 9 {
+        return false;
+    }
+    if !bytes[0].is_ascii_alphabetic() || !bytes[1].is_ascii_alphanumeric() {
+        return false;
+    }
+    let d: Vec<u32> = bytes[2..9]
+        .iter()
+        .filter_map(|&b| {
+            if b.is_ascii_digit() {
+                Some((b - b'0') as u32)
+            } else {
+                None
+            }
+        })
+        .collect();
+    if d.len() != 7 {
+        return false;
+    }
+    let checksum = (d[0] + d[2] + d[4]) + 2 * (d[1] + d[3] + d[5]);
+    checksum % 10 == d[6]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1761,5 +2113,268 @@ mod tests {
     #[test]
     fn eu_vat_empty() {
         assert!(!validate_eu_vat(""));
+    }
+
+    // ── Tier 2 validators ─────────────────────────────────────────────────────
+
+    // --- VIN ---
+
+    #[test]
+    fn vin_valid() {
+        // 1HGBH41JXMN109186 — Honda Civic; check digit 'X' (sum=340, 340%11=10)
+        assert!(validate_vin("1HGBH41JXMN109186"));
+    }
+
+    #[test]
+    fn vin_valid_digit_check() {
+        // WBA3A5G59DNP26082 — BMW; check digit '5' (position 8)
+        assert!(validate_vin("WBA3A5G59DNP26082"));
+    }
+
+    #[test]
+    fn vin_reject_wrong_check_digit() {
+        // Swap 'X' at position 8 to '5' — wrong check digit
+        assert!(!validate_vin("1HGBH41J5MN109186"));
+    }
+
+    #[test]
+    fn vin_reject_invalid_characters() {
+        // VINs exclude I, O, Q
+        assert!(!validate_vin("1HGBH41IXMN109186")); // I at position 8
+        assert!(!validate_vin("OOOOOOOOOOOOOOOO1")); // all O's
+    }
+
+    #[test]
+    fn vin_wrong_length() {
+        assert!(!validate_vin("1HGBH41JXMN10918")); // 16 chars
+        assert!(!validate_vin("1HGBH41JXMN109186A")); // 18 chars
+    }
+
+    #[test]
+    fn vin_lowercase_accepted() {
+        assert!(validate_vin("1hgbh41jxmn109186"));
+    }
+
+    // --- NRIC ---
+
+    #[test]
+    fn nric_s_series_valid() {
+        // S1234567D: digits=[1..7], weights=[2,7,6,5,4,3,2], sum=106, 106%11=7, S_LETTERS[7]='D'
+        assert!(validate_nric("S1234567D"));
+    }
+
+    #[test]
+    fn nric_t_series_valid() {
+        // T1234567G: same digits, T offset=4, (106+4)%11=0, T_LETTERS[0]='G'
+        assert!(validate_nric("T1234567G"));
+    }
+
+    #[test]
+    fn nric_f_series_valid() {
+        // F1234567N: same digits, F offset=0, 106%11=7, F_LETTERS[7]='N'
+        assert!(validate_nric("F1234567N"));
+    }
+
+    #[test]
+    fn nric_reject_wrong_check() {
+        assert!(!validate_nric("S1234567E")); // E ≠ D
+        assert!(!validate_nric("T1234567A")); // A ≠ G
+    }
+
+    #[test]
+    fn nric_lowercase_accepted() {
+        assert!(validate_nric("s1234567d"));
+    }
+
+    #[test]
+    fn nric_wrong_length() {
+        assert!(!validate_nric("S123456D")); // 8 chars
+        assert!(!validate_nric("S12345678D")); // 10 chars
+    }
+
+    // --- NIF ---
+
+    #[test]
+    fn nif_valid() {
+        // 12345678Z: 12345678 % 23 = 14, TABLE[14] = 'Z'
+        assert!(validate_nif("12345678Z"));
+    }
+
+    #[test]
+    fn nif_reject_wrong_check() {
+        assert!(!validate_nif("12345678A")); // A ≠ Z
+    }
+
+    #[test]
+    fn nif_lowercase_accepted() {
+        assert!(validate_nif("12345678z"));
+    }
+
+    #[test]
+    fn nif_wrong_length() {
+        assert!(!validate_nif("1234567Z")); // 8 chars total
+        assert!(!validate_nif("123456789Z")); // 10 chars total
+    }
+
+    // --- NIE ---
+
+    #[test]
+    fn nie_x_prefix_valid() {
+        // X1234567: X→0, n=01234567=1234567, 1234567%23=19, TABLE[19]='L'
+        assert!(validate_nie("X1234567L"));
+    }
+
+    #[test]
+    fn nie_y_prefix_valid() {
+        // Y1234567: Y→1, n=11234567, 11234567%23=10, TABLE[10]='X'
+        assert!(validate_nie("Y1234567X"));
+    }
+
+    #[test]
+    fn nie_z_prefix_valid() {
+        // Z1234567: Z→2, n=21234567, 21234567%23=1, TABLE[1]='R'
+        assert!(validate_nie("Z1234567R"));
+    }
+
+    #[test]
+    fn nie_reject_wrong_check() {
+        assert!(!validate_nie("X1234567A")); // A ≠ L
+    }
+
+    #[test]
+    fn nie_lowercase_accepted() {
+        assert!(validate_nie("x1234567l"));
+    }
+
+    // --- Codice Fiscale ---
+
+    #[test]
+    fn codice_fiscale_valid() {
+        // RSSMRA85T10A562S — Mario Rossi born 10 Nov 1985 in Rome; sum=122, 122%26=18, 'S'
+        assert!(validate_codice_fiscale("RSSMRA85T10A562S"));
+    }
+
+    #[test]
+    fn codice_fiscale_reject_wrong_check() {
+        assert!(!validate_codice_fiscale("RSSMRA85T10A562X")); // X ≠ S
+    }
+
+    #[test]
+    fn codice_fiscale_lowercase_accepted() {
+        assert!(validate_codice_fiscale("rssmra85t10a562s"));
+    }
+
+    #[test]
+    fn codice_fiscale_wrong_length() {
+        assert!(!validate_codice_fiscale("RSSMRA85T10A562")); // 15 chars
+        assert!(!validate_codice_fiscale("RSSMRA85T10A562SS")); // 17 chars
+    }
+
+    // --- CPF ---
+
+    #[test]
+    fn cpf_valid() {
+        // 123.456.789-09 — first check=0, second check=9 ✓
+        assert!(validate_cpf("123.456.789-09"));
+    }
+
+    #[test]
+    fn cpf_valid_no_separators() {
+        assert!(validate_cpf("12345678909"));
+    }
+
+    #[test]
+    fn cpf_reject_wrong_check() {
+        assert!(!validate_cpf("123.456.789-10")); // d[9]=1 but expected 0
+    }
+
+    #[test]
+    fn cpf_reject_all_same_digits() {
+        assert!(!validate_cpf("111.111.111-11"));
+        assert!(!validate_cpf("000.000.000-00"));
+        assert!(!validate_cpf("99999999999"));
+    }
+
+    #[test]
+    fn cpf_wrong_digit_count() {
+        assert!(!validate_cpf("123.456.789-0")); // 10 digits
+    }
+
+    // --- CURP ---
+
+    #[test]
+    fn curp_valid() {
+        // AAEA010101HDFFFF09: sum=1349, 1349%10=9 ✓
+        assert!(validate_curp("AAEA010101HDFFFF09"));
+    }
+
+    #[test]
+    fn curp_reject_wrong_check() {
+        assert!(!validate_curp("AAEA010101HDFFFF01")); // 1 ≠ 9
+    }
+
+    #[test]
+    fn curp_lowercase_accepted() {
+        assert!(validate_curp("aaea010101hdffff09"));
+    }
+
+    #[test]
+    fn curp_wrong_length() {
+        assert!(!validate_curp("AAEA010101HDFFFF0")); // 17 chars
+        assert!(!validate_curp("AAEA010101HDFFFF099")); // 19 chars
+    }
+
+    // --- Emirates ID ---
+
+    #[test]
+    fn emirates_id_valid_with_hyphens() {
+        // 784-1234-1234567-2: Luhn sum=60, 60%10=0 ✓
+        assert!(validate_emirates_id("784-1234-1234567-2"));
+    }
+
+    #[test]
+    fn emirates_id_valid_no_separators() {
+        assert!(validate_emirates_id("784123412345672"));
+    }
+
+    #[test]
+    fn emirates_id_reject_luhn_fail() {
+        // 784-1234-1234567-0: Luhn sum=58, 58%10=8 ≠ 0
+        assert!(!validate_emirates_id("784-1234-1234567-0"));
+    }
+
+    #[test]
+    fn emirates_id_wrong_digit_count() {
+        assert!(!validate_emirates_id("78412341234567")); // 14 digits
+        assert!(!validate_emirates_id("7841234123456720")); // 16 digits
+    }
+
+    // --- DEA Number ---
+
+    #[test]
+    fn dea_valid() {
+        // AB1234563: (1+3+5) + 2*(2+4+6) = 9+24 = 33, 33%10=3=d[6] ✓
+        assert!(validate_dea_number("AB1234563"));
+    }
+
+    #[test]
+    fn dea_reject_wrong_check() {
+        assert!(!validate_dea_number("AB1234560")); // 33%10=3 ≠ 0
+    }
+
+    #[test]
+    fn dea_lowercase_accepted() {
+        assert!(validate_dea_number("ab1234563"));
+    }
+
+    #[test]
+    fn dea_wrong_length() {
+        assert!(!validate_dea_number("AB123456")); // 8 chars
+        assert!(!validate_dea_number("AB12345630")); // 10 chars
+    }
+
+    #[test]
+    fn dea_empty() {
+        assert!(!validate_dea_number(""));
     }
 }

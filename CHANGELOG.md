@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 
+- **Tier 2 checksummed patterns** — 9 new `PiiType` variants with checksum validators, 6 new locales:
+  - **Vehicle** — `Vin` (ISO 3779 check digit, position 9): Global
+  - **Singapore** — `Nric` (MOD-11 check letter, S/T/F/G/M series): `Locale::Sg`
+  - **Spain** — `Nif` (mod23 table check letter) and `Nie` (same algorithm with X/Y/Z→digit prefix): `Locale::Es`
+  - **Italy** — `CodiceFiscale` (odd/even position table, 16-char tax code): `Locale::It`
+  - **Brazil** — `Cpf` (double mod-11 two-digit check, formatted as `ddd.ddd.ddd-dd`): `Locale::Br`
+  - **Mexico** — `Curp` (ascending position-weight sum mod 10, 18-char identity code): `Locale::Mx`
+  - **UAE** — `EmiratesId` (Luhn, 15-digit `784-…` format): `Locale::Ae`
+  - **US** — `DeaNumber` (checksum mod 10 on 7 digits, 2-letter + 7-digit format): `Locale::Us`
+
 - **LLM provider API keys** — new `LlmApiKey` type (tag: `llm_key`) with 9 patterns covering every major LLM provider by structural prefix: Anthropic (`sk-ant-api…`), OpenAI legacy (`sk-`+48), OpenAI project (`sk-proj-…`), OpenAI service-account (`sk-svcacct-…`), Hugging Face (`hf_…`), Replicate (`r8_…`), xAI (`xai-…`), Groq (`gsk_…`), Perplexity (`pplx-…`); Google Gemini already covered by `ApiKey` via `AIza…`
 
 - **Tier 1 high-confidence patterns** — 15 new `PiiType` variants and 29 new regex patterns covering digital secrets, credentials, crypto wallets, and network identifiers. All patterns have near-zero false-positive rates due to highly specific structural formats; no keyword-anchoring required:

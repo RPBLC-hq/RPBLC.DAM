@@ -1,6 +1,6 @@
 # PII Type Reference
 
-Full reference for all built-in `PiiType` variants. Keep this file in sync when adding new types (see [AGENTS.md](../AGENTS.md)).
+Full reference for all 45 built-in `PiiType` variants. Keep this file in sync when adding new types (see [AGENTS.md](../AGENTS.md)).
 
 Types are organized by category. The **tag** column shows the short form used in references like `[email:a3f71bc9]`.
 
@@ -35,6 +35,7 @@ Types are organized by category. The **tag** column shows the short form used in
 | Type | Tag | Description | Locale | Validator |
 |------|-----|-------------|--------|-----------|
 | `Ssn` | `ssn` | US Social Security Number | US | Area/group rules |
+| `DeaNumber` | `dea` | US DEA registration number (2 letters + 7 digits) | US | Check digit mod 10 |
 | `Sin` | `sin` | Canadian Social Insurance Number | Canada | Luhn |
 | `PostalCode` | `postal` | Canadian postal code (`A1A 1A1`) | Canada | — |
 | `NiNumber` | `ni` | UK National Insurance number | UK | Prefix exclusion list |
@@ -45,6 +46,13 @@ Types are organized by category. The **tag** column shows the short form used in
 | `TaxId` | `taxid` | German Steuer-Identifikationsnummer | Germany | — |
 | `VatNumber` | `vat` | EU VAT number (country-specific formats) | EU | Country prefix + length |
 | `SwiftBic` | `swift` | SWIFT/BIC bank identifier code | EU | — |
+| `Nric` | `nric` | Singapore NRIC/FIN — `[STFGM]\d{7}[A-Z]` | Singapore | MOD-11 check letter |
+| `Nif` | `nif` | Spanish NIF — 8 digits + check letter | Spain | Mod23 table |
+| `Nie` | `nie` | Spanish NIE — `[XYZ]\d{7}[check]` | Spain | Mod23 table |
+| `CodiceFiscale` | `cf` | Italian Codice Fiscale — 16-char tax code | Italy | Odd/even position check |
+| `Cpf` | `cpf` | Brazilian CPF — `ddd.ddd.ddd-dd` | Brazil | Double mod-11 |
+| `Curp` | `curp` | Mexican CURP — 18-char identity code | Mexico | Check digit mod 10 |
+| `EmiratesId` | `eid` | UAE Emirates ID — `784-YYYY-NNNNNNN-C` (15 digits) | UAE | Luhn |
 | `PassportMrz` | `mrz` | Passport Machine Readable Zone — TD3 two-line format (44 chars/line) | Global | — |
 
 ---
@@ -83,11 +91,12 @@ Types are organized by category. The **tag** column shows the short form used in
 
 ---
 
-## Logistics
+## Logistics & Vehicle
 
 | Type | Tag | Description | Locale | Validator |
 |------|-----|-------------|--------|-----------|
 | `UpsTracking` | `ups` | UPS shipment tracking number — `1Z` + 16 uppercase alphanumeric | Global | — |
+| `Vin` | `vin` | Vehicle Identification Number — 17 alphanumeric (no I/O/Q), position-9 check | Global | ISO 3779 check digit |
 
 ---
 

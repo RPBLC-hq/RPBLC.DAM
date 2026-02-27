@@ -88,6 +88,27 @@ pub enum PiiType {
     // --- Logistics ---
     /// UPS shipment tracking number — 1Z-prefixed 18-char format (tag: `ups`).
     UpsTracking,
+    // --- Vehicle ---
+    /// Vehicle Identification Number, ISO 3779 check digit (tag: `vin`). Global locale.
+    Vin,
+    // --- National IDs (regional) ---
+    /// Singapore NRIC/FIN — citizen and foreign resident identity (tag: `nric`). Singapore locale.
+    Nric,
+    /// Spanish NIF — Número de Identificación Fiscal (tag: `nif`). Spain locale.
+    Nif,
+    /// Spanish NIE — Número de Identidad de Extranjero (tag: `nie`). Spain locale.
+    Nie,
+    /// Italian Codice Fiscale — 16-character tax code with checksum (tag: `cf`). Italy locale.
+    CodiceFiscale,
+    /// Brazilian CPF — Cadastro de Pessoas Físicas, double mod-11 check (tag: `cpf`). Brazil locale.
+    Cpf,
+    /// Mexican CURP — Clave Única de Registro de Población, 18-char identity code (tag: `curp`). Mexico locale.
+    Curp,
+    /// UAE Emirates ID — 15-digit national identity card, Luhn-validated (tag: `eid`). UAE locale.
+    EmiratesId,
+    // --- Government / Professional ---
+    /// DEA registration number — Drug Enforcement Administration (tag: `dea`). US locale.
+    DeaNumber,
     /// User-defined PII type from custom rules (tag: `custom`).
     Custom,
 }
@@ -131,6 +152,15 @@ impl fmt::Display for PiiType {
             Self::IPv6Address => "ipv6_address",
             Self::PassportMrz => "passport_mrz",
             Self::UpsTracking => "ups_tracking",
+            Self::Vin => "vin",
+            Self::Nric => "nric",
+            Self::Nif => "nif",
+            Self::Nie => "nie",
+            Self::CodiceFiscale => "codice_fiscale",
+            Self::Cpf => "cpf",
+            Self::Curp => "curp",
+            Self::EmiratesId => "emirates_id",
+            Self::DeaNumber => "dea_number",
             Self::Custom => "custom",
         };
         write!(f, "{s}")
@@ -178,6 +208,15 @@ impl FromStr for PiiType {
             "ipv6" | "ipv6_address" => Ok(Self::IPv6Address),
             "mrz" | "passport_mrz" => Ok(Self::PassportMrz),
             "ups" | "ups_tracking" => Ok(Self::UpsTracking),
+            "vin" => Ok(Self::Vin),
+            "nric" => Ok(Self::Nric),
+            "nif" => Ok(Self::Nif),
+            "nie" => Ok(Self::Nie),
+            "cf" | "codice_fiscale" | "codicefiscale" => Ok(Self::CodiceFiscale),
+            "cpf" => Ok(Self::Cpf),
+            "curp" => Ok(Self::Curp),
+            "eid" | "emirates_id" | "emiratesid" => Ok(Self::EmiratesId),
+            "dea" | "dea_number" | "deanumber" => Ok(Self::DeaNumber),
             "custom" => Ok(Self::Custom),
             _ => Err(crate::error::DamError::InvalidPiiType(s.to_string())),
         }
@@ -224,6 +263,15 @@ impl PiiType {
             Self::IPv6Address => "ipv6",
             Self::PassportMrz => "mrz",
             Self::UpsTracking => "ups",
+            Self::Vin => "vin",
+            Self::Nric => "nric",
+            Self::Nif => "nif",
+            Self::Nie => "nie",
+            Self::CodiceFiscale => "cf",
+            Self::Cpf => "cpf",
+            Self::Curp => "curp",
+            Self::EmiratesId => "eid",
+            Self::DeaNumber => "dea",
             Self::Custom => "custom",
         }
     }
@@ -267,6 +315,15 @@ impl PiiType {
             "ipv6" => Some(Self::IPv6Address),
             "mrz" => Some(Self::PassportMrz),
             "ups" => Some(Self::UpsTracking),
+            "vin" => Some(Self::Vin),
+            "nric" => Some(Self::Nric),
+            "nif" => Some(Self::Nif),
+            "nie" => Some(Self::Nie),
+            "cf" => Some(Self::CodiceFiscale),
+            "cpf" => Some(Self::Cpf),
+            "curp" => Some(Self::Curp),
+            "eid" => Some(Self::EmiratesId),
+            "dea" => Some(Self::DeaNumber),
             "custom" => Some(Self::Custom),
             _ => None,
         }
@@ -311,6 +368,15 @@ impl PiiType {
             Self::IPv6Address,
             Self::PassportMrz,
             Self::UpsTracking,
+            Self::Vin,
+            Self::Nric,
+            Self::Nif,
+            Self::Nie,
+            Self::CodiceFiscale,
+            Self::Cpf,
+            Self::Curp,
+            Self::EmiratesId,
+            Self::DeaNumber,
             Self::Custom,
         ]
     }
