@@ -971,7 +971,7 @@ pub(crate) fn validate_uk_sort_code_account(value: &str) -> bool {
 /// Validate MAC address — rejects all-zeros (unspecified) and broadcast (ff:ff:...) addresses.
 pub(crate) fn validate_mac_address(value: &str) -> bool {
     let octets: Vec<u8> = value
-        .split(|c| c == ':' || c == '-')
+        .split([':', '-'])
         .filter_map(|o| u8::from_str_radix(o, 16).ok())
         .collect();
 
