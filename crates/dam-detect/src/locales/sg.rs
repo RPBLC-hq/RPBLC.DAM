@@ -90,6 +90,48 @@ mod tests {
         );
     }
 
+    // --- G-series (foreigner, issued after 2000) ---
+
+    #[test]
+    fn detect_nric_g_series() {
+        // G1234567R: sum=106, G offset=4, (106+4)%11=0, G_LETTERS[0]='R'
+        let (_, detections) = detect("NRIC: G1234567R", &sg_patterns());
+        assert!(
+            detections.iter().any(|d| d.pii_type == PiiType::Nric),
+            "should detect G-series FIN"
+        );
+    }
+
+    #[test]
+    fn reject_nric_g_wrong_check() {
+        let (_, detections) = detect("NRIC: G1234567A", &sg_patterns());
+        assert!(
+            !detections.iter().any(|d| d.pii_type == PiiType::Nric),
+            "should reject G-series FIN with wrong check letter"
+        );
+    }
+
+    // --- M-series (recent work pass holder) ---
+
+    #[test]
+    fn detect_nric_m_series() {
+        // M1234567X: sum=106, M offset=3, (106+3)%11=10, M_LETTERS[10]='X'
+        let (_, detections) = detect("NRIC: M1234567X", &sg_patterns());
+        assert!(
+            detections.iter().any(|d| d.pii_type == PiiType::Nric),
+            "should detect M-series FIN"
+        );
+    }
+
+    #[test]
+    fn reject_nric_m_wrong_check() {
+        let (_, detections) = detect("NRIC: M1234567A", &sg_patterns());
+        assert!(
+            !detections.iter().any(|d| d.pii_type == PiiType::Nric),
+            "should reject M-series FIN with wrong check letter"
+        );
+    }
+
     // --- Locale isolation ---
 
     #[test]

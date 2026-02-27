@@ -33,10 +33,10 @@ mod tests {
 
     #[test]
     fn detect_curp_valid() {
-        // AAEA010101HDFFFF09
+        // AAEA010101HDFFFF01
         // sum = Σ char_value(s[i]) * (i+1) for i in 0..17 = 1349
-        // check = 1349 % 10 = 9 ✓
-        let (_, detections) = detect("CURP: AAEA010101HDFFFF09", &mx_patterns());
+        // check = (10 - 1349%10) % 10 = (10-9)%10 = 1 ✓
+        let (_, detections) = detect("CURP: AAEA010101HDFFFF01", &mx_patterns());
         assert!(
             detections.iter().any(|d| d.pii_type == PiiType::Curp),
             "should detect valid CURP"
@@ -45,8 +45,8 @@ mod tests {
 
     #[test]
     fn reject_curp_wrong_check() {
-        // Same CURP but with check digit 1 instead of 9
-        let (_, detections) = detect("CURP: AAEA010101HDFFFF01", &mx_patterns());
+        // Same CURP but with check digit 9 instead of 1
+        let (_, detections) = detect("CURP: AAEA010101HDFFFF09", &mx_patterns());
         assert!(
             !detections.iter().any(|d| d.pii_type == PiiType::Curp),
             "should reject CURP with wrong check digit"
@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn detect_curp_case_insensitive() {
-        let (_, detections) = detect("curp: aaea010101hdffff09", &mx_patterns());
+        let (_, detections) = detect("curp: aaea010101hdffff01", &mx_patterns());
         assert!(
             detections.iter().any(|d| d.pii_type == PiiType::Curp),
             "should detect CURP case-insensitively"

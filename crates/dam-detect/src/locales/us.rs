@@ -23,7 +23,7 @@ pub(crate) fn patterns() -> Vec<Pattern> {
         // DEA registration number — 2-letter code + 7 digits, position-7 check digit
         // First letter: registrant type (A-P, R-V, X-Z); second letter: last-name initial or '9'
         Pattern {
-            regex: Regex::new(r"\b[A-PR-VXYZ][A-Z9]\d{7}\b").unwrap(),
+            regex: Regex::new(r"(?i)\b[A-PR-VXYZ][A-Z9]\d{7}\b").unwrap(),
             pii_type: PiiType::DeaNumber,
             confidence: 0.88,
             validator: Some(validate_dea_number),

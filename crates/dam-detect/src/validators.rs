@@ -1033,9 +1033,9 @@ pub(crate) fn validate_ipv6(value: &str) -> bool {
 
 // ── Tier 2 validators ─────────────────────────────────────────────────────────
 
-/// Validate a VIN using the ISO 3779 check digit at position 8 (0-indexed).
+/// Validate a VIN using the ISO 3779 check digit at position 9 (1-indexed), index 8 (0-indexed).
 /// Weights: [8,7,6,5,4,3,2,10,0,9,8,7,6,5,4,3,2]; check = sum % 11.
-/// Position 8 must be '0'–'9' for check 0–9, or 'X'/'x' for check 10.
+/// Index 8 must be '0'–'9' for check 0–9, or 'X'/'x' for check 10.
 pub(crate) fn validate_vin(s: &str) -> bool {
     const WEIGHTS: [u32; 17] = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2];
 
@@ -1320,28 +1320,25 @@ pub(crate) fn validate_curp(s: &str) -> bool {
         }
     }
 
-    let s_upper: String = s.chars().map(|c| c.to_ascii_uppercase()).collect();
+    // Use to_uppercase() (not to_ascii_uppercase) so that ñ → Ñ is handled correctly.
+    let s_upper: String = s.to_uppercase();
     let chars: Vec<char> = s_upper.chars().collect();
     if chars.len() != 18 {
+        return false;
+    }
+
+    if chars[..17].iter().any(|&c| curp_char_value(c).is_none()) {
         return false;
     }
 
     let sum: u64 = chars[..17]
         .iter()
         .enumerate()
-        .filter_map(|(i, &c)| curp_char_value(c).map(|v| v * (i as u64 + 1)))
+        .map(|(i, &c)| curp_char_value(c).unwrap() * (i as u64 + 1))
         .sum();
 
-    if chars[..17]
-        .iter()
-        .filter(|&&c| curp_char_value(c).is_none())
-        .count()
-        > 0
-    {
-        return false;
-    }
-
-    let check = (sum % 10) as u32;
+    // Official RENAPO formula: check_digit = (10 - (sum % 10)) % 10
+    let check = ((10 - (sum % 10)) % 10) as u32;
     chars[17].to_digit(10) == Some(check)
 }
 
@@ -1363,7 +1360,7 @@ pub(crate) fn validate_dea_number(s: &str) -> bool {
     if bytes.len() != 9 {
         return false;
     }
-    if !bytes[0].is_ascii_alphabetic() || !bytes[1].is_ascii_alphanumeric() {
+    if !bytes[0].is_ascii_alphabetic() || !(bytes[1].is_ascii_alphabetic() || bytes[1] == b'9') {
         return false;
     }
     let d: Vec<u32> = bytes[2..9]
@@ -2304,24 +2301,24 @@ mod tests {
 
     #[test]
     fn curp_valid() {
-        // AAEA010101HDFFFF09: sum=1349, 1349%10=9 ✓
-        assert!(validate_curp("AAEA010101HDFFFF09"));
+        // AAEA010101HDFFFF01: sum=1349, (10 - 1349%10)%10 = (10-9)%10 = 1 ✓
+        assert!(validate_curp("AAEA010101HDFFFF01"));
     }
 
     #[test]
     fn curp_reject_wrong_check() {
-        assert!(!validate_curp("AAEA010101HDFFFF01")); // 1 ≠ 9
+        assert!(!validate_curp("AAEA010101HDFFFF09")); // 9 ≠ 1
     }
 
     #[test]
     fn curp_lowercase_accepted() {
-        assert!(validate_curp("aaea010101hdffff09"));
+        assert!(validate_curp("aaea010101hdffff01"));
     }
 
     #[test]
     fn curp_wrong_length() {
         assert!(!validate_curp("AAEA010101HDFFFF0")); // 17 chars
-        assert!(!validate_curp("AAEA010101HDFFFF099")); // 19 chars
+        assert!(!validate_curp("AAEA010101HDFFFF019")); // 19 chars
     }
 
     // --- Emirates ID ---
