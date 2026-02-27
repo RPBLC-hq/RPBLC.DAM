@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **LLM provider API keys** — new `LlmApiKey` type (tag: `llm_key`) with 9 patterns covering every major LLM provider by structural prefix: Anthropic (`sk-ant-api…`), OpenAI legacy (`sk-`+48), OpenAI project (`sk-proj-…`), OpenAI service-account (`sk-svcacct-…`), Hugging Face (`hf_…`), Replicate (`r8_…`), xAI (`xai-…`), Groq (`gsk_…`), Perplexity (`pplx-…`); Google Gemini already covered by `ApiKey` via `AIza…`
+
+- **Tier 1 high-confidence patterns** — 15 new `PiiType` variants and 29 new regex patterns covering digital secrets, credentials, crypto wallets, and network identifiers. All patterns have near-zero false-positive rates due to highly specific structural formats; no keyword-anchoring required:
+  - **Credentials** — JWT (`eyJ...`), AWS access key (`AKIA...`), AWS ARN (`arn:aws:...`), GitHub tokens (`gh[pousr]_...`), Stripe API keys (`sk_/pk_live/test_...`) and object IDs (`cus_/tok_/pm_/src_/sub_/card_...`)
+  - **Generic API keys** — Google (`AIza...`), Slack webhooks (`hooks.slack.com/...`) and tokens (`xox[baprs]-...`), SendGrid (`SG....`), npm (`npm_...`), Mailgun (`key-...`), Twilio (`SK...`)
+  - **Private keys** — RSA, EC, and OpenSSH PEM blocks (`-----BEGIN ... PRIVATE KEY-----`)
+  - **Credential URLs** — database connection strings (`postgres://user:pass@host`) and generic HTTP URLs with embedded credentials (`https://user:pass@host`)
+  - **Cryptocurrency** — Ethereum (`0x` + 40 hex), Bitcoin bech32 (`bc1...`), Bitcoin legacy (base58, P2PKH/P2SH)
+  - **Network** — IPv6 fully-expanded form (loopback/link-local/multicast filtered), MAC addresses (broadcast/unspecified filtered)
+  - **Documents** — Passport MRZ TD3 two-line format
+  - **Logistics** — UPS tracking numbers (`1Z...`)
+  - **UK banking** — Sort code + account number pair (`XX-XX-XX XXXXXXXX`) added to UK locale
+
 ## [0.3.0] — 2026-02-26
 
 ### Added

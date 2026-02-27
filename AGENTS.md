@@ -7,11 +7,12 @@ DAM (Data Access Mediator) is a PII firewall for AI agents. It intercepts person
 ## Build Commands
 
 ```bash
-cargo build                      # debug build
-cargo build --release            # release build (single binary)
-cargo test --workspace           # all tests
-cargo clippy --workspace         # lint
-cargo fmt --check                # format check
+cargo build                          # debug build
+cargo build --release                # release build (single binary)
+cargo test --workspace               # all tests
+cargo clippy --workspace -- -D warnings  # lint (matches CI exactly — warnings are errors)
+cargo fmt --all --check              # format check (matches CI exactly)
+cargo fmt --all                      # auto-fix formatting
 ```
 
 ## Architecture
@@ -60,6 +61,16 @@ Detection patterns are organized by geographic locale in `crates/dam-detect/src/
 
 Keep `docs/locales/` in sync when patterns change.
 
+## PII Types
+
+The full PII type reference lives in **`docs/pii-types.md`**. When adding a new `PiiType` variant:
+
+1. Follow the steps in `docs/pii-types.md` → "Adding a New PII Type"
+2. **Update `docs/pii-types.md`** with the new row in the appropriate category table
+3. Add tests in the locale's `#[cfg(test)]` module and/or `stage_regex.rs`
+
+The README (`PII Detection` section) shows only a curated spotlight of the most commonly leaked/critical types — do **not** expand that table. Update `docs/pii-types.md` for the complete list.
+
 ## Governance Files
 
 Keep these files up to date when making changes:
@@ -87,7 +98,7 @@ When preparing a release, follow these steps in order:
 
 ### 1. Pre-release Verification
 
-- [ ] All CI checks pass on `main` (`cargo test --workspace`, `cargo clippy --workspace`, `cargo fmt --all --check`)
+- [ ] All CI checks pass on `main` (`cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --all --check`)
 - [ ] No unmerged feature branches intended for this release
 
 ### 2. Version Bump
@@ -104,7 +115,8 @@ When preparing a release, follow these steps in order:
 
 Review all READMEs and docs against the changelog. For each entry in the new release section, check if any docs need updating:
 
-- [ ] **README.md** (root) — Quick Start, CLI Reference, Integration routes, feature descriptions, PII types table, config examples
+- [ ] **README.md** (root) — Quick Start, CLI Reference, Integration routes, feature descriptions, PII types spotlight, config examples
+- [ ] **docs/pii-types.md** — full PiiType reference; add rows for any new types in this release
 - [ ] **npm/dam/README.md** — npm package page on npmjs.com; keep CLI commands, routes table, and feature list in sync
 - [ ] **docs/integrations.md** — daemon setup, proxy routes, MCP server config, install instructions
 - [ ] **docs/ARCHITECTURE.md** — if internals changed (new crates, new encryption schemes, new pipeline stages)
