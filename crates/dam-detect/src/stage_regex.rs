@@ -508,8 +508,7 @@ mod tests {
 
     #[test]
     fn detect_aws_access_key() {
-        let (_, detections) =
-            detect("aws_access_key_id = AKIAIOSFODNN7EXAMPLE", &all_patterns());
+        let (_, detections) = detect("aws_access_key_id = AKIAIOSFODNN7EXAMPLE", &all_patterns());
         assert!(
             detections.iter().any(|d| d.pii_type == PiiType::AwsKey),
             "should detect AWS access key ID"
@@ -577,7 +576,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            detections.iter().any(|d| d.pii_type == PiiType::GitHubToken),
+            detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::GitHubToken),
             "should detect GitHub personal access token"
         );
     }
@@ -589,7 +590,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            detections.iter().any(|d| d.pii_type == PiiType::GitHubToken),
+            detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::GitHubToken),
             "should detect GitHub OAuth token"
         );
     }
@@ -602,7 +605,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::GitHubToken),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::GitHubToken),
             "ghx_ prefix is not a GitHub token"
         );
     }
@@ -612,7 +617,9 @@ mod tests {
         // needs 36+ chars after the prefix
         let (_, detections) = detect("token: ghp_shorttoken", &all_patterns());
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::GitHubToken),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::GitHubToken),
             "too-short token should not match"
         );
     }
@@ -664,10 +671,7 @@ mod tests {
     #[test]
     fn reject_stripe_key_wrong_env() {
         // sk_staging_ is not a valid Stripe key environment
-        let (_, detections) = detect(
-            "key: sk_staging_4eC39HqLyjWDarjtT1zdp7dc",
-            &all_patterns(),
-        );
+        let (_, detections) = detect("key: sk_staging_4eC39HqLyjWDarjtT1zdp7dc", &all_patterns());
         assert!(
             !detections.iter().any(|d| d.pii_type == PiiType::StripeKey),
             "sk_staging_ prefix is not valid"
@@ -971,7 +975,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            detections.iter().any(|d| d.pii_type == PiiType::CredentialUrl),
+            detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::CredentialUrl),
             "should detect postgres URL with credentials"
         );
     }
@@ -983,7 +989,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            detections.iter().any(|d| d.pii_type == PiiType::CredentialUrl),
+            detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::CredentialUrl),
             "should detect MongoDB Atlas URL with credentials"
         );
     }
@@ -995,7 +1003,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            detections.iter().any(|d| d.pii_type == PiiType::CredentialUrl),
+            detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::CredentialUrl),
             "should detect HTTPS URL with embedded credentials"
         );
     }
@@ -1007,7 +1017,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::CredentialUrl),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::CredentialUrl),
             "DB URL without user:pass@ should not match"
         );
     }
@@ -1021,16 +1033,23 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            detections.iter().any(|d| d.pii_type == PiiType::CryptoWallet),
+            detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::CryptoWallet),
             "should detect Ethereum address"
         );
     }
 
     #[test]
     fn reject_ethereum_too_short() {
-        let (_, detections) = detect("addr: 0x742d35Cc6634C0532925a3b844Bc454e4438f4", &all_patterns());
+        let (_, detections) = detect(
+            "addr: 0x742d35Cc6634C0532925a3b844Bc454e4438f4",
+            &all_patterns(),
+        );
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::CryptoWallet),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::CryptoWallet),
             "0x + 39 hex chars is too short for an Ethereum address"
         );
     }
@@ -1042,7 +1061,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::CryptoWallet),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::CryptoWallet),
             "Ethereum address without 0x prefix should not match"
         );
     }
@@ -1054,7 +1075,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            detections.iter().any(|d| d.pii_type == PiiType::CryptoWallet),
+            detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::CryptoWallet),
             "should detect Bitcoin bech32 address"
         );
     }
@@ -1067,7 +1090,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::CryptoWallet),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::CryptoWallet),
             "bc1 + 38 chars is too short"
         );
     }
@@ -1080,7 +1105,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            detections.iter().any(|d| d.pii_type == PiiType::CryptoWallet),
+            detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::CryptoWallet),
             "should detect Bitcoin legacy P2PKH address"
         );
     }
@@ -1088,12 +1115,11 @@ mod tests {
     #[test]
     fn reject_bitcoin_legacy_starts_with_zero() {
         // 0 is not in the base58 alphabet — the regex character class excludes it
-        let (_, detections) = detect(
-            "addr: 0A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
-            &all_patterns(),
-        );
+        let (_, detections) = detect("addr: 0A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", &all_patterns());
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::CryptoWallet),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::CryptoWallet),
             "address starting with 0 is not valid base58"
         );
     }
@@ -1107,7 +1133,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            detections.iter().any(|d| d.pii_type == PiiType::IPv6Address),
+            detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::IPv6Address),
             "should detect public IPv6 address"
         );
     }
@@ -1119,7 +1147,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::IPv6Address),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::IPv6Address),
             "IPv6 loopback should be rejected"
         );
     }
@@ -1131,7 +1161,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::IPv6Address),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::IPv6Address),
             "IPv6 link-local (fe80::/10) should be rejected"
         );
     }
@@ -1143,7 +1175,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::IPv6Address),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::IPv6Address),
             "IPv6 multicast (ff00::/8) should be rejected"
         );
     }
@@ -1155,7 +1189,9 @@ mod tests {
             &all_patterns(),
         );
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::IPv6Address),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::IPv6Address),
             "IPv6 unspecified address should be rejected"
         );
     }
@@ -1206,7 +1242,9 @@ mod tests {
         let mrz = "P<USASMITH<<JOHN<<<<<<<<<<<<<<<<<<<<<<<<<<<<\nL898902C36UZA6508066M1401014ZE184226B<<<<<10";
         let (_, detections) = detect(mrz, &all_patterns());
         assert!(
-            detections.iter().any(|d| d.pii_type == PiiType::PassportMrz),
+            detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::PassportMrz),
             "should detect TD3 passport MRZ"
         );
     }
@@ -1217,7 +1255,9 @@ mod tests {
         let mrz = "V<USASMITH<<JOHN<<<<<<<<<<<<<<<<<<<<<<<<<<<<\nL898902C36UZA6508066M1401014ZE184226B<<<<<10";
         let (_, detections) = detect(mrz, &all_patterns());
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::PassportMrz),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::PassportMrz),
             "visa MRZ (type V) should not match passport pattern"
         );
     }
@@ -1228,7 +1268,9 @@ mod tests {
         let mrz = "P<USASMITH<<JOHN<<<<<<<<<<<<<<<<<<<<<<<<<<<\nL898902C36UZA6508066M1401014ZE184226B<<<<<10";
         let (_, detections) = detect(mrz, &all_patterns());
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::PassportMrz),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::PassportMrz),
             "43-char MRZ line should not match"
         );
     }
@@ -1239,7 +1281,9 @@ mod tests {
     fn detect_ups_tracking_number() {
         let (_, detections) = detect("tracking: 1Z999AA10123456784", &all_patterns());
         assert!(
-            detections.iter().any(|d| d.pii_type == PiiType::UpsTracking),
+            detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::UpsTracking),
             "should detect UPS tracking number"
         );
     }
@@ -1249,7 +1293,9 @@ mod tests {
         // 1Z + 15 chars (needs 16)
         let (_, detections) = detect("tracking: 1Z999AA101234567", &all_patterns());
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::UpsTracking),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::UpsTracking),
             "1Z + 15 chars is too short for UPS tracking"
         );
     }
@@ -1258,7 +1304,9 @@ mod tests {
     fn reject_ups_tracking_wrong_prefix() {
         let (_, detections) = detect("tracking: 2Z999AA10123456784", &all_patterns());
         assert!(
-            !detections.iter().any(|d| d.pii_type == PiiType::UpsTracking),
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::UpsTracking),
             "2Z prefix is not a UPS tracking number"
         );
     }
