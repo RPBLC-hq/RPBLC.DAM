@@ -1015,8 +1015,11 @@ pub(crate) fn validate_ipv6(value: &str) -> bool {
         return false;
     }
 
-    // Reject link-local (fe80::/10)
-    if parts[0].starts_with("fe80") {
+    // Reject link-local (fe80::/10) — first group fe80..febf
+    // The /10 prefix covers fe80–febf (second byte 0x80–0xbf).
+    if let Ok(first) = u16::from_str_radix(parts[0], 16)
+        && (0xfe80..=0xfebf).contains(&first)
+    {
         return false;
     }
 

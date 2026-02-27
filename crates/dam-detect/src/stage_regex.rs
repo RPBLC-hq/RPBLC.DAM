@@ -97,10 +97,12 @@ fn decode_base64_segments(text: &str) -> String {
     for mat in BASE64_PATTERN.find_iter(text) {
         result.push_str(&text[last_end..mat.start()]);
 
-        // Skip JWT segments — `eyJ` is base64url for `{"`, the start of every JWT
-        // header and payload. Decoding them inline would destroy the JWT structure
-        // that the JWT regex pattern relies on.
-        if mat.as_str().starts_with("eyJ") {
+        // Skip JWT header/payload segments — `eyJ` is base64url for `{"` and is
+        // followed by a `.` between JWT segments. Decoding them inline destroys the
+        // three-segment structure the JWT regex relies on.
+        // Base64-encoded JSON that is NOT part of a JWT (no trailing dot) is still
+        // decoded normally so PII inside it remains detectable.
+        if mat.as_str().starts_with("eyJ") && text[mat.end()..].starts_with('.') {
             result.push_str(mat.as_str());
             last_end = mat.end();
             continue;

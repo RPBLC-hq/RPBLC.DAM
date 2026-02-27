@@ -9,7 +9,7 @@ use regex::Regex;
 pub(crate) fn patterns() -> Vec<Pattern> {
     vec![
         // UK sort code (XX-XX-XX) paired with 8-digit account number
-        // Format: "12-34-56 12345678" or "12-34-56 12345678" (space optional)
+        // Format: "12-34-56 12345678" or "12-34-5612345678" (space optional)
         Pattern {
             regex: Regex::new(r"\b\d{2}-\d{2}-\d{2}\s?\d{8}\b").unwrap(),
             pii_type: PiiType::BankAccount,
@@ -244,6 +244,76 @@ mod tests {
         assert!(
             !detections.iter().any(|d| d.pii_type == PiiType::NhsNumber),
             "NHS should not detect without UK locale"
+        );
+    }
+
+    // --- UK sort code + account number tests ---
+
+    #[test]
+    fn detect_uk_bank_account_with_space() {
+        let (_, detections) = detect("Account: 12-34-56 12345678", &uk_patterns());
+        assert!(
+            detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::BankAccount),
+            "should detect sort code + account with space"
+        );
+    }
+
+    #[test]
+    fn detect_uk_bank_account_no_space() {
+        let (_, detections) = detect("Account: 12-34-5612345678", &uk_patterns());
+        assert!(
+            detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::BankAccount),
+            "should detect sort code + account without space"
+        );
+    }
+
+    #[test]
+    fn reject_uk_bank_account_all_zero_sort_code() {
+        let (_, detections) = detect("Account: 00-00-00 12345678", &uk_patterns());
+        assert!(
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::BankAccount),
+            "should reject all-zero sort code"
+        );
+    }
+
+    #[test]
+    fn reject_uk_bank_account_all_zero_account() {
+        let (_, detections) = detect("Account: 12-34-56 00000000", &uk_patterns());
+        assert!(
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::BankAccount),
+            "should reject all-zero account number"
+        );
+    }
+
+    #[test]
+    fn reject_uk_bank_account_wrong_length() {
+        // 7-digit account number — too short
+        let (_, detections) = detect("Account: 12-34-56 1234567", &uk_patterns());
+        assert!(
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::BankAccount),
+            "should reject 7-digit account number"
+        );
+    }
+
+    #[test]
+    fn bank_account_not_detected_without_uk_locale() {
+        let patterns = locales::build_patterns(&[Locale::Global]);
+        let (_, detections) = detect("Account: 12-34-56 12345678", &patterns);
+        assert!(
+            !detections
+                .iter()
+                .any(|d| d.pii_type == PiiType::BankAccount),
+            "bank account should not detect without UK locale"
         );
     }
 }
