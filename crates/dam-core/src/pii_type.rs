@@ -52,6 +52,42 @@ pub enum PiiType {
     Organization,
     /// Geographic location (tag: `loc`). Phase 2 NER.
     Location,
+    // --- Digital secrets & credentials ---
+    /// JSON Web Token — three base64url segments (tag: `jwt`).
+    JwtToken,
+    /// AWS access key ID — AKIA-prefixed 20-char credential (tag: `aws_key`).
+    AwsKey,
+    /// AWS resource identifier — arn:aws:... format (tag: `aws_arn`).
+    AwsArn,
+    /// GitHub personal access or OAuth token — gh[pousr]_-prefixed (tag: `gh_token`).
+    GitHubToken,
+    /// Stripe API key or object ID — sk_/pk_/cus_/tok_/pm_/src_/sub_/card_-prefixed (tag: `stripe_key`).
+    StripeKey,
+    /// Generic third-party API key — Google (AIza), Slack (xox), SendGrid (SG.), npm (npm_), Mailgun (key-), Twilio (SK) (tag: `api_key`).
+    ApiKey,
+    /// LLM provider API key — Anthropic (sk-ant-), OpenAI (sk-/sk-proj-/sk-svcacct-), Hugging Face (hf_), Replicate (r8_), xAI (xai-), Groq (gsk_), Perplexity (pplx-) (tag: `llm_key`).
+    LlmApiKey,
+    /// PEM-encoded private key — RSA, EC, or OpenSSH (tag: `priv_key`).
+    PrivateKey,
+    /// URL with embedded credentials, e.g. `postgres://user:pass@host/db` (tag: `cred_url`).
+    CredentialUrl,
+    // --- Financial ---
+    /// UK bank sort code + account number pair (tag: `bank_acct`).
+    BankAccount,
+    // --- Crypto ---
+    /// Cryptocurrency wallet address — Bitcoin (legacy/bech32) or Ethereum (tag: `wallet`).
+    CryptoWallet,
+    // --- Network ---
+    /// MAC / hardware address (tag: `mac`).
+    MacAddress,
+    /// IPv6 address — fully-expanded 8-group form (tag: `ipv6`).
+    IPv6Address,
+    // --- Documents ---
+    /// Passport Machine Readable Zone — TD3 two-line format (tag: `mrz`).
+    PassportMrz,
+    // --- Logistics ---
+    /// UPS shipment tracking number — 1Z-prefixed 18-char format (tag: `ups`).
+    UpsTracking,
     /// User-defined PII type from custom rules (tag: `custom`).
     Custom,
 }
@@ -80,6 +116,21 @@ impl fmt::Display for PiiType {
             Self::Address => "address",
             Self::Organization => "org",
             Self::Location => "location",
+            Self::JwtToken => "jwt_token",
+            Self::AwsKey => "aws_key",
+            Self::AwsArn => "aws_arn",
+            Self::GitHubToken => "github_token",
+            Self::StripeKey => "stripe_key",
+            Self::ApiKey => "api_key",
+            Self::LlmApiKey => "llm_api_key",
+            Self::PrivateKey => "private_key",
+            Self::CredentialUrl => "credential_url",
+            Self::BankAccount => "bank_account",
+            Self::CryptoWallet => "crypto_wallet",
+            Self::MacAddress => "mac_address",
+            Self::IPv6Address => "ipv6_address",
+            Self::PassportMrz => "passport_mrz",
+            Self::UpsTracking => "ups_tracking",
             Self::Custom => "custom",
         };
         write!(f, "{s}")
@@ -112,6 +163,21 @@ impl FromStr for PiiType {
             "address" | "addr" => Ok(Self::Address),
             "org" | "organization" => Ok(Self::Organization),
             "location" | "loc" => Ok(Self::Location),
+            "jwt" | "jwt_token" | "jwttoken" => Ok(Self::JwtToken),
+            "aws_key" | "awskey" => Ok(Self::AwsKey),
+            "aws_arn" | "awsarn" => Ok(Self::AwsArn),
+            "gh_token" | "ghtoken" | "github_token" => Ok(Self::GitHubToken),
+            "stripe_key" | "stripekey" => Ok(Self::StripeKey),
+            "api_key" | "apikey" => Ok(Self::ApiKey),
+            "llm_key" | "llm_api_key" | "llmapikey" => Ok(Self::LlmApiKey),
+            "priv_key" | "privkey" | "private_key" => Ok(Self::PrivateKey),
+            "cred_url" | "credurl" | "credential_url" => Ok(Self::CredentialUrl),
+            "bank_acct" | "bank_account" | "bankaccount" => Ok(Self::BankAccount),
+            "wallet" | "crypto_wallet" => Ok(Self::CryptoWallet),
+            "mac" | "mac_address" | "macaddress" => Ok(Self::MacAddress),
+            "ipv6" | "ipv6_address" => Ok(Self::IPv6Address),
+            "mrz" | "passport_mrz" => Ok(Self::PassportMrz),
+            "ups" | "ups_tracking" => Ok(Self::UpsTracking),
             "custom" => Ok(Self::Custom),
             _ => Err(crate::error::DamError::InvalidPiiType(s.to_string())),
         }
@@ -143,6 +209,21 @@ impl PiiType {
             Self::Address => "addr",
             Self::Organization => "org",
             Self::Location => "loc",
+            Self::JwtToken => "jwt",
+            Self::AwsKey => "aws_key",
+            Self::AwsArn => "aws_arn",
+            Self::GitHubToken => "gh_token",
+            Self::StripeKey => "stripe_key",
+            Self::ApiKey => "api_key",
+            Self::LlmApiKey => "llm_key",
+            Self::PrivateKey => "priv_key",
+            Self::CredentialUrl => "cred_url",
+            Self::BankAccount => "bank_acct",
+            Self::CryptoWallet => "wallet",
+            Self::MacAddress => "mac",
+            Self::IPv6Address => "ipv6",
+            Self::PassportMrz => "mrz",
+            Self::UpsTracking => "ups",
             Self::Custom => "custom",
         }
     }
@@ -171,6 +252,21 @@ impl PiiType {
             "addr" => Some(Self::Address),
             "org" => Some(Self::Organization),
             "loc" => Some(Self::Location),
+            "jwt" => Some(Self::JwtToken),
+            "aws_key" => Some(Self::AwsKey),
+            "aws_arn" => Some(Self::AwsArn),
+            "gh_token" => Some(Self::GitHubToken),
+            "stripe_key" => Some(Self::StripeKey),
+            "api_key" => Some(Self::ApiKey),
+            "llm_key" => Some(Self::LlmApiKey),
+            "priv_key" => Some(Self::PrivateKey),
+            "cred_url" => Some(Self::CredentialUrl),
+            "bank_acct" => Some(Self::BankAccount),
+            "wallet" => Some(Self::CryptoWallet),
+            "mac" => Some(Self::MacAddress),
+            "ipv6" => Some(Self::IPv6Address),
+            "mrz" => Some(Self::PassportMrz),
+            "ups" => Some(Self::UpsTracking),
             "custom" => Some(Self::Custom),
             _ => None,
         }
@@ -200,6 +296,21 @@ impl PiiType {
             Self::Address,
             Self::Organization,
             Self::Location,
+            Self::JwtToken,
+            Self::AwsKey,
+            Self::AwsArn,
+            Self::GitHubToken,
+            Self::StripeKey,
+            Self::ApiKey,
+            Self::LlmApiKey,
+            Self::PrivateKey,
+            Self::CredentialUrl,
+            Self::BankAccount,
+            Self::CryptoWallet,
+            Self::MacAddress,
+            Self::IPv6Address,
+            Self::PassportMrz,
+            Self::UpsTracking,
             Self::Custom,
         ]
     }

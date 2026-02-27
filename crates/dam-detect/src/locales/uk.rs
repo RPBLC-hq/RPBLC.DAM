@@ -1,11 +1,21 @@
 use crate::stage_regex::Pattern;
-use crate::validators::{validate_dvla_license, validate_nhs_mod11, validate_ni_prefix};
+use crate::validators::{
+    validate_dvla_license, validate_nhs_mod11, validate_ni_prefix, validate_uk_sort_code_account,
+};
 use dam_core::PiiType;
 use regex::Regex;
 
 /// United Kingdom PII patterns.
 pub(crate) fn patterns() -> Vec<Pattern> {
     vec![
+        // UK sort code (XX-XX-XX) paired with 8-digit account number
+        // Format: "12-34-56 12345678" or "12-34-56 12345678" (space optional)
+        Pattern {
+            regex: Regex::new(r"\b\d{2}-\d{2}-\d{2}\s?\d{8}\b").unwrap(),
+            pii_type: PiiType::BankAccount,
+            confidence: 0.92,
+            validator: Some(validate_uk_sort_code_account),
+        },
         // National Insurance Number — 2 letters + 6 digits + 1 letter (A-D)
         Pattern {
             regex: Regex::new(r"(?i)\b[A-CEGHJ-PR-TW-Z][A-CEGHJ-NPR-TW-Z]\d{6}[A-D]\b").unwrap(),

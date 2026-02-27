@@ -1,11 +1,9 @@
-<p align="center">
-  <h1 align="center">DAM</h1>
-  <h3 align="center">Data Access Mediator</h3>
-  <p align="center"><strong>The PII firewall for AI agents.</strong></p>
-  <p align="center">
-    Your data never leaves your machine. The LLM never sees it. Every access is logged.
-  </p>
-</p>
+<div align="center">
+  <h1>DAM</h1>
+  <h3>Data Access Mediator</h3>
+  <p><strong>The PII firewall for AI agents.</strong></p>
+  <p>Your data never leaves your machine. The LLM never sees it. Every access is logged.</p>
+</div>
 
 <p align="center">
   <a href="https://github.com/RPBLC-hq/RPBLC.DAM/actions/workflows/ci.yml"><img src="https://github.com/RPBLC-hq/RPBLC.DAM/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -82,7 +80,7 @@ No code changes needed. Point your API client at DAM instead of the provider, an
 
 | Stage | What happens |
 |-------|-------------|
-| **Detect** | Regex pipeline finds emails, phones, SSNs, credit cards, IPs, IBANs, and 15+ locale-specific patterns across US, Canada, UK, France, Germany, and the EU |
+| **Detect** | Regex pipeline with 37 built-in types — credentials (JWT, AWS, GitHub, Stripe, API keys, private keys), personal data (email, SSN, phone, NHS, passport), financial (credit card, IBAN, crypto), and more across 7 locales |
 | **Encrypt** | Each value gets its own AES-256-GCM key (envelope encryption). The master key lives in your OS keychain — never on disk |
 | **Replace** | Values become typed references: `[email:a3f71bc9]`. The LLM knows the *type* but never the *value* |
 | **Resolve** | When the LLM responds with references, DAM replaces them with real values before returning to the client. The user sees real data; the LLM never did |
@@ -261,28 +259,24 @@ Roadmap: [`docs/cli-roadmap.md`](docs/cli-roadmap.md).
 
 ## PII Detection
 
-### Supported types
+### Commonly detected types
 
-| Type | Tag | Example | Locale |
-|------|-----|---------|--------|
-| Email | `email` | `user@example.com` | Global |
-| Credit Card | `cc` | `4111-1111-1111-1111` (Luhn-validated) | Global |
-| International Phone | `phone` | `+44 20 7946 0958` | Global |
-| IPv4 Address | `ip` | `203.0.113.1` (public only) | Global |
-| Date of Birth | `dob` | `1990-05-15` | Global |
-| IBAN | `iban` | `DE89 3704 0044 0532 0130 00` | Global |
-| SSN | `ssn` | `123-45-6789` | US |
-| US Phone | `phone` | `(555) 867-5309` | US |
-| SIN | `sin` | `130 692 544` | Canada |
-| Postal Code | `postal` | `K1A 0B1` | Canada |
-| NI Number | `ni` | `AB 123 456 C` | UK |
-| NHS Number | `nhs` | `943 476 5919` | UK |
-| Driving Licence | `dl` | `MORGA657054SM9IJ` | UK |
-| INSEE/NIR | `nir` | `1 85 05 78 006 084 91` | France |
-| Tax ID (Steuer-ID) | `taxid` | `65929970489` | Germany |
-| National ID | `natid` | `T220001293` | Germany |
-| VAT Number | `vat` | `DE123456789` | EU |
-| SWIFT/BIC | `swift` | `DEUTDEFF` | EU |
+A sample of the most commonly leaked or highest-impact types:
+
+| Type | Tag | Example | Why it matters |
+|------|-----|---------|----------------|
+| Email | `email` | `user@example.com` | Universal — appears in nearly every prompt |
+| Credit Card | `cc` | `4111-1111-1111-1111` | Payment fraud; Luhn-validated |
+| SSN | `ssn` | `123-45-6789` | US identity theft; highest regulatory risk |
+| JWT Token | `jwt` | `eyJhbGci…` | Auth credential; grants account access |
+| AWS Key | `aws_key` | `AKIAIOSFODNN7EXAMPLE` | Cloud credential; immediate infrastructure access |
+| Private Key | `priv_key` | `-----BEGIN RSA PRIVATE KEY-----` | Cryptographic identity; highest severity |
+| Credential URL | `cred_url` | `postgres://user:pass@host/db` | Database access embedded in connection strings |
+| Stripe Key | `stripe_key` | `sk_live_…` | Payment processor; direct financial access |
+| NHS Number | `nhs` | `943 476 5919` | UK health identifier; GDPR/DSP Toolkit |
+| Crypto Wallet | `wallet` | `0x742d35Cc6634C053…` | Irreversible financial transactions |
+
+**37 built-in types** across personal data, credentials, financial, national IDs, network, and documents — see [docs/pii-types.md](docs/pii-types.md) for the full reference.
 
 Plus user-defined regex patterns via config. See [Configuration](#configuration).
 
@@ -398,7 +392,7 @@ dam-cli        CLI binary — wires everything together
 
 ```bash
 cargo build --release            # single ~6MB binary
-cargo test --workspace           # 570+ tests
+cargo test --workspace           # 640+ tests
 cargo clippy --workspace         # lint
 cargo fmt --check                # format check
 ```

@@ -945,6 +945,89 @@ fn is_valid_iso3166(code: &str) -> bool {
     )
 }
 
+/// Validate a UK sort code + account number pair.
+///
+/// Expects a string matching `\d{2}-\d{2}-\d{2}\s?\d{8}`.
+/// Strips all non-digits and confirms there are exactly 14 digits (6 sort code + 8 account).
+/// Rejects all-zero sort codes and all-zero account numbers.
+pub(crate) fn validate_uk_sort_code_account(value: &str) -> bool {
+    let digits: String = value.chars().filter(|c| c.is_ascii_digit()).collect();
+
+    if digits.len() != 14 {
+        return false;
+    }
+
+    let sort_code = &digits[..6];
+    let account = &digits[6..];
+
+    // Reject obviously invalid all-zero values
+    if sort_code == "000000" || account == "00000000" {
+        return false;
+    }
+
+    true
+}
+
+/// Validate MAC address — rejects all-zeros (unspecified) and broadcast (ff:ff:...) addresses.
+pub(crate) fn validate_mac_address(value: &str) -> bool {
+    let octets: Vec<u8> = value
+        .split(|c| c == ':' || c == '-')
+        .filter_map(|o| u8::from_str_radix(o, 16).ok())
+        .collect();
+
+    if octets.len() != 6 {
+        return false;
+    }
+
+    // Reject unspecified (00:00:00:00:00:00)
+    if octets.iter().all(|&b| b == 0x00) {
+        return false;
+    }
+
+    // Reject broadcast (ff:ff:ff:ff:ff:ff)
+    if octets.iter().all(|&b| b == 0xff) {
+        return false;
+    }
+
+    true
+}
+
+/// Validate a fully-expanded IPv6 address — rejects loopback, unspecified, link-local, and multicast.
+/// Only handles the 8-group colon-separated form (no `::` compression); compressed forms are
+/// not matched by the regex so never reach this validator.
+pub(crate) fn validate_ipv6(value: &str) -> bool {
+    let lower = value.to_lowercase();
+    let parts: Vec<&str> = lower.split(':').collect();
+
+    if parts.len() != 8 {
+        return false;
+    }
+
+    // Reject unspecified (all groups zero)
+    if parts.iter().all(|p| p.chars().all(|c| c == '0')) {
+        return false;
+    }
+
+    // Reject loopback (0000:...:0001)
+    let leading_zeros = parts[..7].iter().all(|p| p.chars().all(|c| c == '0'));
+    let last_is_one = parts[7].trim_start_matches('0') == "1";
+    if leading_zeros && last_is_one {
+        return false;
+    }
+
+    // Reject link-local (fe80::/10)
+    if parts[0].starts_with("fe80") {
+        return false;
+    }
+
+    // Reject multicast (ff00::/8)
+    if parts[0].starts_with("ff") {
+        return false;
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
