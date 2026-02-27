@@ -276,7 +276,7 @@ A sample of the most commonly leaked or highest-impact types:
 | NHS Number | `nhs` | `943 476 5919` | UK health identifier; GDPR/DSP Toolkit |
 | Crypto Wallet | `wallet` | `0x742d35Cc6634C053…` | Irreversible financial transactions |
 
-**36 built-in types** across personal data, credentials, financial, national IDs, network, and documents — see [docs/pii-types.md](docs/pii-types.md) for the full reference.
+**36 built-in types across 53 patterns** — personal data, credentials, financial, national IDs, network, and documents — see [docs/pii-types.md](docs/pii-types.md) for the full reference.
 
 Plus user-defined regex patterns via config. See [Configuration](#configuration).
 
