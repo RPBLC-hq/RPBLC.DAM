@@ -7,11 +7,12 @@ DAM (Data Access Mediator) is a PII firewall for AI agents. It intercepts person
 ## Build Commands
 
 ```bash
-cargo build                      # debug build
-cargo build --release            # release build (single binary)
-cargo test --workspace           # all tests
-cargo clippy --workspace         # lint
-cargo fmt --check                # format check
+cargo build                          # debug build
+cargo build --release                # release build (single binary)
+cargo test --workspace               # all tests
+cargo clippy --workspace -- -D warnings  # lint (matches CI exactly — warnings are errors)
+cargo fmt --all --check              # format check (matches CI exactly)
+cargo fmt --all                      # auto-fix formatting
 ```
 
 ## Architecture
@@ -97,7 +98,7 @@ When preparing a release, follow these steps in order:
 
 ### 1. Pre-release Verification
 
-- [ ] All CI checks pass on `main` (`cargo test --workspace`, `cargo clippy --workspace`, `cargo fmt --all --check`)
+- [ ] All CI checks pass on `main` (`cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --all --check`)
 - [ ] No unmerged feature branches intended for this release
 
 ### 2. Version Bump
