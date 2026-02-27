@@ -1,7 +1,7 @@
 use crate::stage_regex::Pattern;
 use crate::validators::{
     validate_iban, validate_ip, validate_ipv6, validate_luhn_cc, validate_mac_address,
-    validate_phone,
+    validate_phone, validate_vin,
 };
 use dam_core::PiiType;
 use regex::Regex;
@@ -347,6 +347,16 @@ pub(crate) fn patterns() -> Vec<Pattern> {
             pii_type: PiiType::UpsTracking,
             confidence: 0.98,
             validator: None,
+        },
+
+        // ── Vehicle ─────────────────────────────────────────────────────────────
+
+        // Vehicle Identification Number — ISO 3779: 17 alphanumeric (no I, O, Q), position-9 check
+        Pattern {
+            regex: Regex::new(r"(?i)\b[A-HJ-NPR-Z0-9]{17}\b").unwrap(),
+            pii_type: PiiType::Vin,
+            confidence: 0.95,
+            validator: Some(validate_vin),
         },
     ]
 }

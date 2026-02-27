@@ -1,8 +1,14 @@
+mod ae;
+mod br;
 mod ca;
 mod de;
+mod es;
 mod eu;
 mod fr;
 mod global;
+mod it;
+mod mx;
+mod sg;
 mod uk;
 mod us;
 
@@ -26,6 +32,12 @@ pub fn build_patterns(locales: &[Locale]) -> Vec<Pattern> {
             Locale::Uk => patterns.extend(uk::patterns()),
             Locale::Fr => patterns.extend(fr::patterns()),
             Locale::De => patterns.extend(de::patterns()),
+            Locale::Sg => patterns.extend(sg::patterns()),
+            Locale::Es => patterns.extend(es::patterns()),
+            Locale::It => patterns.extend(it::patterns()),
+            Locale::Br => patterns.extend(br::patterns()),
+            Locale::Mx => patterns.extend(mx::patterns()),
+            Locale::Ae => patterns.extend(ae::patterns()),
         }
     }
 
@@ -186,6 +198,89 @@ mod tests {
         assert!(
             patterns.iter().any(|p| p.pii_type == PiiType::SwiftBic),
             "EU locale should include SWIFT/BIC pattern"
+        );
+    }
+
+    #[test]
+    fn sg_includes_nric() {
+        let patterns = build_patterns(&[Locale::Global, Locale::Sg]);
+        assert!(
+            patterns.iter().any(|p| p.pii_type == PiiType::Nric),
+            "Singapore locale should include NRIC pattern"
+        );
+    }
+
+    #[test]
+    fn es_includes_nif() {
+        let patterns = build_patterns(&[Locale::Global, Locale::Es]);
+        assert!(
+            patterns.iter().any(|p| p.pii_type == PiiType::Nif),
+            "Spain locale should include NIF pattern"
+        );
+    }
+
+    #[test]
+    fn es_includes_nie() {
+        let patterns = build_patterns(&[Locale::Global, Locale::Es]);
+        assert!(
+            patterns.iter().any(|p| p.pii_type == PiiType::Nie),
+            "Spain locale should include NIE pattern"
+        );
+    }
+
+    #[test]
+    fn it_includes_codice_fiscale() {
+        let patterns = build_patterns(&[Locale::Global, Locale::It]);
+        assert!(
+            patterns
+                .iter()
+                .any(|p| p.pii_type == PiiType::CodiceFiscale),
+            "Italy locale should include Codice Fiscale pattern"
+        );
+    }
+
+    #[test]
+    fn br_includes_cpf() {
+        let patterns = build_patterns(&[Locale::Global, Locale::Br]);
+        assert!(
+            patterns.iter().any(|p| p.pii_type == PiiType::Cpf),
+            "Brazil locale should include CPF pattern"
+        );
+    }
+
+    #[test]
+    fn mx_includes_curp() {
+        let patterns = build_patterns(&[Locale::Global, Locale::Mx]);
+        assert!(
+            patterns.iter().any(|p| p.pii_type == PiiType::Curp),
+            "Mexico locale should include CURP pattern"
+        );
+    }
+
+    #[test]
+    fn ae_includes_emirates_id() {
+        let patterns = build_patterns(&[Locale::Global, Locale::Ae]);
+        assert!(
+            patterns.iter().any(|p| p.pii_type == PiiType::EmiratesId),
+            "UAE locale should include Emirates ID pattern"
+        );
+    }
+
+    #[test]
+    fn us_includes_dea_number() {
+        let patterns = build_patterns(&[Locale::Global, Locale::Us]);
+        assert!(
+            patterns.iter().any(|p| p.pii_type == PiiType::DeaNumber),
+            "US locale should include DEA number pattern"
+        );
+    }
+
+    #[test]
+    fn global_includes_vin() {
+        let patterns = build_patterns(&[Locale::Global]);
+        assert!(
+            patterns.iter().any(|p| p.pii_type == PiiType::Vin),
+            "Global locale should include VIN pattern"
         );
     }
 

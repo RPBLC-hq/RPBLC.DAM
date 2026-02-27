@@ -17,6 +17,12 @@ pub enum Locale {
     Uk,
     Fr,
     De,
+    Sg,
+    Es,
+    It,
+    Br,
+    Mx,
+    Ae,
 }
 
 impl Locale {
@@ -30,6 +36,12 @@ impl Locale {
             Locale::Uk,
             Locale::Fr,
             Locale::De,
+            Locale::Sg,
+            Locale::Es,
+            Locale::It,
+            Locale::Br,
+            Locale::Mx,
+            Locale::Ae,
         ]
     }
 
@@ -42,12 +54,18 @@ impl Locale {
     pub fn label(&self) -> &'static str {
         match self {
             Locale::Global => "Global (email, credit card, IP, IBAN)",
-            Locale::Us => "United States (SSN, US phone)",
+            Locale::Us => "United States (SSN, US phone, DEA)",
             Locale::Ca => "Canada (SIN, postal code)",
             Locale::Eu => "EU (VAT, SWIFT/BIC)",
             Locale::Uk => "United Kingdom (NI, NHS, DVLA)",
             Locale::Fr => "France (INSEE/NIR)",
             Locale::De => "Germany (ID card, tax ID)",
+            Locale::Sg => "Singapore (NRIC/FIN)",
+            Locale::Es => "Spain (NIF, NIE)",
+            Locale::It => "Italy (Codice Fiscale)",
+            Locale::Br => "Brazil (CPF)",
+            Locale::Mx => "Mexico (CURP)",
+            Locale::Ae => "UAE (Emirates ID)",
         }
     }
 
@@ -61,6 +79,12 @@ impl Locale {
             Locale::Uk,
             Locale::Fr,
             Locale::De,
+            Locale::Sg,
+            Locale::Es,
+            Locale::It,
+            Locale::Br,
+            Locale::Mx,
+            Locale::Ae,
         ]
     }
 }
@@ -75,6 +99,12 @@ impl fmt::Display for Locale {
             Locale::Uk => "uk",
             Locale::Fr => "fr",
             Locale::De => "de",
+            Locale::Sg => "sg",
+            Locale::Es => "es",
+            Locale::It => "it",
+            Locale::Br => "br",
+            Locale::Mx => "mx",
+            Locale::Ae => "ae",
         };
         write!(f, "{s}")
     }
@@ -92,6 +122,12 @@ impl FromStr for Locale {
             "uk" => Ok(Locale::Uk),
             "fr" => Ok(Locale::Fr),
             "de" => Ok(Locale::De),
+            "sg" => Ok(Locale::Sg),
+            "es" => Ok(Locale::Es),
+            "it" => Ok(Locale::It),
+            "br" => Ok(Locale::Br),
+            "mx" => Ok(Locale::Mx),
+            "ae" => Ok(Locale::Ae),
             _ => Err(DamError::Config(format!("unknown locale: {s}"))),
         }
     }
@@ -146,7 +182,7 @@ mod tests {
 
     #[test]
     fn label_returns_description() {
-        assert_eq!(Locale::Us.label(), "United States (SSN, US phone)");
+        assert_eq!(Locale::Us.label(), "United States (SSN, US phone, DEA)");
         assert_eq!(
             Locale::Global.label(),
             "Global (email, credit card, IP, IBAN)"
@@ -158,12 +194,18 @@ mod tests {
     fn selectable_excludes_global() {
         let selectable = Locale::selectable();
         assert!(!selectable.contains(&Locale::Global));
-        assert_eq!(selectable.len(), 6);
+        assert_eq!(selectable.len(), 12);
         assert!(selectable.contains(&Locale::Us));
         assert!(selectable.contains(&Locale::Ca));
         assert!(selectable.contains(&Locale::Eu));
         assert!(selectable.contains(&Locale::Uk));
         assert!(selectable.contains(&Locale::Fr));
         assert!(selectable.contains(&Locale::De));
+        assert!(selectable.contains(&Locale::Sg));
+        assert!(selectable.contains(&Locale::Es));
+        assert!(selectable.contains(&Locale::It));
+        assert!(selectable.contains(&Locale::Br));
+        assert!(selectable.contains(&Locale::Mx));
+        assert!(selectable.contains(&Locale::Ae));
     }
 }
