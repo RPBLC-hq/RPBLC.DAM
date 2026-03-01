@@ -51,3 +51,13 @@ Patterns that apply regardless of locale selection. These detect PII formats tha
 - **Validator**: `validate_iban` — format check (2 letters + 2 check digits + 11-30 alphanumeric), country-specific length table, MOD 97-10 checksum
 - **Examples**: `DE89370400440532013000`, `GB29NWBK60161331926819`, `FR7630006000011234567890189`
 - **Notes**: IBAN regex only matches uppercase (normalization converts input to uppercase). Spaces and dashes are stripped before validation.
+
+## VIN (Vehicle Identification Number)
+
+- **PiiType**: `Vin`
+- **Confidence**: 0.95
+- **Regex**: `(?i)\b[A-HJ-NPR-Z0-9]{17}\b` (case-insensitive, excludes I, O, Q)
+- **Validator**: `validate_vin` — ISO 3779 MOD-11 check digit at position 9. Each character is mapped to a transliteration value and multiplied by positional weights [8,7,6,5,4,3,2,10,0,9,8,7,6,5,4,3,2]. Check digit is `sum % 11` (0-9 or X for 10).
+- **Format**: 17 alphanumeric characters (letters I, O, Q excluded)
+- **Examples**: `1HGBH41JXMN109186`, `WBA3A5G59DNP26082`
+- **Rejected**: Numbers with wrong check digit, containing I/O/Q, wrong length

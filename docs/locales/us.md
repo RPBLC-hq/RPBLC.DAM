@@ -21,3 +21,14 @@ United States-specific PII patterns.
 - **Regex**: `(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b`
 - **Validator**: None
 - **Examples**: `555-123-4567`, `(555) 123-4567`, `+1 555.123.4567`
+
+## DEA Registration Number
+
+- **PiiType**: `DeaNumber`
+- **Confidence**: 0.88
+- **Regex**: `(?i)\b[A-PR-VXYZ][A-Z9]\d{7}\b` (case-insensitive)
+- **Validator**: `validate_dea_number` — check digit = `(d1 + d3 + d5 + 2*(d2 + d4 + d6)) % 10` must equal d7
+- **Format**: 2-letter prefix + 7 digits = 9 characters. First letter indicates registrant type (A-P, R-V, X-Z); second letter is last-name initial or `9`.
+- **Examples**: `AB1234563`
+- **Rejected**: Numbers with wrong check digit, invalid first letter (Q not used), wrong length
+- **Regulatory context**: Issued by the US Drug Enforcement Administration for controlled substance handling. Regulated under 21 CFR Part 1301.
