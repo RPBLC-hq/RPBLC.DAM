@@ -13,6 +13,12 @@ DAM's detection pipeline uses locale-based pattern modules. Each locale contribu
 | United Kingdom | `uk` | [uk.md](uk.md) |
 | France | `fr` | [fr.md](fr.md) |
 | Germany | `de` | [de.md](de.md) |
+| Singapore | `sg` | [sg.md](sg.md) |
+| Spain | `es` | [es.md](es.md) |
+| Italy | `it` | [it.md](it.md) |
+| Brazil | `br` | [br.md](br.md) |
+| Mexico | `mx` | [mx.md](mx.md) |
+| UAE | `ae` | [ae.md](ae.md) |
 
 ## Adding a New Locale
 
