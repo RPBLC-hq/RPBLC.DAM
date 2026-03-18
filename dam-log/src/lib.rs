@@ -45,13 +45,13 @@ impl Module for LogModule {
     /// Log every detection in the context to the store.
     fn process(&self, ctx: &mut FlowContext) -> Result<(), DamError> {
         let destination = ctx.destination.host();
-        let action = if ctx.destination.is_llm() {
-            "tokenized"
-        } else {
-            "logged"
-        };
 
         for detection in &ctx.detections {
+            let action = match detection.verdict {
+                dam_core::Verdict::Redact => "redacted",
+                dam_core::Verdict::Pass => "passed",
+                dam_core::Verdict::Pending => "logged",
+            };
             let data_type = detection.data_type.tag();
             let preview = Self::make_preview(&detection.value);
             self.store.log_event(
@@ -174,8 +174,41 @@ mod tests {
 
         module.process(&mut ctx).unwrap();
         let events = store.query_all(None).unwrap();
-        assert_eq!(events[0].action, "tokenized");
+        // Verdict is Pending (no consent module ran), so action is "logged"
+        assert_eq!(events[0].action, "logged");
         assert_eq!(events[0].destination, "api.openai.com");
+    }
+
+    #[test]
+    fn test_process_redact_verdict_logs_as_redacted() {
+        let (module, store, _dir) = temp_log_module();
+        let mut ctx = FlowContext::new(
+            "test@example.com".to_string(),
+            Destination::Llm { provider: dam_core::LlmProvider::Anthropic },
+        );
+        let mut det = make_detection(SensitiveDataType::Email, "test@example.com", "detect-pii");
+        det.verdict = dam_core::Verdict::Redact;
+        ctx.detections.push(det);
+
+        module.process(&mut ctx).unwrap();
+        let events = store.query_all(None).unwrap();
+        assert_eq!(events[0].action, "redacted");
+    }
+
+    #[test]
+    fn test_process_pass_verdict_logs_as_passed() {
+        let (module, store, _dir) = temp_log_module();
+        let mut ctx = FlowContext::new(
+            "test@example.com".to_string(),
+            Destination::Llm { provider: dam_core::LlmProvider::Anthropic },
+        );
+        let mut det = make_detection(SensitiveDataType::Email, "test@example.com", "detect-pii");
+        det.verdict = dam_core::Verdict::Pass;
+        ctx.detections.push(det);
+
+        module.process(&mut ctx).unwrap();
+        let events = store.query_all(None).unwrap();
+        assert_eq!(events[0].action, "passed");
     }
 
     #[test]
@@ -262,7 +295,7 @@ mod tests {
         assert!(types.contains(&"cc"));
         assert!(types.contains(&"api_key"));
 
-        // All actions should be "tokenized" for LLM destination.
-        assert!(events.iter().all(|e| e.action == "tokenized"));
+        // Verdict::Pending → action "logged"
+        assert!(events.iter().all(|e| e.action == "logged"));
     }
 }

@@ -1,3 +1,5 @@
+mod mcp;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use dam_core::config::DamConfig;
@@ -357,11 +359,11 @@ fn cmd_stats(config: &DamConfig) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<15} {:>8}  {}", "TYPE", "COUNT", "TOP DESTINATIONS");
-    println!("{}", "-".repeat(60));
+    println!("{:<12} {:>6} {:>8} {:>6}  {}", "TYPE", "TOTAL", "REDACTED", "PASSED", "TOP DESTINATIONS");
+    println!("{}", "-".repeat(75));
     for stat in &stats {
         let dests = stat.top_destinations.join(", ");
-        println!("{:<15} {:>8}  {}", stat.data_type, stat.count, dests);
+        println!("{:<12} {:>6} {:>8} {:>6}  {}", stat.data_type, stat.count, stat.redacted, stat.passed, dests);
     }
     Ok(())
 }
@@ -385,7 +387,19 @@ fn cmd_log(config: &DamConfig, limit: u32) -> Result<()> {
 
 // -- MCP --
 
-async fn cmd_mcp(_config: &DamConfig) -> Result<()> {
-    println!("MCP server not yet implemented");
+async fn cmd_mcp(config: &DamConfig) -> Result<()> {
+    use rmcp::ServiceExt;
+
+    let kek = dam_vault::encrypt::load_or_generate_kek(&config.key_path())?;
+    let vault_store = Arc::new(dam_vault::VaultStore::open(&config.vault_db_path(), kek)?);
+    let consent_store = Arc::new(dam_consent::ConsentStore::open(&config.consent_db_path())?);
+    let log_store = Arc::new(dam_log::LogStore::open(&config.log_db_path())?);
+
+    let server = mcp::DamMcpServer::new(vault_store, consent_store, log_store);
+    let transport = rmcp::transport::io::stdio();
+
+    let service = server.serve(transport).await?;
+    service.waiting().await?;
+
     Ok(())
 }

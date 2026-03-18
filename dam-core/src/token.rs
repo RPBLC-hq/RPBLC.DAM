@@ -13,7 +13,7 @@ const BASE58_ALPHABET: bs58::Alphabet = *bs58::Alphabet::BITCOIN;
 /// Base58 IDs are exactly 22 chars (128-bit UUID encoded).
 /// Type is lowercase alpha + underscore.
 static TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\[([a-z_]+):([123456789A-HJ-NP-Za-km-z]{22})\]").unwrap()
+    Regex::new(r"\[([a-z_]+):([123456789A-HJ-NP-Za-km-z]{21,22})\]").unwrap()
 });
 
 /// A typed reference to a sensitive value stored in the vault.
@@ -115,9 +115,12 @@ impl Token {
     }
 }
 
-/// Check that a string is a valid base58 ID (22 chars, valid alphabet).
+/// Check that a string is a valid base58 ID (21-22 chars, valid alphabet, decodes to 16 bytes).
 fn is_valid_base58_id(id: &str) -> bool {
-    id.len() == 22 && bs58::decode(id).with_alphabet(&BASE58_ALPHABET).into_vec().is_ok()
+    (id.len() == 21 || id.len() == 22)
+        && bs58::decode(id).with_alphabet(&BASE58_ALPHABET).into_vec()
+            .map(|bytes| bytes.len() == 16)
+            .unwrap_or(false)
 }
 
 impl fmt::Display for Token {
@@ -232,8 +235,11 @@ mod tests {
         // 8-char hex ID should NOT match (old format)
         let results = Token::extract_all("[email:a3f71bc9]");
         assert_eq!(results.len(), 0);
-        // 21 chars — too short
-        let results = Token::extract_all("[email:7B2HkqFn9xR4mWpD3nYvK]");
+        // 20 chars — too short
+        let results = Token::extract_all("[email:7B2HkqFn9xR4mWpD3nY]");
+        assert_eq!(results.len(), 0);
+        // 23 chars — too long
+        let results = Token::extract_all("[email:7B2HkqFn9xR4mWpD3nYvKtX]");
         assert_eq!(results.len(), 0);
     }
 

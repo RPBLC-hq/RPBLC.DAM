@@ -22,6 +22,8 @@ pub struct LogEvent {
 pub struct StatEntry {
     pub data_type: String,
     pub count: u64,
+    pub redacted: u64,
+    pub passed: u64,
     pub top_destinations: Vec<String>,
 }
 
@@ -195,27 +197,28 @@ impl LogStore {
         Ok(events)
     }
 
-    /// Aggregate stats: count per data_type, with up to 5 top destinations for each.
+    /// Aggregate stats: count per data_type, with pass/redact breakdown and top destinations.
     pub fn stats(&self) -> Result<Vec<StatEntry>, DamError> {
         let conn = self.conn.lock().map_err(|e| DamError::Db(e.to_string()))?;
 
-        // Get distinct data types with their total counts.
         let mut type_stmt = conn
             .prepare(
-                "SELECT data_type, COUNT(*) as cnt
+                "SELECT data_type,
+                        COUNT(*) as cnt,
+                        SUM(CASE WHEN action = 'redacted' OR action = 'tokenized' THEN 1 ELSE 0 END) as redacted,
+                        SUM(CASE WHEN action = 'passed' THEN 1 ELSE 0 END) as passed
                  FROM log_events
                  GROUP BY data_type
                  ORDER BY cnt DESC",
             )
             .map_err(|e| DamError::Db(e.to_string()))?;
 
-        let type_rows: Vec<(String, u64)> = type_stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        let type_rows: Vec<(String, u64, u64, u64)> = type_stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
             .map_err(|e| DamError::Db(e.to_string()))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| DamError::Db(e.to_string()))?;
 
-        // For each data type, get top destinations.
         let mut dest_stmt = conn
             .prepare(
                 "SELECT destination, COUNT(*) as cnt
@@ -228,7 +231,7 @@ impl LogStore {
             .map_err(|e| DamError::Db(e.to_string()))?;
 
         let mut entries = Vec::with_capacity(type_rows.len());
-        for (data_type, count) in type_rows {
+        for (data_type, count, redacted, passed) in type_rows {
             let top_destinations: Vec<String> = dest_stmt
                 .query_map(params![&data_type], |row| row.get(0))
                 .map_err(|e| DamError::Db(e.to_string()))?
@@ -238,6 +241,8 @@ impl LogStore {
             entries.push(StatEntry {
                 data_type,
                 count,
+                redacted,
+                passed,
                 top_destinations,
             });
         }
