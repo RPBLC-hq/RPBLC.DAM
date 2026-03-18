@@ -11,6 +11,6 @@ pub mod config;
 pub use error::{DamError, DamResult};
 pub use types::SensitiveDataType;
 pub use token::Token;
-pub use module_trait::{Module, ModuleType, FlowContext, Detection, Span};
+pub use module_trait::{Module, ModuleType, FlowContext, Detection, Span, Verdict};
 pub use destination::{Destination, LlmProvider};
 pub use flow::FlowExecutor;

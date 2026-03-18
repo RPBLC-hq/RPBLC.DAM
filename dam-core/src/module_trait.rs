@@ -27,6 +27,23 @@ impl Span {
     }
 }
 
+/// Verdict set by the consent module for each detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// No consent check yet — detection just found.
+    Pending,
+    /// Consent says: tokenize/redact this value.
+    Redact,
+    /// Consent says: let the real value pass through.
+    Pass,
+}
+
+impl Default for Verdict {
+    fn default() -> Self {
+        Self::Pending
+    }
+}
+
 /// A single detection of sensitive data in the request body.
 #[derive(Debug, Clone)]
 pub struct Detection {
@@ -35,6 +52,8 @@ pub struct Detection {
     pub span: Span,
     pub confidence: f32,
     pub source_module: String,
+    /// Set by the consent module. Defaults to Pending.
+    pub verdict: Verdict,
 }
 
 /// Context passed through the module flow for a single request.
@@ -129,6 +148,7 @@ mod tests {
             span: Span { start, end },
             confidence,
             source_module: module.into(),
+            verdict: Verdict::Pending,
         }
     }
 

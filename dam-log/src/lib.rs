@@ -88,6 +88,7 @@ mod tests {
             span: Span { start: 0, end: value.len() },
             confidence: 0.95,
             source_module: module.to_string(),
+                verdict: dam_core::Verdict::Pending,
         }
     }
 

@@ -112,6 +112,7 @@ mod tests {
             span: Span { start, end },
             confidence: conf,
             source_module: module.into(),
+            verdict: crate::module_trait::Verdict::Pending,
         }
     }
 

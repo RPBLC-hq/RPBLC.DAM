@@ -23,30 +23,92 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Show detection statistics
-    Stats,
+    // -- Consent commands --
+
+    /// Manage consent rules
+    Consent {
+        #[command(subcommand)]
+        action: ConsentCommands,
+    },
+
+    // -- Vault commands --
+
     /// Resolve a token to its original value
     Resolve {
-        /// Token to resolve (e.g., email:a3f71bc9)
+        /// Token key or [token] (e.g., email:7B2Hkq... or [email:7B2Hkq...])
         token: String,
     },
     /// List all tokens in the vault
     Tokens,
+
+    // -- Log commands --
+
+    /// Show detection statistics
+    Stats,
     /// Show recent detection events
     Log {
         /// Maximum number of events to show
         #[arg(short = 'n', long, default_value = "20")]
         limit: u32,
     },
+
+    // -- Other --
+
     /// Start MCP server on stdio
     Mcp,
+}
+
+#[derive(Subcommand)]
+enum ConsentCommands {
+    /// Grant consent — allow data to pass through
+    Grant {
+        /// Data type (e.g., email, ssn, cc) or * for all
+        #[arg(long, default_value = "*")]
+        r#type: String,
+
+        /// Specific token key or [token] (e.g., email:7B2Hkq... or [email:7B2Hkq...])
+        #[arg(long)]
+        token: Option<String>,
+
+        /// Raw value to resolve to a token (e.g., john@acme.com)
+        #[arg(long)]
+        value: Option<String>,
+
+        /// Destination host (e.g., api.anthropic.com) or * for all
+        #[arg(long, default_value = "*")]
+        dest: String,
+
+        /// Time-to-live (e.g., 30m, 1h, 24h, 7d) or "permanent"
+        #[arg(long)]
+        ttl: Option<String>,
+    },
+    /// Deny — explicitly block data from passing through
+    Deny {
+        /// Data type or *
+        #[arg(long, default_value = "*")]
+        r#type: String,
+
+        /// Specific token key or [token]
+        #[arg(long)]
+        token: Option<String>,
+
+        /// Destination host or *
+        #[arg(long, default_value = "*")]
+        dest: String,
+    },
+    /// List all active consent rules
+    List,
+    /// Revoke a consent rule by ID
+    Revoke {
+        /// Rule ID to revoke
+        id: String,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Setup tracing
     let filter = if cli.verbose { "debug" } else { "info,dam=info" };
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -56,7 +118,6 @@ async fn main() -> Result<()> {
         .compact()
         .init();
 
-    // Setup config
     let config = DamConfig {
         port: cli.port,
         verbose: cli.verbose,
@@ -65,6 +126,7 @@ async fn main() -> Result<()> {
     config.ensure_home()?;
 
     match cli.command {
+        Some(Commands::Consent { action }) => cmd_consent(&config, action)?,
         Some(Commands::Stats) => cmd_stats(&config)?,
         Some(Commands::Resolve { token }) => cmd_resolve(&config, &token)?,
         Some(Commands::Tokens) => cmd_tokens(&config)?,
@@ -77,18 +139,18 @@ async fn main() -> Result<()> {
 }
 
 async fn cmd_serve(config: &DamConfig) -> Result<()> {
-    // Initialize vault
     let kek = dam_vault::encrypt::load_or_generate_kek(&config.key_path())?;
     let vault_store = Arc::new(dam_vault::VaultStore::open(&config.vault_db_path(), kek)?);
-
-    // Initialize log store
+    let consent_store = Arc::new(dam_consent::ConsentStore::open(&config.consent_db_path())?);
     let log_store = Arc::new(dam_log::LogStore::open(&config.log_db_path())?);
 
-    // Build module chain: detect-pii → detect-secrets → vault → log
+    // Pipeline: detect-pii → detect-secrets → consent → vault → redact → log
     let modules: Vec<Arc<dyn Module>> = vec![
         Arc::new(dam_detect_pii::PiiDetectionModule::new()),
         Arc::new(dam_detect_secrets::SecretsDetectionModule::new()),
+        Arc::new(dam_consent::ConsentModule::new(consent_store.clone())),
         Arc::new(dam_vault::VaultModule::new(vault_store.clone())),
+        Arc::new(dam_redact::RedactModule::new(vault_store.clone())),
         Arc::new(dam_log::LogModule::new(log_store.clone())),
     ];
 
@@ -103,23 +165,157 @@ async fn cmd_serve(config: &DamConfig) -> Result<()> {
     Ok(())
 }
 
-fn cmd_stats(config: &DamConfig) -> Result<()> {
-    let log_store = dam_log::LogStore::open(&config.log_db_path())?;
-    let stats = log_store.stats()?;
+// -- Consent commands --
 
-    if stats.is_empty() {
-        println!("No detections recorded yet.");
-        return Ok(());
+fn cmd_consent(config: &DamConfig, action: ConsentCommands) -> Result<()> {
+    let consent_store = dam_consent::ConsentStore::open(&config.consent_db_path())?;
+
+    match action {
+        ConsentCommands::Grant { r#type, token, value, dest, ttl } => {
+            let token_key = resolve_token_arg(config, token, value)?;
+            let ttl_secs = parse_ttl(ttl.as_deref(), consent_store.default_ttl_secs)?;
+
+            let rule = consent_store.grant(
+                &r#type,
+                token_key.as_deref(),
+                &dest,
+                dam_consent::ConsentAction::Pass,
+                ttl_secs,
+            )?;
+
+            let expiry = match rule.expires_at {
+                Some(ts) => format!("expires at {ts}"),
+                None => "permanent".to_string(),
+            };
+            println!("Granted: {} ({expiry})", rule.id);
+            println!("  type={} dest={}", rule.data_type, rule.destination);
+            if let Some(tk) = &rule.token_key {
+                println!("  token={tk}");
+            }
+        }
+        ConsentCommands::Deny { r#type, token, dest } => {
+            let token_key = resolve_token_arg(config, token, None)?;
+
+            let rule = consent_store.grant(
+                &r#type,
+                token_key.as_deref(),
+                &dest,
+                dam_consent::ConsentAction::Redact,
+                None, // deny rules are permanent by default
+            )?;
+
+            println!("Denied: {} (permanent)", rule.id);
+            println!("  type={} dest={}", rule.data_type, rule.destination);
+            if let Some(tk) = &rule.token_key {
+                println!("  token={tk}");
+            }
+        }
+        ConsentCommands::List => {
+            let rules = consent_store.list()?;
+            if rules.is_empty() {
+                println!("No active consent rules.");
+                return Ok(());
+            }
+
+            println!("{:<38} {:<8} {:<12} {:<25} {:<10}", "ID", "ACTION", "TYPE", "DESTINATION", "EXPIRES");
+            println!("{}", "-".repeat(95));
+            for rule in &rules {
+                let action = rule.action.as_str();
+                let token_suffix = rule.token_key.as_ref()
+                    .map(|t| format!(" [{}]", t))
+                    .unwrap_or_default();
+                let expiry = rule.expires_at
+                    .map(|ts| ts.to_string())
+                    .unwrap_or_else(|| "permanent".into());
+                println!(
+                    "{:<38} {:<8} {:<12} {:<25} {:<10}",
+                    rule.id,
+                    action,
+                    format!("{}{}", rule.data_type, token_suffix),
+                    rule.destination,
+                    expiry,
+                );
+            }
+        }
+        ConsentCommands::Revoke { id } => {
+            if consent_store.revoke(&id)? {
+                println!("Revoked: {id}");
+            } else {
+                println!("Rule not found: {id}");
+            }
+        }
     }
 
-    println!("{:<15} {:>8}  {}", "TYPE", "COUNT", "TOP DESTINATIONS");
-    println!("{}", "-".repeat(60));
-    for stat in &stats {
-        let dests = stat.top_destinations.join(", ");
-        println!("{:<15} {:>8}  {}", stat.data_type, stat.count, dests);
-    }
     Ok(())
 }
+
+/// Resolve --token or --value arguments to a token key string.
+fn resolve_token_arg(
+    config: &DamConfig,
+    token: Option<String>,
+    value: Option<String>,
+) -> Result<Option<String>> {
+    if let Some(t) = token {
+        // Strip brackets if present: [email:xxx] → email:xxx
+        let inner = t.strip_prefix('[').unwrap_or(&t);
+        let inner = inner.strip_suffix(']').unwrap_or(inner);
+        return Ok(Some(inner.to_string()));
+    }
+
+    if let Some(val) = value {
+        // Look up the value in the vault to find its token
+        let kek = dam_vault::encrypt::load_or_generate_kek(&config.key_path())?;
+        let store = dam_vault::VaultStore::open(&config.vault_db_path(), kek)?;
+        let entries = store.list(None)?;
+        for entry in &entries {
+            let token: dam_core::Token = match entry.ref_id.parse() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if let Ok(stored_val) = store.retrieve(&token) {
+                if stored_val == val {
+                    return Ok(Some(entry.ref_id.clone()));
+                }
+            }
+        }
+        anyhow::bail!("Value '{}' not found in vault. It must be detected first.", val);
+    }
+
+    Ok(None)
+}
+
+/// Parse TTL string to seconds. "permanent" → None, "30m" → Some(1800), etc.
+fn parse_ttl(ttl: Option<&str>, default_secs: u64) -> Result<Option<u64>> {
+    match ttl {
+        None => {
+            if default_secs == 0 {
+                Ok(None)
+            } else {
+                Ok(Some(default_secs))
+            }
+        }
+        Some("permanent") | Some("perm") | Some("forever") => Ok(None),
+        Some(s) => {
+            let (num_str, multiplier) = if let Some(n) = s.strip_suffix('m') {
+                (n, 60u64)
+            } else if let Some(n) = s.strip_suffix('h') {
+                (n, 3600u64)
+            } else if let Some(n) = s.strip_suffix('d') {
+                (n, 86400u64)
+            } else if let Some(n) = s.strip_suffix('s') {
+                (n, 1u64)
+            } else {
+                // Assume seconds
+                (s, 1u64)
+            };
+            let num: u64 = num_str.parse()
+                .map_err(|_| anyhow::anyhow!("Invalid TTL: '{s}'. Use 30m, 1h, 24h, 7d, or permanent."))?;
+            Ok(Some(num * multiplier))
+        }
+    }
+}
+
+// -- Vault commands --
 
 fn cmd_resolve(config: &DamConfig, token_str: &str) -> Result<()> {
     let kek = dam_vault::encrypt::load_or_generate_kek(&config.key_path())?;
@@ -142,10 +338,30 @@ fn cmd_tokens(config: &DamConfig) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<25} {:<12} {}", "TOKEN", "TYPE", "CREATED");
-    println!("{}", "-".repeat(55));
+    println!("{:<40} {:<12} {}", "TOKEN", "TYPE", "CREATED");
+    println!("{}", "-".repeat(65));
     for entry in &entries {
-        println!("{:<25} {:<12} {}", entry.ref_id, entry.data_type, entry.created_at);
+        println!("{:<40} {:<12} {}", entry.ref_id, entry.data_type, entry.created_at);
+    }
+    Ok(())
+}
+
+// -- Log commands --
+
+fn cmd_stats(config: &DamConfig) -> Result<()> {
+    let log_store = dam_log::LogStore::open(&config.log_db_path())?;
+    let stats = log_store.stats()?;
+
+    if stats.is_empty() {
+        println!("No detections recorded yet.");
+        return Ok(());
+    }
+
+    println!("{:<15} {:>8}  {}", "TYPE", "COUNT", "TOP DESTINATIONS");
+    println!("{}", "-".repeat(60));
+    for stat in &stats {
+        let dests = stat.top_destinations.join(", ");
+        println!("{:<15} {:>8}  {}", stat.data_type, stat.count, dests);
     }
     Ok(())
 }
@@ -167,7 +383,9 @@ fn cmd_log(config: &DamConfig, limit: u32) -> Result<()> {
     Ok(())
 }
 
+// -- MCP --
+
 async fn cmd_mcp(_config: &DamConfig) -> Result<()> {
-    println!("MCP server not yet implemented (phase 2)");
+    println!("MCP server not yet implemented");
     Ok(())
 }

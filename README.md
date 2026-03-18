@@ -12,23 +12,26 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#how-it-works">How It Works</a> &middot;
-  <a href="#what-it-detects">Detection</a> &middot;
+  <a href="#consent">Consent</a> &middot;
+  <a href="#detection">Detection</a> &middot;
   <a href="#cli">CLI</a>
 </p>
 
 ---
 
+Every time an AI agent processes a customer email, a phone number, or an API key, that data flows through servers and context windows you don't control.
+
+**DAM** sits between your app and the LLM provider. It detects sensitive data, checks your consent rules, tokenizes what you haven't approved, stores encrypted originals locally, and forwards clean requests upstream. The LLM reasons about data types. It never touches data values.
+
 ```
-"Send the contract to john@acme.com      "Send the contract to [email:7B2HkqFn9xR4mWpD3nYvKt]
- and CC sarah@corp.io,                    and CC [email:4fWzR3qN7vJ8xK2hLbYdRv],
- charge card 4111-1111-1111-1111"         charge card [cc:HnT5wQ8mK2hLbYdRv3qN7vJ]"
-                                  ──dam──►
-        What you type                            What the LLM sees
+  "Send the contract to john@acme.com        "Send the contract to [email:a3f71b]
+   and CC sarah@corp.io,                      and CC [email:d4f82c],
+   charge card 4111-1111-1111-1111"  ──dam──► charge card [cc:b7e31a]"
+
+        What you type                             What the LLM sees
 ```
 
-DAM sits between your app and the LLM provider. It detects sensitive data in outbound requests, tokenizes it (stores encrypted originals locally), and forwards clean requests upstream. The LLM reasons about data types. It never touches data values.
-
-One binary. Zero config. Zero dependencies. Plug and play.
+Single binary. Zero config. Plug and play.
 
 ## Quick Start
 
@@ -70,63 +73,130 @@ curl -H "X-DAM-Upstream: https://api.anthropic.com/v1/messages" \
      http://localhost:7828/
 ```
 
-The LLM sees: `"Email [email:7B2HkqFn9xR4mWpD3nYvKt] about the meeting, SSN [ssn:9cXJrNpT5wQ8mK2hLbYdRv]"`
+The LLM sees: `"Email [email:a3f71b] about the meeting, SSN [ssn:b2c81e]"`
 
-The originals are encrypted in your local vault. The LLM responds with tokens — you resolve them when you need the real values:
+The originals are encrypted in your local vault. You decide what gets through:
 
 ```bash
-dam resolve email:7B2HkqFn9xR4mWpD3nYvKt    # → john@acme.com
-dam tokens                                     # list everything in the vault
-dam stats                                      # see what was detected and where
+dam resolve email:a3f71b     # → john@acme.com
+dam consent grant --type email --dest api.anthropic.com   # let emails pass to Anthropic
+dam tokens                   # list everything in the vault
+dam stats                    # see what was detected and where
 ```
 
 ## How It Works
 
 ```
-             YOUR MACHINE                              CLOUD
-┌──────────────────────────────────────────┐   ┌──────────────────┐
-│                                          │   │                  │
-│  ┌─────────┐      ┌───────────────────┐  │   │                  │
-│  │ Your    │      │       dam         │  │   │    LLM           │
-│  │ App     │─────►│                   │──┼──►│    Provider      │
-│  │         │      │  detect-pii       │  │   │                  │
-│  │         │      │  detect-secrets   │  │   │  Only sees:      │
-│  │         │      │  vault (tokenize) │  │   │  [email:7B2Hkq...]│
-│  │         │      │  log (record)     │  │   │  [ssn:9cXJrN...]  │
-│  └─────────┘      └────────┬──────────┘  │   └──────────────────┘
-│                            │             │
-│                     ┌──────▼──────────┐  │
-│                     │  Encrypted      │  │
-│                     │  Vault          │  │
-│                     │  (SQLite +      │  │
-│                     │   AES-256-GCM)  │  │
-│                     └─────────────────┘  │
-│                                          │
-│  Everything stays on your machine.       │
-└──────────────────────────────────────────┘
+                 YOUR MACHINE                            CLOUD
+  ┌─────────────────────────────────────────┐    ┌──────────────────┐
+  │                                         │    │                  │
+  │  ┌───────────┐      ┌──────────────┐    │    │    LLM           │
+  │  │ User /    │      │     DAM      │    │    │    Provider      │
+  │  │ App       │─────►│              │────┼───►│                  │
+  │  │           │      │  1. Detect   │    │    │  Only sees:      │
+  │  │ "john@    │      │  2. Consent  │    │    │  [email:a3f71b]  │
+  │  │  acme.com │      │  3. Vault    │    │    │                  │
+  │  │  at 555-  │      │  4. Redact   │    │    │  Responds with:  │
+  │  │  1234"    │      │  5. Log      │    │    │  "Send to        │
+  │  │           │      │              │◄───┼────│  [email:a3f71b]" │
+  │  │  sees     │◄─────│  Response    │    │    │                  │
+  │  │  tokens   │      │  passthrough │    │    └──────────────────┘
+  │  └───────────┘      └──────┬───────┘    │
+  │       │                    │            │
+  │       │              ┌─────▼────────┐   │
+  │       └─────────────►│  Vault       │   │     User resolves tokens
+  │        dam resolve   │  (AES-256)   │   │     via CLI or MCP
+  │        dam consent   │  Consent DB  │   │     when needed
+  │                      └──────────────┘   │
+  │                                         │
+  │      Everything stays on your machine.  │
+  └─────────────────────────────────────────┘
 ```
 
 ### The pipeline
 
-Traffic flows through a chain of modules:
+Traffic flows through a chain of modules. Each module reads from and appends to a shared context. Modules never remove data — they only add detections, set verdicts, store values, or modify the outbound body.
 
-| Module | What it does |
-|--------|-------------|
-| **detect-pii** | Finds PII: email, phone, SSN, credit card, IBAN, IP address. Regex + validators (Luhn, Mod97, SSN area rules). Text normalization catches zero-width chars, unicode dashes, URL-encoded values. |
-| **detect-secrets** | Finds credentials: API keys (AWS, GitHub, Stripe, OpenAI, Anthropic), JWTs, PEM private keys, credential URLs. |
-| **vault** | Tokenizes detections: encrypts originals (AES-256-GCM envelope encryption), stores in local SQLite, replaces with `[type:base58id]` tokens. Only activates for LLM API calls. |
-| **log** | Records every detection: what type, where it was going, what action was taken. Never logs the actual sensitive value. |
+```
+detect-pii ──┐
+              ├──► consent ──► vault ──► redact ──► log
+detect-secrets┘
+```
+
+| Module | Type | What it does |
+|--------|------|-------------|
+| **detect-pii** | Detection | Finds PII: email, phone, SSN, credit card, IBAN, IP. Appends detections to the shared context. |
+| **detect-secrets** | Detection | Finds secrets: API keys, JWTs, private keys, credential URLs. Appends detections. |
+| **consent** | Filter | Checks each detection against your consent rules. Sets verdict: `pass` (let through) or `redact` (tokenize). Default: redact everything. |
+| **vault** | Storage | Stores ALL detected values encrypted — both passed and redacted — for audit and recovery. |
+| **redact** | Action | Replaces values in the request body with `[type:id]` tokens — only for detections with verdict `redact`. Passed values stay as-is. |
+| **log** | Action | Records every detection: type, destination, verdict, action taken. Never logs the actual value. |
 
 ### Zero config
 
 On first run, DAM auto-creates:
 - `~/.dam/key` — 32-byte encryption key (file permissions 0600)
 - `~/.dam/dam.db` — encrypted vault (SQLite)
+- `~/.dam/consent.db` — consent rules (SQLite)
 - `~/.dam/log.db` — detection log (SQLite)
 
 No init command. No config file. No keychain setup. Just `dam`.
 
-## What It Detects
+## Consent
+
+By default, DAM redacts everything in LLM calls. You control what passes through with consent rules.
+
+### Grant consent
+
+```bash
+# Let emails pass to Anthropic (24h default TTL)
+dam consent grant --type email --dest api.anthropic.com
+
+# Let emails pass everywhere, permanently
+dam consent grant --type email --dest "*" --ttl permanent
+
+# Let a specific token pass (use brackets or key format)
+dam consent grant --token [email:a3f71b] --dest "*" --ttl 30m
+
+# Let a specific value pass (resolves from vault)
+dam consent grant --value "john@acme.com" --dest api.anthropic.com
+
+# Let everything pass to Anthropic
+dam consent grant --type "*" --dest api.anthropic.com
+```
+
+### Deny (explicit block)
+
+```bash
+# Never let SSNs pass anywhere, even if a broader rule allows it
+dam consent deny --type ssn --dest "*"
+
+# Block a specific token
+dam consent deny --token [cc:b7e31a] --dest "*"
+```
+
+### Manage rules
+
+```bash
+dam consent list              # show all active rules
+dam consent revoke <rule-id>  # remove a rule
+```
+
+### How consent works
+
+Rules are layered. Most specific match wins:
+
+1. **Token + exact destination** — highest priority
+2. **Token + wildcard destination**
+3. **Type + exact destination**
+4. **Type + wildcard destination**
+5. **Wildcard type + exact destination**
+6. **Wildcard type + wildcard destination**
+7. **No match → redact** (default deny)
+
+TTL defaults to 24 hours. Use `--ttl permanent` to override. Use `--ttl 30m`, `--ttl 1h`, `--ttl 7d` for custom durations.
+
+## Detection
 
 ### PII (detect-pii)
 
@@ -155,87 +225,131 @@ No init command. No config file. No keychain setup. Just `dam`.
 ### Token format
 
 ```
-[email:7B2HkqFn9xR4mWpD3nYvKt]    — an email address
-[phone:9cXJrNpT5wQ8mK2hLbYdRv]    — a phone number
-[ssn:4fWzR3qN7vJ8mK2hLbYdRv]      — a social security number
-[cc:HnT5wQ8mK2hLbYdRv3qN7vJ]      — a credit card number
+[email:a3f71b]     — an email address
+[phone:c2d81e]     — a phone number
+[ssn:b7e31a]       — a social security number
+[cc:d4f82c]        — a credit card number
+[aws_key:e5a93b]   — an AWS access key
 ```
 
-Each ID is a 128-bit UUID encoded in base58 (22 chars). Base58 excludes `0`, `O`, `I`, `l` to avoid visual ambiguity in logs and debugging output. Same value + same type = same token (dedup).
+Each ID is a 128-bit UUID encoded in base58 (22 chars in practice). Base58 excludes `0`, `O`, `I`, `l` to avoid visual ambiguity. Same value + same type = same token (dedup). IDs in this README are shortened for readability.
 
 ## CLI
 
+Commands are grouped by module.
+
+### Proxy
+
 ```
-dam                         Start proxy on :7828
-dam --port 8080             Custom port
-dam -v                      Verbose output
-dam stats                   Detection counts by type and destination
-dam resolve <token>         Resolve a token to its original value
-dam tokens                  List all tokens in the vault
-dam log [-n 50]             Show recent detection events
+dam                          Start proxy on :7828
+dam --port 8080              Custom port
+dam -v                       Verbose output
+```
+
+### Consent (dam-consent)
+
+```
+dam consent grant [OPTIONS]  Grant consent — allow data to pass
+dam consent deny [OPTIONS]   Deny — explicitly block data
+dam consent list             List all active rules
+dam consent revoke <id>      Remove a rule
+```
+
+### Vault (dam-vault)
+
+```
+dam resolve <token>          Resolve a token to its original value
+dam tokens                   List all tokens in the vault
+```
+
+### Log (dam-log)
+
+```
+dam stats                    Detection counts by type and destination
+dam log [-n 50]              Show recent detection events
 ```
 
 ### Proxy routing
 
-Set the `X-DAM-Upstream` header to tell DAM where to forward:
-
 ```bash
-# Anthropic
-curl -H "X-DAM-Upstream: https://api.anthropic.com/v1/messages" ...
+# Route via header
+curl -H "X-DAM-Upstream: https://api.anthropic.com/v1/messages" ... http://localhost:7828/
 
-# OpenAI
-curl -H "X-DAM-Upstream: https://api.openai.com/v1/chat/completions" ...
-
-# Any HTTP endpoint
-curl -H "X-DAM-Upstream: https://your-api.com/endpoint" ...
+# Route via path
+curl ... http://localhost:7828/https://api.openai.com/v1/chat/completions
 ```
 
-Or use path-based routing:
-
-```bash
-curl http://localhost:7828/https://api.openai.com/v1/chat/completions ...
-```
-
-LLM endpoints are auto-detected by host. LLM calls get tokenized. Everything else gets logged (detection only, no modification).
+LLM endpoints are auto-detected by host. LLM calls get the full pipeline (detect → consent → vault → redact → log). Non-LLM traffic gets detect + vault + log (stored and logged, but not redacted).
 
 ## Security
 
 - **Envelope encryption** — each value gets its own DEK (AES-256-GCM), wrapped by a master key
 - **Auto-generated key** — 32 random bytes at `~/.dam/key`, file permissions 0600, no OS keychain
 - **Deduplication** — same value + type stored once via normalized SHA-256 hash
-- **Separate databases** — vault entries and detection logs in different SQLite files
+- **Separate databases** — vault, consent rules, and detection logs in different SQLite files
 - **Zero plaintext at rest** — sensitive values only exist decrypted in memory during processing
+- **Default deny** — no data passes through LLM calls without explicit consent
 
 ## Architecture
 
-6 crates, single binary:
+8 crates, single binary:
 
 ```
-dam-core             Spine — proxy, Module trait, flow executor, streaming
+dam-core             Spine — proxy, Module trait, FlowExecutor, streaming, config
 dam-detect-pii       Vertebra — PII detection patterns + validators
 dam-detect-secrets   Vertebra — secrets/credentials detection
-dam-vault            Vertebra — tokenize, encrypt, store, resolve
+dam-consent          Vertebra — consent rules, verdict assignment
+dam-vault            Vertebra — encrypt and store all detected values
+dam-redact           Vertebra — replace body text for redacted detections
 dam-log              Vertebra — detection event logging, stats
-dam-cli              Binary — wires spine + vertebrae, CLI
+dam-cli              Binary — wires spine + vertebrae, unified CLI
 ```
 
-Modules implement a shared `Module` trait. The spine knows nothing about detection or storage — it just runs traffic through a configurable chain of modules.
+### The module contract
+
+Every module implements the same trait. Modules read from and append to a shared `FlowContext`. The `Detection` struct carries a `Verdict` field that flows through the pipeline:
+
+```rust
+pub enum Verdict { Pending, Redact, Pass }
+
+pub struct Detection {
+    pub data_type: SensitiveDataType,
+    pub value: String,
+    pub span: Span,
+    pub confidence: f32,
+    pub source_module: String,
+    pub verdict: Verdict,
+}
+```
+
+Detection modules set `verdict: Pending`. The consent module sets it to `Pass` or `Redact`. Action modules read the verdict to decide what to do.
 
 ### Build from source
 
 ```bash
 cargo build --workspace          # debug build
-cargo test --workspace           # 318 tests
+cargo test --workspace           # 343 tests
 cargo build --release -p dam-cli # release binary
 ```
 
 ## Roadmap
 
-- [ ] MCP server for AI agent integration (resolve tokens, list vault, grant passthrough)
+**Done:**
+- [x] PII detection (email, phone, SSN, credit card, IBAN, IP)
+- [x] Secrets detection (API keys, JWTs, private keys, credential URLs)
+- [x] Consent model (layered rules, per-type/per-token, TTL, default deny)
+- [x] Encrypted vault (AES-256-GCM, auto-generated key, dedup)
+- [x] Forward proxy with streaming support
+- [x] CLI (consent grant/deny/list/revoke, resolve, tokens, stats, log)
+
+**Next:**
+- [ ] MCP server for AI agent integration (resolve tokens, grant consent)
 - [ ] Auto-resolve: optionally resolve tokens in LLM responses before returning to client
-- [ ] Consent model: control which tokens get resolved, by whom, for what purpose
+- [ ] Config TOML modules (custom detection rules, drop in `~/.dam/modules/`)
+- [ ] Configurable trust levels per accessor (auto-approve vs require human approval)
+- [ ] Notification system for consent requests (agent requests, human approves)
 - [ ] WASM module system (`dam install author/module@version`)
-- [ ] Config file for custom detection rules and module flows
+- [ ] Process modules (external binaries for ML/GPU detection)
 - [ ] Analytics dashboard
 - [ ] Remote vault (Postgres)
 - [ ] Full traffic interception (corporate network deployment)

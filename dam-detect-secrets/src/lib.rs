@@ -122,6 +122,7 @@ mod tests {
             },
             confidence: 0.99,
             source_module: "detect-pii".into(),
+                verdict: dam_core::Verdict::Pending,
         });
         m.process(&mut ctx).unwrap();
         assert!(ctx.detections.len() >= 2);

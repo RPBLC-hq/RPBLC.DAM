@@ -2,7 +2,7 @@
 
 ## What is DAM?
 
-DAM (Data Access Mediator) mediates access to sensitive data in transit. It sits between applications and the internet as a forward proxy, detects sensitive data (PII, credentials, secrets), tokenizes it (stores encrypted originals in a local vault), and provides MCP + CLI tools to selectively release data.
+DAM (Data Access Mediator) mediates access to sensitive data in transit. It sits between applications and the internet as a forward proxy. It detects sensitive data, checks consent rules, stores everything encrypted, redacts what isn't approved, and logs all activity.
 
 ## Build Commands
 
@@ -19,16 +19,18 @@ cargo run -p dam-cli -- --port 8080  # custom port
 
 ## Architecture
 
-Spine + Vertebrae model. The spine knows nothing about detection, storage, or logging. Each vertebra is a module that plugs into the spine via the `Module` trait.
+Spine + Vertebrae model. The spine knows nothing about detection, consent, storage, or logging. Each vertebra is a module that plugs into the spine via the `Module` trait.
 
 ### Crates
 
 | Crate | Role | Type |
 |---|---|---|
-| `dam-core` | Proxy engine, Module trait, FlowExecutor, streaming, config | Spine |
+| `dam-core` | Proxy engine, Module trait, FlowExecutor, FlowContext, streaming, config | Spine |
 | `dam-detect-pii` | PII detection (email, phone, SSN, CC, IBAN, IP) | Detection vertebra |
 | `dam-detect-secrets` | Secrets detection (API keys, JWTs, private keys, credentials) | Detection vertebra |
-| `dam-vault` | Tokenize, encrypt (AES-256-GCM), store (SQLite), resolve | Action vertebra |
+| `dam-consent` | Consent rules, verdict assignment (pass/redact per detection) | Filter vertebra |
+| `dam-vault` | Encrypt and store ALL detected values (AES-256-GCM, SQLite) | Storage vertebra |
+| `dam-redact` | Replace body text with tokens for Verdict::Redact detections | Action vertebra |
 | `dam-log` | Detection event logging, `dam stats` | Action vertebra |
 | `dam-cli` | Binary entry point, CLI commands, wires spine + vertebrae | Binary |
 | `_legacy/` | Old v0.3.1 codebase — reference only, do not build | Archive |
@@ -36,25 +38,35 @@ Spine + Vertebrae model. The spine knows nothing about detection, storage, or lo
 ### Dependency graph
 
 ```
-dam-core         → (no internal deps)
-dam-detect-pii   → dam-core
+dam-core           → (no internal deps)
+dam-detect-pii     → dam-core
 dam-detect-secrets → dam-core
-dam-vault        → dam-core
-dam-log          → dam-core
-dam-cli          → all of the above
+dam-consent        → dam-core
+dam-vault          → dam-core
+dam-redact         → dam-core, dam-vault
+dam-log            → dam-core
+dam-cli            → all of the above
 ```
 
 ### Default module flow
 
 ```
-detect-pii → detect-secrets → vault (LLM calls only) → log (all traffic)
+detect-pii → detect-secrets → consent → vault → redact → log
 ```
+
+- **detect-***: find sensitive data, append `Detection` objects with `verdict: Pending`
+- **consent**: check rules, set `verdict: Pass` or `verdict: Redact` per detection
+- **vault**: store ALL detections encrypted (pass AND redact) for audit/recovery
+- **redact**: replace body text only for `verdict: Redact` detections (LLM calls only)
+- **log**: record everything
 
 ### Module trait
 
 Every vertebra implements:
 
 ```rust
+pub enum Verdict { Pending, Redact, Pass }
+
 pub trait Module: Send + Sync {
     fn name(&self) -> &str;
     fn module_type(&self) -> ModuleType; // Detection or Action
@@ -63,28 +75,70 @@ pub trait Module: Send + Sync {
 }
 ```
 
+Modules communicate through `FlowContext` — a shared struct with `detections: Vec<Detection>`, `modified_body`, `tokens_created`, and `destination`. Modules append data, never remove.
+
 ## Key Design Decisions
 
 - **Envelope encryption**: Each value gets a random DEK (AES-256-GCM), wrapped by a KEK stored at `~/.dam/key`
 - **Auto-generated key**: No OS keychain. 32 random bytes written to file with 0600 permissions on first run.
-- **Typed tokens**: `[email:7B2HkqFn9xR4mWpD3nYvKt]` format — 128-bit UUID in base58 (22 chars). LLMs reason about data type without seeing values
+- **Typed tokens**: `[email:a3f71b]` format — 128-bit UUID in base58 (22 chars). LLMs reason about data type without seeing values.
 - **Deduplication**: Same value+type stored once, returns existing token
-- **Separate DBs**: `~/.dam/dam.db` (vault), `~/.dam/log.db` (detection events)
+- **Separate DBs**: `~/.dam/dam.db` (vault), `~/.dam/consent.db` (rules), `~/.dam/log.db` (events)
 - **Zero config**: `dam` with no arguments starts the proxy. No TOML, no init, no setup.
+- **Default deny**: No data passes through LLM calls without explicit consent.
+- **Vault stores everything**: Both passed and redacted values stored for audit and recovery.
 - **Graceful degradation**: Never break traffic. Detection failure → pass through. Vault failure → redact without token.
 
 ## CLI Commands
+
+Commands are grouped by the module that owns them.
+
+### Proxy
 
 | Command | Purpose |
 |---------|---------|
 | `dam` | Start proxy on default port (7828) |
 | `dam --port 8080` | Start proxy on custom port |
 | `dam -v` | Verbose output |
-| `dam stats` | Detection counts by type and destination |
+
+### Consent (dam-consent)
+
+| Command | Purpose |
+|---------|---------|
+| `dam consent grant [OPTIONS]` | Grant consent — allow data to pass |
+| `dam consent deny [OPTIONS]` | Deny — explicitly block data |
+| `dam consent list` | List all active rules |
+| `dam consent revoke <id>` | Remove a rule |
+
+Grant/deny options: `--type <tag>`, `--token <key>`, `--value <raw>`, `--dest <host>`, `--ttl <duration>`
+
+### Vault (dam-vault)
+
+| Command | Purpose |
+|---------|---------|
 | `dam resolve <token>` | Resolve a token to its original value |
 | `dam tokens` | List all tokens in the vault |
-| `dam log` | Show recent detection events |
-| `dam mcp` | Start MCP server on stdio (phase 2) |
+
+### Log (dam-log)
+
+| Command | Purpose |
+|---------|---------|
+| `dam stats` | Detection counts by type and destination |
+| `dam log [-n 50]` | Show recent detection events |
+
+## Consent Model
+
+Rules are layered — most specific match wins:
+
+1. Token + exact destination (highest priority)
+2. Token + wildcard destination
+3. Type + exact destination
+4. Type + wildcard destination
+5. Wildcard type + exact destination
+6. Wildcard type + wildcard destination
+7. No match → redact (default deny)
+
+Default TTL: 24 hours. `--ttl permanent` for no expiration.
 
 ## Proxy Usage
 
@@ -104,34 +158,23 @@ Or use path-based routing:
 curl -d '...' http://localhost:7828/https://api.anthropic.com/v1/messages
 ```
 
-## Detection
-
-### PII types (dam-detect-pii)
-
-Email, Phone (E.164 + NANP), SSN, Credit Card (Luhn validated), IBAN (Mod97), IP Address (private ranges rejected).
-
-Text normalization: zero-width char stripping, NFKC, unicode dash normalization, URL decoding.
-
-### Secret types (dam-detect-secrets)
-
-JWT tokens, AWS access keys, GitHub tokens, Stripe keys, OpenAI keys, Anthropic keys, PEM private keys, credential URLs.
-
 ## Conventions
 
 - Error type: `DamError` / `DamResult<T>` in dam-core
 - Data types: `SensitiveDataType` enum with `tag()` for short form
-- Tokens: `Token` with `key()` → `"email:7B2HkqFn9xR4mWpD3nYvKt"`, `display()` → `"[email:7B2HkqFn9xR4mWpD3nYvKt]"`. IDs are 128-bit UUID base58-encoded (22 chars).
+- Tokens: `Token` with `key()` → `"email:a3f71b"`, `display()` → `"[email:a3f71b]"`. IDs are 128-bit UUID base58-encoded (22 chars).
+- Verdicts: `Verdict::Pending` (just detected), `Verdict::Redact` (tokenize), `Verdict::Pass` (let through)
 - All vault operations go through `VaultStore` (mutex-protected SQLite)
-- Module names match crate names: `"detect-pii"`, `"detect-secrets"`, `"vault"`, `"dam-log"`
+- Module names: `"detect-pii"`, `"detect-secrets"`, `"consent"`, `"vault"`, `"redact"`, `"dam-log"`
 
-## Adding a new detection module
+## Adding a new module
 
-1. Create a new crate: `cargo init --lib dam-detect-<name>`
+1. Create a new crate: `cargo init --lib dam-<name>`
 2. Add `dam-core` as a dependency
-3. Implement the `Module` trait with `ModuleType::Detection`
-4. Add regex patterns in `patterns.rs`, validators if needed
-5. Wire it into `dam-cli/src/main.rs` in the module chain
-6. Add to workspace `Cargo.toml` members
+3. Implement the `Module` trait
+4. Wire it into `dam-cli/src/main.rs` in the module chain
+5. Add to workspace `Cargo.toml` members
+6. Add CLI subcommands if the module needs them
 
 ## Release Checklist
 

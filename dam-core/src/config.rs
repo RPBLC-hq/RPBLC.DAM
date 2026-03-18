@@ -27,6 +27,10 @@ impl DamConfig {
         self.home_dir.join("dam.db")
     }
 
+    pub fn consent_db_path(&self) -> PathBuf {
+        self.home_dir.join("consent.db")
+    }
+
     pub fn log_db_path(&self) -> PathBuf {
         self.home_dir.join("log.db")
     }

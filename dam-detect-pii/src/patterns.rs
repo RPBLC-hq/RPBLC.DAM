@@ -63,6 +63,7 @@ pub fn detect_emails(text: &str) -> Vec<Detection> {
             },
             confidence: 0.95,
             source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -82,6 +83,7 @@ pub fn detect_phones(text: &str) -> Vec<Detection> {
                 },
                 confidence: 0.90,
                 source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
             });
         }
     }
@@ -103,6 +105,7 @@ pub fn detect_phones(text: &str) -> Vec<Detection> {
                     },
                     confidence: 0.85,
                     source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
                 });
             }
         }
@@ -126,6 +129,7 @@ pub fn detect_ssns(text: &str) -> Vec<Detection> {
                 },
                 confidence: 0.95,
                 source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
             });
         }
     }
@@ -146,6 +150,7 @@ pub fn detect_ssns(text: &str) -> Vec<Detection> {
                 },
                 confidence: 0.70, // lower confidence for bare 9-digit sequences
                 source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
             });
         }
     }
@@ -168,6 +173,7 @@ pub fn detect_credit_cards(text: &str) -> Vec<Detection> {
                     },
                     confidence: 0.95,
                     source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
                 })
             } else {
                 None
@@ -190,6 +196,7 @@ pub fn detect_ibans(text: &str) -> Vec<Detection> {
                     },
                     confidence: 0.95,
                     source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
                 })
             } else {
                 None
@@ -212,6 +219,7 @@ pub fn detect_ip_addresses(text: &str) -> Vec<Detection> {
                     },
                     confidence: 0.90,
                     source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
                 })
             } else {
                 None

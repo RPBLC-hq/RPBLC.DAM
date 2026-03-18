@@ -65,6 +65,7 @@ pub fn detect_jwt(text: &str) -> Vec<Detection> {
             },
             confidence: 0.95,
             source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -81,6 +82,7 @@ pub fn detect_aws_keys(text: &str) -> Vec<Detection> {
             },
             confidence: 0.98,
             source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -97,6 +99,7 @@ pub fn detect_github_tokens(text: &str) -> Vec<Detection> {
             },
             confidence: 0.98,
             source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -113,6 +116,7 @@ pub fn detect_stripe_keys(text: &str) -> Vec<Detection> {
             },
             confidence: 0.98,
             source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -131,6 +135,7 @@ pub fn detect_openai_keys(text: &str) -> Vec<Detection> {
             },
             confidence: 0.9,
             source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -147,6 +152,7 @@ pub fn detect_anthropic_keys(text: &str) -> Vec<Detection> {
             },
             confidence: 0.95,
             source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -163,6 +169,7 @@ pub fn detect_pem_keys(text: &str) -> Vec<Detection> {
             },
             confidence: 0.99,
             source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -179,6 +186,7 @@ pub fn detect_credential_urls(text: &str) -> Vec<Detection> {
             },
             confidence: 0.95,
             source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -198,6 +206,7 @@ pub fn detect_generic_keys(text: &str) -> Vec<Detection> {
                 },
                 confidence: 0.7,
                 source_module: SOURCE_MODULE.into(),
+                verdict: dam_core::Verdict::Pending,
             }
         })
         .collect()

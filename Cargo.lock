@@ -414,15 +414,31 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dam-consent",
  "dam-core",
  "dam-detect-pii",
  "dam-detect-secrets",
  "dam-log",
+ "dam-redact",
  "dam-vault",
  "reqwest",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "dam-consent"
+version = "0.4.0"
+dependencies = [
+ "dam-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -487,6 +503,16 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dam-redact"
+version = "0.4.0"
+dependencies = [
+ "dam-core",
+ "dam-vault",
+ "tempfile",
  "tracing",
 ]
 

@@ -1,5 +1,5 @@
 [workspace]
-members = ["dam-core", "dam-detect-pii", "dam-detect-secrets", "dam-vault", "dam-log", "dam-cli"]
+members = ["dam-core", "dam-detect-pii", "dam-detect-secrets", "dam-consent", "dam-vault", "dam-redact", "dam-log", "dam-cli"]
 resolver = "2"
 
 [workspace.package]
@@ -13,6 +13,8 @@ dam-core = { path = "dam-core" }
 dam-detect-pii = { path = "dam-detect-pii" }
 dam-detect-secrets = { path = "dam-detect-secrets" }
 dam-vault = { path = "dam-vault" }
+dam-consent = { path = "dam-consent" }
+dam-redact = { path = "dam-redact" }
 dam-log = { path = "dam-log" }
 
 # Async
