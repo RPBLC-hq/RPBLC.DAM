@@ -1,0 +1,23 @@
+[package]
+name = "dam-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DAM binary — unified CLI over all modules"
+
+[[bin]]
+name = "dam"
+path = "src/main.rs"
+
+[dependencies]
+dam-core.workspace = true
+dam-detect-pii.workspace = true
+dam-detect-secrets.workspace = true
+dam-vault.workspace = true
+dam-log.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

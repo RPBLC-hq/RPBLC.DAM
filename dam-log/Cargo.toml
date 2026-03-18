@@ -1,0 +1,18 @@
+[package]
+name = "dam-log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DAM vertebra — detection event logging and stats"
+
+[dependencies]
+dam-core.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
