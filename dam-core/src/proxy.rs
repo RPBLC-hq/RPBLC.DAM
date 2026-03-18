@@ -1,7 +1,8 @@
 use crate::destination::Destination;
 use crate::flow::FlowExecutor;
 use crate::module_trait::FlowContext;
-use crate::stream::SseBuffer;
+use crate::stream::{SseBuffer, StreamingTokenizer};
+use crate::token::Token;
 
 use axum::{
     Router,
@@ -16,11 +17,18 @@ use futures_util::StreamExt;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
+/// Callback type for resolving tokens to original values.
+/// Returns Some(value) if the token is in the vault, None to leave as-is.
+pub type TokenResolver = Arc<dyn Fn(&Token) -> Option<String> + Send + Sync>;
+
 /// Shared state for the proxy server.
 #[derive(Clone)]
 pub struct ProxyState {
     pub flow: Arc<FlowExecutor>,
     pub client: reqwest::Client,
+    /// Optional resolver for auto-resolving tokens in LLM responses.
+    /// If None, responses pass through with tokens intact.
+    pub resolver: Option<TokenResolver>,
 }
 
 /// Start the proxy server on the given port.
@@ -48,7 +56,6 @@ async fn handle_proxy(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    // Extract upstream URL from X-DAM-Upstream header or path
     let upstream_url = match extract_upstream(&headers, &uri) {
         Some(url) => url,
         None => {
@@ -59,7 +66,7 @@ async fn handle_proxy(
     let destination = Destination::from_url(&upstream_url);
     let body_str = String::from_utf8_lossy(&body).to_string();
 
-    // Run module flow on request body
+    // Run module flow on request body (detect → consent → vault → redact → log)
     let mut ctx = FlowContext::new(body_str, destination.clone());
     if let Err(e) = state.flow.run(&mut ctx) {
         tracing::error!(error = %e, "module flow failed");
@@ -70,7 +77,6 @@ async fn handle_proxy(
     // Build upstream request
     let mut req_builder = state.client.request(method.clone(), &upstream_url);
 
-    // Forward headers (skip host and content-length, they'll be set by reqwest)
     for (name, value) in headers.iter() {
         let n = name.as_str().to_lowercase();
         if n == "host" || n == "content-length" || n == "x-dam-upstream" || n == "transfer-encoding" {
@@ -103,14 +109,27 @@ async fn handle_proxy(
         .map(|ct| ct.contains("text/event-stream"))
         .unwrap_or(false);
 
-    if is_sse && destination.is_llm() {
-        // Stream SSE response with token resolution
+    let should_resolve = destination.is_llm() && state.resolver.is_some();
+
+    if is_sse {
         let byte_stream = upstream_resp.bytes_stream();
-        let stream = stream_sse_with_resolution(byte_stream);
+        let stream = stream_sse(byte_stream, state.resolver.clone());
         let body = Body::from_stream(stream);
         (status, resp_headers, body).into_response()
+    } else if should_resolve {
+        // Non-streaming LLM response: resolve tokens in body
+        match upstream_resp.bytes().await {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                let resolved = resolve_tokens_in_text(&text, &state.resolver);
+                (status, resp_headers, resolved).into_response()
+            }
+            Err(e) => {
+                (StatusCode::BAD_GATEWAY, format!("Failed to read upstream response: {e}")).into_response()
+            }
+        }
     } else {
-        // Non-streaming: pass through the body as-is
+        // Non-LLM or no resolver: pass through
         match upstream_resp.bytes().await {
             Ok(bytes) => (status, resp_headers, bytes).into_response(),
             Err(e) => {
@@ -120,12 +139,29 @@ async fn handle_proxy(
     }
 }
 
-/// Stream SSE response, resolving tokens in text deltas.
-fn stream_sse_with_resolution(
+/// Resolve DAM tokens in a text string using the resolver.
+fn resolve_tokens_in_text(text: &str, resolver: &Option<TokenResolver>) -> String {
+    match resolver {
+        Some(resolver) => Token::replace_all(text, |token| resolver(token)),
+        None => text.to_string(),
+    }
+}
+
+/// Stream SSE response, resolving tokens in event data if a resolver is provided.
+fn stream_sse(
     byte_stream: impl futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+    resolver: Option<TokenResolver>,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static {
     async_stream::stream! {
         let mut sse_buf = SseBuffer::new();
+
+        // If we have a resolver, use StreamingTokenizer to handle token splits across chunks
+        let mut tokenizer: Option<StreamingTokenizer<Box<dyn FnMut(&str) -> String + Send>>> = resolver.map(|r| {
+            let replacer: Box<dyn FnMut(&str) -> String + Send> = Box::new(move |text: &str| {
+                Token::replace_all(text, |token| r(token))
+            });
+            StreamingTokenizer::new(replacer)
+        });
 
         tokio::pin!(byte_stream);
 
@@ -133,8 +169,17 @@ fn stream_sse_with_resolution(
             match chunk_result {
                 Ok(chunk) => {
                     sse_buf.feed(&chunk);
-                    while let Some(event) = sse_buf.next_event() {
-                        yield Ok(Bytes::from(event));
+                    while let Some(event_bytes) = sse_buf.next_event() {
+                        if let Some(ref mut tok) = tokenizer {
+                            // Resolve tokens in the SSE event data
+                            let event_str = String::from_utf8_lossy(&event_bytes);
+                            let resolved = tok.push(&event_str);
+                            if !resolved.is_empty() {
+                                yield Ok(Bytes::from(resolved.into_bytes()));
+                            }
+                        } else {
+                            yield Ok(Bytes::from(event_bytes));
+                        }
                     }
                 }
                 Err(e) => {
@@ -144,23 +189,26 @@ fn stream_sse_with_resolution(
             }
         }
 
-        // Flush any remaining data in the SSE buffer
-        // (incomplete events at stream end)
+        // Flush remaining tokenizer buffer
+        if let Some(ref mut tok) = tokenizer {
+            let remaining = tok.finish();
+            if !remaining.is_empty() {
+                yield Ok(Bytes::from(remaining.into_bytes()));
+            }
+        }
     }
 }
 
 fn extract_upstream(headers: &HeaderMap, uri: &Uri) -> Option<String> {
-    // 1. Check X-DAM-Upstream header
     if let Some(val) = headers.get("x-dam-upstream") {
         if let Ok(s) = val.to_str() {
             return Some(s.to_string());
         }
     }
 
-    // 2. Extract from path (e.g., /https://api.anthropic.com/v1/messages)
     let path = uri.path();
     if path.starts_with("/https://") || path.starts_with("/http://") {
-        let url = &path[1..]; // strip leading /
+        let url = &path[1..];
         if let Some(query) = uri.query() {
             return Some(format!("{url}?{query}"));
         }
@@ -207,5 +255,37 @@ mod tests {
         let uri: Uri = "/https://api.openai.com/v1/chat".parse().unwrap();
         let result = extract_upstream(&headers, &uri);
         assert_eq!(result, Some("https://custom.api.com".into()));
+    }
+
+    #[test]
+    fn test_resolve_tokens_in_text_with_resolver() {
+        let resolver: Option<TokenResolver> = Some(Arc::new(|token: &Token| {
+            if token.data_type == crate::types::SensitiveDataType::Email {
+                Some("john@example.com".into())
+            } else {
+                None
+            }
+        }));
+        // Use a real generated token for testing
+        let token = Token::generate(crate::types::SensitiveDataType::Email);
+        let text = format!("Send to {} please", token.display());
+        let resolved = resolve_tokens_in_text(&text, &resolver);
+        assert_eq!(resolved, "Send to john@example.com please");
+    }
+
+    #[test]
+    fn test_resolve_tokens_in_text_no_resolver() {
+        let token = Token::generate(crate::types::SensitiveDataType::Email);
+        let text = format!("Send to {} please", token.display());
+        let resolved = resolve_tokens_in_text(&text, &None);
+        assert_eq!(resolved, text); // unchanged
+    }
+
+    #[test]
+    fn test_resolve_tokens_no_tokens_in_text() {
+        let resolver: Option<TokenResolver> = Some(Arc::new(|_| Some("resolved".into())));
+        let text = "plain text with no tokens";
+        let resolved = resolve_tokens_in_text(text, &resolver);
+        assert_eq!(resolved, "plain text with no tokens");
     }
 }

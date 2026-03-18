@@ -161,7 +161,13 @@ async fn cmd_serve(config: &DamConfig) -> Result<()> {
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
-    let state = ProxyState { flow, client };
+    // Auto-resolve: resolve DAM tokens in LLM responses back to original values
+    let resolver_vault = vault_store.clone();
+    let resolver: dam_core::proxy::TokenResolver = Arc::new(move |token| {
+        resolver_vault.retrieve(token).ok()
+    });
+
+    let state = ProxyState { flow, client, resolver: Some(resolver) };
     start_proxy(state, config.port).await?;
 
     Ok(())
