@@ -341,9 +341,10 @@ cargo build --release -p dam-cli # release binary
 - [x] Encrypted vault (AES-256-GCM, auto-generated key, dedup)
 - [x] Forward proxy with streaming support
 - [x] CLI (consent grant/deny/list/revoke, resolve, tokens, stats, log)
+- [x] MCP server (resolve tokens, grant/deny/revoke consent, list tokens, stats with pass/redact breakdown)
+- [x] Verdict-aware logging (redacted vs passed vs logged)
 
 **Next:**
-- [ ] MCP server for AI agent integration (resolve tokens, grant consent)
 - [ ] Auto-resolve: optionally resolve tokens in LLM responses before returning to client
 - [ ] Config TOML modules (custom detection rules, drop in `~/.dam/modules/`)
 - [ ] Configurable trust levels per accessor (auto-approve vs require human approval)
