@@ -52,6 +52,7 @@ rcgen = "0.13"
 rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
+webpki-roots = "0.26"
 dashmap = "6"
 
 # Compression

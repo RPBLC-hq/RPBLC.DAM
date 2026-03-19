@@ -32,10 +32,11 @@ static SSN_BARE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\b\d{9}\b").unwrap()
 });
 
-/// Credit card: 13-19 digits, optionally separated by spaces or dashes in groups.
-/// Matches common formats: XXXX-XXXX-XXXX-XXXX, XXXX XXXX XXXX XXXX, contiguous digits.
+/// Credit card: formatted (with separators) or bare 13-16 digits.
+/// Formatted: XXXX-XXXX-XXXX-XXXX (Visa/MC) or XXXX-XXXXXX-XXXXX (Amex).
+/// Bare: 13-16 contiguous digits. Does NOT match 17+ digit sequences (avoids timestamps).
 static CREDIT_CARD_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{1,7}\b").unwrap()
+    Regex::new(r"\b\d{4}[\s\-]\d{4}[\s\-]\d{4}[\s\-]\d{4}\b|\b\d{4}[\s\-]\d{6}[\s\-]\d{5}\b|\b\d{13,16}\b").unwrap()
 });
 
 /// IBAN: 2 letter country code, 2 check digits, 4-30 alphanumeric BBAN chars.

@@ -162,7 +162,7 @@ pub(crate) async fn process_request(
 
     for (name, value) in headers.iter() {
         let n = name.as_str().to_lowercase();
-        if n == "host" || n == "content-length" || n == "content-encoding" || n == "x-dam-upstream" || n == "transfer-encoding" {
+        if matches!(n.as_str(), "host" | "content-length" | "content-encoding" | "accept-encoding" | "x-dam-upstream" | "transfer-encoding") {
             continue;
         }
         req_builder = req_builder.header(name.clone(), value.clone());
@@ -188,6 +188,11 @@ pub(crate) async fn process_request(
 
     let mut resp_headers = HeaderMap::new();
     for (name, value) in upstream_resp.headers().iter() {
+        // Skip headers that reqwest already handled or that may be stale after body modification
+        let n = name.as_str();
+        if matches!(n, "content-length" | "content-encoding" | "transfer-encoding") {
+            continue;
+        }
         resp_headers.insert(name.clone(), value.clone());
     }
 
