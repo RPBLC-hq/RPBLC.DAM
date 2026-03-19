@@ -248,6 +248,7 @@ async fn handle_proxy(
 }
 
 /// Resolve DAM tokens in a text string using the resolver.
+/// Resolve DAM tokens in a text string using the resolver.
 fn resolve_tokens_in_text(text: &str, resolver: &Option<TokenResolver>) -> String {
     match resolver {
         Some(resolver) => Token::replace_all(text, |token| resolver(token)),
@@ -256,6 +257,11 @@ fn resolve_tokens_in_text(text: &str, resolver: &Option<TokenResolver>) -> Strin
 }
 
 /// Stream SSE response, resolving tokens in event data if a resolver is provided.
+///
+/// Extracts just the `"delta"` or `"content"` text from each SSE event's JSON data,
+/// feeds it to the StreamingTokenizer (which handles tokens split across events),
+/// then replaces the value in the original event. Non-content events get full-text
+/// token resolution directly.
 fn stream_sse(
     byte_stream: impl futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
     resolver: Option<TokenResolver>,
@@ -263,12 +269,37 @@ fn stream_sse(
     async_stream::stream! {
         let mut sse_buf = SseBuffer::new();
 
-        let mut tokenizer: Option<StreamingTokenizer<Box<dyn FnMut(&str) -> String + Send>>> = resolver.map(|r| {
-            let replacer: Box<dyn FnMut(&str) -> String + Send> = Box::new(move |text: &str| {
-                Token::replace_all(text, |token| r(token))
-            });
-            StreamingTokenizer::new(replacer)
+        let resolver = match resolver {
+            Some(r) => r,
+            None => {
+                // No resolver — passthrough mode
+                tokio::pin!(byte_stream);
+                while let Some(chunk_result) = byte_stream.next().await {
+                    match chunk_result {
+                        Ok(chunk) => {
+                            sse_buf.feed(&chunk);
+                            while let Some(event_bytes) = sse_buf.next_event() {
+                                yield Ok(Bytes::from(event_bytes));
+                            }
+                        }
+                        Err(e) => {
+                            yield Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+                            break;
+                        }
+                    }
+                }
+                return;
+            }
+        };
+
+        // Content-only tokenizer: fed delta/content text extracted from SSE events,
+        // not raw SSE framing. This lets it correctly handle DAM tokens split across
+        // multiple streaming events (each SSE event carries one NLP token).
+        let r2 = resolver.clone();
+        let replacer: Box<dyn FnMut(&str) -> String + Send> = Box::new(move |text: &str| {
+            Token::replace_all(text, |token| r2(token))
         });
+        let mut tokenizer = StreamingTokenizer::new(replacer);
 
         tokio::pin!(byte_stream);
 
@@ -277,14 +308,34 @@ fn stream_sse(
                 Ok(chunk) => {
                     sse_buf.feed(&chunk);
                     while let Some(event_bytes) = sse_buf.next_event() {
-                        if let Some(ref mut tok) = tokenizer {
-                            let event_str = String::from_utf8_lossy(&event_bytes);
-                            let resolved = tok.push(&event_str);
-                            if !resolved.is_empty() {
-                                yield Ok(Bytes::from(resolved.into_bytes()));
-                            }
+                        let event_str = String::from_utf8_lossy(&event_bytes);
+
+                        if let Some((val_start, val_end)) = find_json_string_value(&event_str) {
+                            // Delta/content event: extract text, feed to tokenizer
+                            let delta_text = &event_str[val_start..val_end];
+                            tracing::trace!(delta_text, "sse delta extracted");
+                            let resolved = tokenizer.push(delta_text);
+
+                            // Rebuild event with resolved delta
+                            let mut modified = String::with_capacity(event_str.len());
+                            modified.push_str(&event_str[..val_start]);
+                            modified.push_str(&resolved);
+                            modified.push_str(&event_str[val_end..]);
+                            yield Ok(Bytes::from(modified.into_bytes()));
                         } else {
-                            yield Ok(Bytes::from(event_bytes));
+                            // Non-content event (response.created, done, etc.)
+                            // Flush any held content from the tokenizer first
+                            let flushed = tokenizer.finish();
+                            if !flushed.is_empty() {
+                                // Emit held content as raw text before this event
+                                let resolved = Token::replace_all(&flushed, |t| resolver(t));
+                                if !resolved.is_empty() {
+                                    yield Ok(Bytes::from(resolved.into_bytes()));
+                                }
+                            }
+                            // Resolve tokens in the full event text (for .done events with complete text)
+                            let resolved = Token::replace_all(&event_str, |t| resolver(t));
+                            yield Ok(Bytes::from(resolved.into_bytes()));
                         }
                     }
                 }
@@ -295,13 +346,36 @@ fn stream_sse(
             }
         }
 
-        if let Some(ref mut tok) = tokenizer {
-            let remaining = tok.finish();
-            if !remaining.is_empty() {
-                yield Ok(Bytes::from(remaining.into_bytes()));
+        let remaining = tokenizer.finish();
+        if !remaining.is_empty() {
+            let resolved = Token::replace_all(&remaining, |t| resolver(t));
+            if !resolved.is_empty() {
+                yield Ok(Bytes::from(resolved.into_bytes()));
             }
         }
     }
+}
+
+/// Find the byte range of the first `"delta":"..."` or `"content":"..."` string value
+/// in an SSE event. Returns `(start, end)` — byte offsets of the value between quotes.
+fn find_json_string_value(event: &str) -> Option<(usize, usize)> {
+    let bytes = event.as_bytes();
+    for key in &["\"delta\":\"", "\"content\":\""] {
+        let key_bytes = key.as_bytes();
+        if let Some(pos) = event.find(key) {
+            let val_start = pos + key_bytes.len();
+            // Walk to the closing quote, handling JSON escapes
+            let mut i = val_start;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'"' => return Some((val_start, i)),
+                    b'\\' => i += 2,
+                    _ => i += 1,
+                }
+            }
+        }
+    }
+    None
 }
 
 fn extract_upstream(headers: &HeaderMap, uri: &Uri) -> Option<String> {

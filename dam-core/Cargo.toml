@@ -33,6 +33,8 @@ hyper-util.workspace = true
 tower.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tokio-tungstenite.workspace = true
+tungstenite.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true

@@ -9,6 +9,7 @@ pub mod proxy;
 pub mod tls;
 pub mod connect;
 pub mod config;
+pub mod wsframe;
 
 pub use error::{DamError, DamResult};
 pub use types::SensitiveDataType;

@@ -55,6 +55,10 @@ rustls-pemfile = "2"
 webpki-roots = "0.26"
 dashmap = "6"
 
+# WebSocket inspection
+tokio-tungstenite = "0.26"
+tungstenite = "0.26"
+
 # Compression
 zstd = "0.13"
 

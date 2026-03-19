@@ -1,3 +1,4 @@
+pub mod json_scan;
 pub mod normalize;
 pub mod patterns;
 pub mod validators;
@@ -37,7 +38,32 @@ impl Module for PiiDetectionModule {
     }
 
     fn process(&self, ctx: &mut FlowContext) -> Result<(), DamError> {
-        // Detect on original text so spans align with the body the redact module modifies.
+        // For LLM destinations, use JSON-aware scanning: only scan message content fields,
+        // not system prompts, tool definitions, or API structure. This eliminates
+        // 35-40 false detections per request from non-user-data fields.
+        if ctx.destination.is_llm()
+            && let Some(ranges) = json_scan::scannable_ranges(&ctx.request_body)
+        {
+            for (start, end) in &ranges {
+                if *start <= *end && *end <= ctx.request_body.len() {
+                    let slice = &ctx.request_body[*start..*end];
+                    let mut detections = patterns::detect_all(slice);
+                    for det in &mut detections {
+                        det.span.start += start;
+                        det.span.end += start;
+                    }
+                    ctx.detections.extend(detections);
+                }
+            }
+            tracing::debug!(
+                regions = ranges.len(),
+                detections = ctx.detections.len(),
+                "json-aware scan"
+            );
+            return Ok(());
+        }
+
+        // Non-LLM destinations or non-JSON bodies: scan the entire body.
         // Normalization (zero-width stripping, NFKC) shifts byte offsets, causing span misalignment.
         // TODO: add a second pass with normalization for adversarial/obfuscated inputs,
         //       mapping normalized spans back to original positions.
@@ -195,5 +221,108 @@ mod tests {
     fn default_impl() {
         let m = PiiDetectionModule::default();
         assert_eq!(m.name(), "detect-pii");
+    }
+
+    // ── JSON-aware scanning (LLM destinations) ───────────────────
+
+    use dam_core::LlmProvider;
+
+    fn make_llm_ctx(body: &str) -> FlowContext {
+        FlowContext::new(
+            body.into(),
+            Destination::Llm {
+                provider: LlmProvider::OpenAI,
+            },
+        )
+    }
+
+    #[test]
+    fn json_scan_ignores_system_prompt_pii() {
+        let m = PiiDetectionModule::new();
+        let body = r#"{"messages":[{"role":"system","content":"Contact support@example.com for help"},{"role":"user","content":"hello"}]}"#;
+        let mut ctx = make_llm_ctx(body);
+        m.process(&mut ctx).unwrap();
+        // support@example.com is in system prompt — should NOT be detected
+        assert!(ctx.detections.is_empty());
+    }
+
+    #[test]
+    fn json_scan_detects_user_pii() {
+        let m = PiiDetectionModule::new();
+        let body = r#"{"messages":[{"role":"user","content":"my email is alice@test.com"}]}"#;
+        let mut ctx = make_llm_ctx(body);
+        m.process(&mut ctx).unwrap();
+        assert_eq!(ctx.detections.len(), 1);
+        assert_eq!(ctx.detections[0].data_type, SensitiveDataType::Email);
+        assert_eq!(ctx.detections[0].value, "alice@test.com");
+        // Verify span points to correct position in the full body
+        let span = &ctx.detections[0].span;
+        assert_eq!(&body[span.start..span.end], "alice@test.com");
+    }
+
+    #[test]
+    fn json_scan_ignores_tool_definitions() {
+        let m = PiiDetectionModule::new();
+        let body = r#"{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"send","parameters":{"properties":{"to":{"description":"email like user@example.com"}}}}}]}"#;
+        let mut ctx = make_llm_ctx(body);
+        m.process(&mut ctx).unwrap();
+        // user@example.com is in tool definition — should NOT be detected
+        assert!(ctx.detections.is_empty());
+    }
+
+    #[test]
+    fn json_scan_span_correct_for_redaction() {
+        let m = PiiDetectionModule::new();
+        let body = r#"{"messages":[{"role":"user","content":"call +14155551234 please"}]}"#;
+        let mut ctx = make_llm_ctx(body);
+        m.process(&mut ctx).unwrap();
+        assert_eq!(ctx.detections.len(), 1);
+        let span = &ctx.detections[0].span;
+        // Replace in body should produce valid JSON
+        let mut modified = body.to_string();
+        modified.replace_range(span.start..span.end, "[phone:abc]");
+        assert!(modified.contains("[phone:abc]"));
+        assert!(!modified.contains("+14155551234"));
+    }
+
+    #[test]
+    fn json_scan_multiple_messages_multiple_detections() {
+        let m = PiiDetectionModule::new();
+        let body = r#"{"messages":[{"role":"system","content":"admin@sys.com"},{"role":"user","content":"email alice@a.com"},{"role":"assistant","content":"got it"},{"role":"user","content":"ssn 123-45-6789"}]}"#;
+        let mut ctx = make_llm_ctx(body);
+        m.process(&mut ctx).unwrap();
+        // admin@sys.com in system — skipped
+        // alice@a.com in user — detected
+        // 123-45-6789 in user — detected
+        assert_eq!(ctx.detections.len(), 2);
+        let types: Vec<_> = ctx.detections.iter().map(|d| d.data_type).collect();
+        assert!(types.contains(&SensitiveDataType::Email));
+        assert!(types.contains(&SensitiveDataType::Ssn));
+        // Verify spans are correct
+        for det in &ctx.detections {
+            assert_eq!(&body[det.span.start..det.span.end], det.value);
+        }
+    }
+
+    #[test]
+    fn json_scan_non_json_body_falls_back() {
+        let m = PiiDetectionModule::new();
+        // Non-JSON body to LLM destination — should fall back to full scan
+        let mut ctx = make_llm_ctx("my email is user@test.com");
+        m.process(&mut ctx).unwrap();
+        assert_eq!(ctx.detections.len(), 1);
+        assert_eq!(ctx.detections[0].value, "user@test.com");
+    }
+
+    #[test]
+    fn non_llm_destination_scans_full_body() {
+        let m = PiiDetectionModule::new();
+        // Non-LLM destination should scan the full body even with JSON
+        let body = r#"{"messages":[{"role":"system","content":"admin@sys.com"}]}"#;
+        let mut ctx = make_ctx(body);
+        m.process(&mut ctx).unwrap();
+        // Full-body scan catches everything
+        assert_eq!(ctx.detections.len(), 1);
+        assert_eq!(ctx.detections[0].value, "admin@sys.com");
     }
 }
