@@ -6,6 +6,8 @@ pub mod flow;
 pub mod destination;
 pub mod stream;
 pub mod proxy;
+pub mod tls;
+pub mod connect;
 pub mod config;
 
 pub use error::{DamError, DamResult};

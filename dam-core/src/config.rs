@@ -39,6 +39,14 @@ impl DamConfig {
         self.home_dir.join("key")
     }
 
+    pub fn ca_cert_path(&self) -> PathBuf {
+        self.home_dir.join("ca.pem")
+    }
+
+    pub fn ca_key_path(&self) -> PathBuf {
+        self.home_dir.join("ca-key.pem")
+    }
+
     /// Ensure the home directory exists.
     pub fn ensure_home(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.home_dir)

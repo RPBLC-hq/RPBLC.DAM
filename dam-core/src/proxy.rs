@@ -2,6 +2,7 @@ use crate::destination::Destination;
 use crate::flow::FlowExecutor;
 use crate::module_trait::FlowContext;
 use crate::stream::{SseBuffer, StreamingTokenizer};
+use crate::tls::CertCache;
 use crate::token::Token;
 
 use axum::{
@@ -14,8 +15,13 @@ use axum::{
 };
 use bytes::Bytes;
 use futures_util::StreamExt;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper_util::rt::TokioIo;
+use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tower::ServiceExt;
 
 /// Callback type for resolving tokens to original values.
 /// Returns Some(value) if the token is in the vault, None to leave as-is.
@@ -29,13 +35,18 @@ pub struct ProxyState {
     /// Optional resolver for auto-resolving tokens in LLM responses.
     /// If None, responses pass through with tokens intact.
     pub resolver: Option<TokenResolver>,
+    /// TLS interceptor for CONNECT tunnels. If None, CONNECT requests are blind-tunneled.
+    pub tls: Option<Arc<CertCache>>,
 }
 
 /// Start the proxy server on the given port.
+///
+/// Handles both regular HTTP requests (X-DAM-Upstream / path-based routing)
+/// and CONNECT requests (HTTPS proxy mode, for `HTTPS_PROXY` clients).
 pub async fn start_proxy(state: ProxyState, port: u16) -> Result<(), crate::DamError> {
     let app = Router::new()
         .fallback(any(handle_proxy))
-        .with_state(state);
+        .with_state(state.clone());
 
     let addr = format!("0.0.0.0:{port}");
     let listener = TcpListener::bind(&addr).await.map_err(|e| {
@@ -43,28 +54,90 @@ pub async fn start_proxy(state: ProxyState, port: u16) -> Result<(), crate::DamE
     })?;
 
     tracing::info!("DAM running on :{port}");
+    if state.tls.is_some() {
+        tracing::info!("TLS interception enabled — set HTTPS_PROXY=http://localhost:{port}");
+    }
 
-    axum::serve(listener, app).await.map_err(|e| {
-        crate::DamError::Proxy(format!("server error: {e}"))
-    })
+    loop {
+        let (stream, _) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::error!(error = %e, "accept failed");
+                continue;
+            }
+        };
+
+        let state = state.clone();
+        let app = app.clone();
+
+        tokio::spawn(async move {
+            let io = TokioIo::new(stream);
+
+            let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                let state = state.clone();
+                let app = app.clone();
+                async move {
+                    if req.method() == Method::CONNECT {
+                        crate::connect::handle_connect(req, &state).await
+                    } else {
+                        let req = req.map(Body::new);
+                        app.oneshot(req)
+                            .await
+                            .map_err(|e: Infallible| match e {})
+                    }
+                }
+            });
+
+            if let Err(e) = http1::Builder::new()
+                .preserve_header_case(true)
+                .title_case_headers(true)
+                .serve_connection(io, svc)
+                .with_upgrades()
+                .await
+            {
+                tracing::debug!(error = %e, "connection closed");
+            }
+        });
+    }
 }
 
-async fn handle_proxy(
-    State(state): State<ProxyState>,
+/// Shared request processing logic used by both the axum handler and the CONNECT interceptor.
+pub(crate) async fn process_request(
+    state: &ProxyState,
     method: Method,
-    uri: Uri,
-    headers: HeaderMap,
+    upstream_url: &str,
+    headers: &HeaderMap,
     body: Bytes,
 ) -> Response {
-    let upstream_url = match extract_upstream(&headers, &uri) {
-        Some(url) => url,
-        None => {
-            return (StatusCode::BAD_REQUEST, "Missing upstream URL. Set X-DAM-Upstream header or use path-based routing.").into_response();
+    let destination = Destination::from_url(upstream_url);
+
+    // Decompress body if content-encoding is present
+    let content_encoding = headers
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_lowercase());
+
+    let decompressed = match content_encoding.as_deref() {
+        Some("zstd") => {
+            match zstd::decode_all(body.as_ref()) {
+                Ok(decoded) => {
+                    tracing::debug!(original = body.len(), decoded = decoded.len(), "decompressed zstd");
+                    decoded
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "zstd decompression failed, forwarding raw");
+                    body.to_vec()
+                }
+            }
         }
+        Some(enc) => {
+            tracing::warn!(encoding = %enc, "unsupported content-encoding, forwarding raw");
+            body.to_vec()
+        }
+        _ => body.to_vec(),
     };
 
-    let destination = Destination::from_url(&upstream_url);
-    let body_str = String::from_utf8_lossy(&body).to_string();
+    let body_str = String::from_utf8_lossy(&decompressed).to_string();
 
     // Run module flow on request body (detect → consent → vault → redact → log)
     let mut ctx = FlowContext::new(body_str, destination.clone());
@@ -72,14 +145,24 @@ async fn handle_proxy(
         tracing::error!(error = %e, "module flow failed");
     }
 
+    if !ctx.detections.is_empty() {
+        let types: Vec<_> = ctx.detections.iter().map(|d| d.data_type.tag()).collect();
+        tracing::debug!(
+            detections = ctx.detections.len(),
+            modified = ctx.modified_body.is_some(),
+            types = ?types,
+            "pipeline results"
+        );
+    }
+
     let output_body = ctx.output_body().to_string();
 
     // Build upstream request
-    let mut req_builder = state.client.request(method.clone(), &upstream_url);
+    let mut req_builder = state.client.request(method, upstream_url);
 
     for (name, value) in headers.iter() {
         let n = name.as_str().to_lowercase();
-        if n == "host" || n == "content-length" || n == "x-dam-upstream" || n == "transfer-encoding" {
+        if n == "host" || n == "content-length" || n == "content-encoding" || n == "x-dam-upstream" || n == "transfer-encoding" {
             continue;
         }
         req_builder = req_builder.header(name.clone(), value.clone());
@@ -97,6 +180,11 @@ async fn handle_proxy(
 
     let status = StatusCode::from_u16(upstream_resp.status().as_u16())
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
+    // Log upstream errors at debug level
+    if status.is_client_error() || status.is_server_error() {
+        tracing::debug!(url = %upstream_url, status = %status, "upstream error");
+    }
 
     let mut resp_headers = HeaderMap::new();
     for (name, value) in upstream_resp.headers().iter() {
@@ -117,7 +205,6 @@ async fn handle_proxy(
         let body = Body::from_stream(stream);
         (status, resp_headers, body).into_response()
     } else if should_resolve {
-        // Non-streaming LLM response: resolve tokens in body
         match upstream_resp.bytes().await {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
@@ -129,7 +216,6 @@ async fn handle_proxy(
             }
         }
     } else {
-        // Non-LLM or no resolver: pass through
         match upstream_resp.bytes().await {
             Ok(bytes) => (status, resp_headers, bytes).into_response(),
             Err(e) => {
@@ -137,6 +223,23 @@ async fn handle_proxy(
             }
         }
     }
+}
+
+async fn handle_proxy(
+    State(state): State<ProxyState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let upstream_url = match extract_upstream(&headers, &uri) {
+        Some(url) => url,
+        None => {
+            return (StatusCode::BAD_REQUEST, "Missing upstream URL. Set X-DAM-Upstream header, use path-based routing, or set HTTPS_PROXY.").into_response();
+        }
+    };
+
+    process_request(&state, method, &upstream_url, &headers, body).await
 }
 
 /// Resolve DAM tokens in a text string using the resolver.
@@ -155,7 +258,6 @@ fn stream_sse(
     async_stream::stream! {
         let mut sse_buf = SseBuffer::new();
 
-        // If we have a resolver, use StreamingTokenizer to handle token splits across chunks
         let mut tokenizer: Option<StreamingTokenizer<Box<dyn FnMut(&str) -> String + Send>>> = resolver.map(|r| {
             let replacer: Box<dyn FnMut(&str) -> String + Send> = Box::new(move |text: &str| {
                 Token::replace_all(text, |token| r(token))
@@ -171,7 +273,6 @@ fn stream_sse(
                     sse_buf.feed(&chunk);
                     while let Some(event_bytes) = sse_buf.next_event() {
                         if let Some(ref mut tok) = tokenizer {
-                            // Resolve tokens in the SSE event data
                             let event_str = String::from_utf8_lossy(&event_bytes);
                             let resolved = tok.push(&event_str);
                             if !resolved.is_empty() {
@@ -189,7 +290,6 @@ fn stream_sse(
             }
         }
 
-        // Flush remaining tokenizer buffer
         if let Some(ref mut tok) = tokenizer {
             let remaining = tok.finish();
             if !remaining.is_empty() {
@@ -200,12 +300,19 @@ fn stream_sse(
 }
 
 fn extract_upstream(headers: &HeaderMap, uri: &Uri) -> Option<String> {
+    // 1. X-DAM-Upstream header (explicit routing)
     if let Some(val) = headers.get("x-dam-upstream") {
         if let Ok(s) = val.to_str() {
             return Some(s.to_string());
         }
     }
 
+    // 2. Absolute URI (HTTP_PROXY mode: GET http://example.com/path)
+    if uri.scheme().is_some() {
+        return Some(uri.to_string());
+    }
+
+    // 3. Path-based routing: /https://api.openai.com/v1/...
     let path = uri.path();
     if path.starts_with("/https://") || path.starts_with("/http://") {
         let url = &path[1..];
@@ -266,7 +373,6 @@ mod tests {
                 None
             }
         }));
-        // Use a real generated token for testing
         let token = Token::generate(crate::types::SensitiveDataType::Email);
         let text = format!("Send to {} please", token.display());
         let resolved = resolve_tokens_in_text(&text, &resolver);
@@ -278,7 +384,7 @@ mod tests {
         let token = Token::generate(crate::types::SensitiveDataType::Email);
         let text = format!("Send to {} please", token.display());
         let resolved = resolve_tokens_in_text(&text, &None);
-        assert_eq!(resolved, text); // unchanged
+        assert_eq!(resolved, text);
     }
 
     #[test]

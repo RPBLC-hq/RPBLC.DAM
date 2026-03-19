@@ -29,6 +29,9 @@ pub enum DamError {
     #[error("proxy error: {0}")]
     Proxy(String),
 
+    #[error("TLS error: {0}")]
+    Tls(String),
+
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 }

@@ -27,7 +27,9 @@ futures-util = "0.3"
 bytes = "1"
 async-stream = "0.3"
 hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -44,6 +46,16 @@ uuid = { version = "1", features = ["v4"] }
 
 # Database
 rusqlite = { version = "0.31", features = ["bundled"] }
+
+# TLS interception
+rcgen = "0.13"
+rustls = { version = "0.23", features = ["ring"] }
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
+dashmap = "6"
+
+# Compression
+zstd = "0.13"
 
 # Detection
 regex = "1"

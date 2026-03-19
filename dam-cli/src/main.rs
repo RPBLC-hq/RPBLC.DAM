@@ -19,6 +19,10 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
+    /// Disable TLS interception (CONNECT requests will be blind-tunneled)
+    #[arg(long)]
+    no_tls: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -58,6 +62,9 @@ enum Commands {
 
     /// Start MCP server on stdio
     Mcp,
+
+    /// Install DAM CA certificate into system trust store
+    Trust,
 }
 
 #[derive(Subcommand)]
@@ -134,13 +141,14 @@ async fn main() -> Result<()> {
         Some(Commands::Tokens) => cmd_tokens(&config)?,
         Some(Commands::Log { limit }) => cmd_log(&config, limit)?,
         Some(Commands::Mcp) => cmd_mcp(&config).await?,
-        None => cmd_serve(&config).await?,
+        Some(Commands::Trust) => cmd_trust(&config)?,
+        None => cmd_serve(&config, cli.no_tls).await?,
     }
 
     Ok(())
 }
 
-async fn cmd_serve(config: &DamConfig) -> Result<()> {
+async fn cmd_serve(config: &DamConfig, no_tls: bool) -> Result<()> {
     let kek = dam_vault::encrypt::load_or_generate_kek(&config.key_path())?;
     let vault_store = Arc::new(dam_vault::VaultStore::open(&config.vault_db_path(), kek)?);
     let consent_store = Arc::new(dam_consent::ConsentStore::open(&config.consent_db_path())?);
@@ -167,8 +175,89 @@ async fn cmd_serve(config: &DamConfig) -> Result<()> {
         resolver_vault.retrieve(token).ok()
     });
 
-    let state = ProxyState { flow, client, resolver: Some(resolver) };
+    // TLS interception for CONNECT tunnels (HTTPS_PROXY mode)
+    let tls = if !no_tls {
+        let ca = dam_core::tls::CertificateAuthority::load_or_generate(
+            &config.ca_cert_path(),
+            &config.ca_key_path(),
+        )?;
+        Some(Arc::new(dam_core::tls::CertCache::new(ca)))
+    } else {
+        None
+    };
+
+    let state = ProxyState { flow, client, resolver: Some(resolver), tls };
     start_proxy(state, config.port).await?;
+
+    Ok(())
+}
+
+fn cmd_trust(config: &DamConfig) -> Result<()> {
+    // Ensure CA exists
+    dam_core::tls::CertificateAuthority::load_or_generate(
+        &config.ca_cert_path(),
+        &config.ca_key_path(),
+    )?;
+
+    let cert_path = config.ca_cert_path();
+
+    #[cfg(target_os = "macos")]
+    {
+        println!("Installing CA certificate into macOS system keychain...");
+        let status = std::process::Command::new("security")
+            .args(["add-trusted-cert", "-d", "-r", "trustRoot", "-k"])
+            .arg("/Library/Keychains/System.keychain")
+            .arg(&cert_path)
+            .status();
+
+        match status {
+            Ok(s) if s.success() => println!("CA certificate trusted."),
+            _ => {
+                println!("Could not install automatically. Run with sudo:");
+                println!(
+                    "  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain {}",
+                    cert_path.display()
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let target = std::path::PathBuf::from("/usr/local/share/ca-certificates/dam-ca.crt");
+        println!("Installing CA certificate...");
+        match std::fs::copy(&cert_path, &target) {
+            Ok(_) => {
+                let _ = std::process::Command::new("update-ca-certificates").status();
+                println!("CA certificate trusted.");
+            }
+            Err(_) => {
+                println!("Could not install automatically. Run:");
+                println!(
+                    "  sudo cp {} /usr/local/share/ca-certificates/dam-ca.crt && sudo update-ca-certificates",
+                    cert_path.display()
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        println!("Installing CA certificate...");
+        let status = std::process::Command::new("certutil")
+            .args(["-addstore", "-f", "ROOT"])
+            .arg(&cert_path)
+            .status();
+
+        match status {
+            Ok(s) if s.success() => println!("CA certificate trusted."),
+            _ => println!("Failed. Try running as Administrator."),
+        }
+    }
+
+    println!("\nCA cert: {}", cert_path.display());
+    println!("\nTo use DAM as HTTPS proxy:");
+    println!("  export HTTPS_PROXY=http://localhost:{}", config.port);
 
     Ok(())
 }

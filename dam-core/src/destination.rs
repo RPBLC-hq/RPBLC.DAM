@@ -18,9 +18,14 @@ impl Destination {
     /// Classify a URL's host as an LLM provider or other.
     pub fn from_url(url: &str) -> Self {
         let host = extract_host(url);
+        Self::from_host(host)
+    }
+
+    /// Classify a bare hostname as an LLM provider or other.
+    pub fn from_host(host: &str) -> Self {
         if host.contains("anthropic.com") {
             Self::Llm { provider: LlmProvider::Anthropic }
-        } else if host.contains("openai.com") {
+        } else if host.contains("openai.com") || host.contains("chatgpt.com") {
             Self::Llm { provider: LlmProvider::OpenAI }
         } else if host.contains("openrouter.ai") {
             Self::Llm { provider: LlmProvider::OpenRouter }

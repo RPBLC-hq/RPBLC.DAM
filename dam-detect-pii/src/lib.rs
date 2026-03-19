@@ -37,8 +37,11 @@ impl Module for PiiDetectionModule {
     }
 
     fn process(&self, ctx: &mut FlowContext) -> Result<(), DamError> {
-        let normalized = normalize::normalize(&ctx.request_body);
-        let detections = patterns::detect_all(&normalized);
+        // Detect on original text so spans align with the body the redact module modifies.
+        // Normalization (zero-width stripping, NFKC) shifts byte offsets, causing span misalignment.
+        // TODO: add a second pass with normalization for adversarial/obfuscated inputs,
+        //       mapping normalized spans back to original positions.
+        let detections = patterns::detect_all(&ctx.request_body);
         ctx.detections.extend(detections);
         Ok(())
     }
@@ -148,32 +151,29 @@ mod tests {
     }
 
     #[test]
-    fn process_normalizes_zero_width_before_detection() {
+    fn process_obfuscated_zero_width_not_detected_without_normalization() {
+        // Without normalization, obfuscated PII is not detected.
+        // This is expected — normalization is deferred to avoid span misalignment.
         let m = PiiDetectionModule::new();
-        // Zero-width chars injected into email
         let mut ctx = make_ctx("user\u{200B}@\u{200C}example\u{200D}.com");
         m.process(&mut ctx).unwrap();
-        assert_eq!(ctx.detections.len(), 1);
-        assert_eq!(ctx.detections[0].data_type, SensitiveDataType::Email);
+        assert_eq!(ctx.detections.len(), 0);
     }
 
     #[test]
-    fn process_normalizes_unicode_dashes_for_ssn() {
+    fn process_unicode_dashes_not_detected_without_normalization() {
         let m = PiiDetectionModule::new();
-        // SSN with en-dashes instead of hyphens
         let mut ctx = make_ctx("ssn 123\u{2013}45\u{2013}6789");
         m.process(&mut ctx).unwrap();
-        assert_eq!(ctx.detections.len(), 1);
-        assert_eq!(ctx.detections[0].data_type, SensitiveDataType::Ssn);
+        assert_eq!(ctx.detections.len(), 0);
     }
 
     #[test]
-    fn process_normalizes_url_encoded_email() {
+    fn process_url_encoded_email_not_detected_without_normalization() {
         let m = PiiDetectionModule::new();
         let mut ctx = make_ctx("user%40example.com");
         m.process(&mut ctx).unwrap();
-        assert_eq!(ctx.detections.len(), 1);
-        assert_eq!(ctx.detections[0].data_type, SensitiveDataType::Email);
+        assert_eq!(ctx.detections.len(), 0);
     }
 
     #[test]
