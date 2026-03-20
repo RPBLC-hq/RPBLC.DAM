@@ -306,8 +306,9 @@ async fn relay_websocket(
 }
 
 /// Relay a WebSocket upgrade with DAM pipeline inspection on text frames.
-/// Uses tokio-tungstenite for frame parsing, fragmentation, masking, and ping/pong.
-/// Client→upstream: detect + redact PII in text messages.
+/// Uses tokio-tungstenite's `client_async` for the upstream handshake (handles
+/// key generation, accept validation, extension negotiation, and buffering).
+/// Client→upstream: relay unchanged (outbound redaction handled by POST path).
 /// Upstream→client: auto-resolve DAM tokens in text messages.
 /// Binary/control messages: relay unchanged.
 async fn relay_websocket_inspected(
@@ -318,7 +319,7 @@ async fn relay_websocket_inspected(
     path: &str,
     state: &ProxyState,
 ) -> Result<hyper::Response<Body>, Infallible> {
-    // Connect to upstream via TLS
+    // 1. Connect upstream TLS
     let upstream_tls = match connect_upstream_tls(host, port).await {
         Ok(s) => s,
         Err(e) => {
@@ -330,78 +331,77 @@ async fn relay_websocket_inspected(
         }
     };
 
-    // Send raw HTTP upgrade request to upstream
-    let mut raw_req = format!("GET {path} HTTP/1.1\r\n");
-    for (name, value) in headers.iter() {
-        if let Ok(v) = value.to_str() {
-            raw_req.push_str(&format!("{}: {v}\r\n", name.as_str()));
-        }
-    }
-    if !headers.contains_key("host") {
-        raw_req.push_str(&format!("Host: {host}\r\n"));
-    }
-    raw_req.push_str("\r\n");
-
-    let (mut ur, mut uw) = tokio::io::split(upstream_tls);
-    if let Err(e) = uw.write_all(raw_req.as_bytes()).await {
-        return Ok(hyper::Response::builder()
-            .status(502)
-            .body(Body::from(format!("WS write failed: {e}")))
-            .unwrap());
-    }
-
-    // Read upstream 101 response
-    let mut buf = vec![0u8; 8192];
-    let n = match ur.read(&mut buf).await {
-        Ok(0) => {
-            return Ok(hyper::Response::builder()
-                .status(502)
-                .body(Body::from("WS: upstream closed"))
-                .unwrap())
-        }
-        Ok(n) => n,
+    // 2. Build upstream WS handshake request with client_async.
+    //    Forward auth/cookie headers but let tungstenite handle WS handshake headers
+    //    (Sec-WebSocket-Key, Upgrade, Connection, Extensions).
+    let url = format!("wss://{host}{path}");
+    let ws_uri: tungstenite::http::Uri = match url.parse() {
+        Ok(u) => u,
         Err(e) => {
             return Ok(hyper::Response::builder()
                 .status(502)
-                .body(Body::from(format!("WS read failed: {e}")))
-                .unwrap())
+                .body(Body::from(format!("Invalid WS URI: {e}")))
+                .unwrap());
         }
     };
 
-    let resp_str = String::from_utf8_lossy(&buf[..n]);
-    let status_code = resp_str
-        .split(' ')
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(502);
-
-    if status_code != 101 {
-        tracing::debug!(status = status_code, "WS inspected: upgrade rejected");
-        return Ok(hyper::Response::builder()
-            .status(status_code)
-            .body(Body::from("WebSocket upgrade rejected"))
-            .unwrap());
-    }
-
-    // Parse response headers for client
-    let mut resp_builder = hyper::Response::builder().status(101);
-    for line in resp_str.lines().skip(1) {
-        if line.is_empty() || line == "\r" {
-            break;
+    let mut builder = tungstenite::client::ClientRequestBuilder::new(ws_uri);
+    for (name, value) in headers.iter() {
+        let n = name.as_str().to_lowercase();
+        if matches!(
+            n.as_str(),
+            "upgrade"
+                | "connection"
+                | "sec-websocket-key"
+                | "sec-websocket-version"
+                | "sec-websocket-extensions"
+                | "sec-websocket-protocol"
+                | "host"
+        ) {
+            continue;
         }
-        if let Some((name, value)) = line.split_once(':') {
-            resp_builder = resp_builder.header(name.trim(), value.trim());
+        if let Ok(v) = value.to_str() {
+            builder = builder.with_header(name.as_str(), v);
         }
     }
+    // Forward subprotocols if present
+    if let Some(protos) = headers.get("sec-websocket-protocol") {
+        if let Ok(v) = protos.to_str() {
+            for proto in v.split(',') {
+                builder = builder.with_sub_protocol(proto.trim());
+            }
+        }
+    }
 
-    // Any bytes after \r\n\r\n are the start of WebSocket frames
-    let header_end = buf[..n]
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|p| p + 4)
-        .unwrap_or(n);
-    let extra_data: Vec<u8> = buf[header_end..n].to_vec();
+    // 3. Perform WS handshake with upstream (tungstenite handles everything)
+    let (upstream_ws, _upstream_resp) =
+        match tokio_tungstenite::client_async(builder, upstream_tls).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::debug!(error = %e, host = %host, "WS inspected: upstream handshake failed");
+                return Ok(hyper::Response::builder()
+                    .status(502)
+                    .body(Body::from(format!("WebSocket handshake failed: {e}")))
+                    .unwrap());
+            }
+        };
 
+    // 4. Build 101 response for the client using their Sec-WebSocket-Key
+    let client_key = headers
+        .get("sec-websocket-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let accept_key = tungstenite::handshake::derive_accept_key(client_key.as_bytes());
+
+    let resp = hyper::Response::builder()
+        .status(101)
+        .header("Upgrade", "websocket")
+        .header("Connection", "Upgrade")
+        .header("Sec-WebSocket-Accept", accept_key)
+        .body(Body::empty())
+        .unwrap();
+
+    // 5. Spawn relay task
     let host_owned = host.to_string();
     let state = state.clone();
 
@@ -410,21 +410,12 @@ async fn relay_websocket_inspected(
             Ok(upgraded) => {
                 tracing::debug!(host = %host_owned, "WS inspected: relay starting");
                 let client_io = TokioIo::new(upgraded);
-
-                // Wrap upstream in tungstenite WebSocketStream (with any leftover bytes)
-                let upstream_raw = ur.unsplit(uw);
-                let upstream_ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
-                    upstream_raw,
-                    tungstenite::protocol::Role::Client,
-                    None,
-                ).await;
-
-                // Wrap client in tungstenite WebSocketStream
                 let client_ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
                     client_io,
                     tungstenite::protocol::Role::Server,
                     None,
-                ).await;
+                )
+                .await;
 
                 run_inspected_ws_relay(client_ws, upstream_ws, &host_owned, &state).await;
                 tracing::debug!(host = %host_owned, "WS inspected relay ended");
@@ -433,7 +424,7 @@ async fn relay_websocket_inspected(
         }
     });
 
-    Ok(resp_builder.body(Body::empty()).unwrap())
+    Ok(resp)
 }
 
 /// Bidirectional WebSocket relay with DAM pipeline inspection.
