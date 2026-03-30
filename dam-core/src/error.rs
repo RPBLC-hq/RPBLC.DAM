@@ -23,6 +23,9 @@ pub enum DamError {
     #[error("module '{name}' error: {message}")]
     Module { name: String, message: String },
 
+    #[error("token collision: {0}")]
+    TokenCollision(String),
+
     #[error("proxy error: {0}")]
     Proxy(String),
 

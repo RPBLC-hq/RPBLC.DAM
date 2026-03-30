@@ -108,7 +108,15 @@ impl VaultStore {
                 now,
             ],
         )
-        .map_err(|e| DamError::Db(format!("insert: {e}")))?;
+        .map_err(|e| {
+            // SQLITE_CONSTRAINT_UNIQUE has extended_code 2067
+            if let rusqlite::Error::SqliteFailure(err, _) = &e
+                && err.extended_code == 2067
+            {
+                return DamError::TokenCollision(format!("insert: {e}"));
+            }
+            DamError::Db(format!("insert: {e}"))
+        })?;
 
         Ok(token)
     }

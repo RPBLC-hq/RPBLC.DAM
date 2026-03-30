@@ -50,10 +50,10 @@ impl Module for ConsentModule {
         };
 
         for detection in &mut ctx.detections {
-            let token_key = format!("{}:{}", detection.data_type.tag(), "pending");
-
+            // No token key yet — tokens are minted by the vault module AFTER consent.
+            // Token-scoped rules only apply on the resolve/release path.
             let check = self.store.check_with_default(
-                &token_key,
+                None,
                 detection.data_type.tag(),
                 destination,
                 default_action,

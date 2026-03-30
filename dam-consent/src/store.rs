@@ -195,7 +195,7 @@ impl ConsentStore {
     /// 13. No match → Redact (default deny)
     pub fn check(
         &self,
-        token_key: &str,
+        token_key: Option<&str>,
         data_type_tag: &str,
         destination: &str,
     ) -> Result<ConsentCheck, DamError> {
@@ -205,9 +205,12 @@ impl ConsentStore {
     /// Like `check()`, but with an explicit default action when no rule matches.
     /// Use `ConsentAction::Redact` for LLM destinations (default deny),
     /// `ConsentAction::Pass` for non-LLM destinations (default allow, log-only).
+    ///
+    /// `token_key` is None during the forward pipeline (tokens don't exist yet)
+    /// and Some during resolve/release (where token-scoped rules apply).
     pub fn check_with_default(
         &self,
-        token_key: &str,
+        token_key: Option<&str>,
         data_type_tag: &str,
         destination: &str,
         default_action: ConsentAction,
@@ -298,19 +301,17 @@ fn calc_specificity(
     rule_token: Option<&str>,
     rule_type: &str,
     rule_dest: &str,
-    actual_token: &str,
+    actual_token: Option<&str>,
     actual_type: &str,
     actual_dest: &str,
 ) -> Option<u8> {
-    // Token match
+    // Token match: if rule requires a token but we don't have one, skip.
+    // If rule requires a token and we have one, it must match exactly.
     let token_match = match rule_token {
-        Some(rt) => {
-            if rt == actual_token {
-                true
-            } else {
-                return None;
-            }
-        }
+        Some(rt) => match actual_token {
+            Some(at) if rt == at => true,
+            _ => return None, // rule needs a token we don't have, or wrong token
+        },
         None => false,
     };
 
@@ -432,7 +433,7 @@ mod tests {
     fn test_check_no_rules_defaults_to_redact() {
         let (store, _dir) = temp_store();
         let check = store
-            .check("email:abc123", "email", "api.anthropic.com")
+            .check(Some("email:abc123"), "email", "api.anthropic.com")
             .unwrap();
         assert_eq!(check.action, ConsentAction::Redact);
         assert_eq!(check.reason, "no_matching_rule");
@@ -451,7 +452,7 @@ mod tests {
             )
             .unwrap();
         let check = store
-            .check("email:abc123", "email", "api.anthropic.com")
+            .check(Some("email:abc123"), "email", "api.anthropic.com")
             .unwrap();
         assert_eq!(check.action, ConsentAction::Pass);
     }
@@ -470,7 +471,7 @@ mod tests {
             .unwrap();
         // Different destination
         let check = store
-            .check("email:abc123", "email", "api.openai.com")
+            .check(Some("email:abc123"), "email", "api.openai.com")
             .unwrap();
         assert_eq!(check.action, ConsentAction::Redact);
     }
@@ -482,7 +483,7 @@ mod tests {
             .grant("email", None, "*", ConsentAction::Pass, None)
             .unwrap();
         let check = store
-            .check("email:abc123", "email", "api.openai.com")
+            .check(Some("email:abc123"), "email", "api.openai.com")
             .unwrap();
         assert_eq!(check.action, ConsentAction::Pass);
     }
@@ -506,12 +507,12 @@ mod tests {
             .unwrap();
 
         let check = store
-            .check("email:abc123", "email", "api.anthropic.com")
+            .check(Some("email:abc123"), "email", "api.anthropic.com")
             .unwrap();
         assert_eq!(check.action, ConsentAction::Redact); // token override wins
 
         let check2 = store
-            .check("email:other456", "email", "api.anthropic.com")
+            .check(Some("email:other456"), "email", "api.anthropic.com")
             .unwrap();
         assert_eq!(check2.action, ConsentAction::Pass); // other emails still pass
     }
@@ -529,12 +530,12 @@ mod tests {
             .unwrap();
 
         let check = store
-            .check("email:abc123", "email", "api.openai.com")
+            .check(Some("email:abc123"), "email", "api.openai.com")
             .unwrap();
         assert_eq!(check.action, ConsentAction::Redact); // exact dest wins
 
         let check2 = store
-            .check("email:abc123", "email", "api.anthropic.com")
+            .check(Some("email:abc123"), "email", "api.anthropic.com")
             .unwrap();
         assert_eq!(check2.action, ConsentAction::Pass); // wildcard still applies
     }
@@ -546,7 +547,7 @@ mod tests {
             .grant("*", None, "api.anthropic.com", ConsentAction::Pass, None)
             .unwrap();
         let check = store
-            .check("ssn:abc123", "ssn", "api.anthropic.com")
+            .check(Some("ssn:abc123"), "ssn", "api.anthropic.com")
             .unwrap();
         assert_eq!(check.action, ConsentAction::Pass);
     }
@@ -570,12 +571,12 @@ mod tests {
             .unwrap();
 
         let check = store
-            .check("ssn:abc123", "ssn", "api.anthropic.com")
+            .check(Some("ssn:abc123"), "ssn", "api.anthropic.com")
             .unwrap();
         assert_eq!(check.action, ConsentAction::Redact); // specific type wins
 
         let check2 = store
-            .check("email:abc123", "email", "api.anthropic.com")
+            .check(Some("email:abc123"), "email", "api.anthropic.com")
             .unwrap();
         assert_eq!(check2.action, ConsentAction::Pass); // wildcard covers email
     }
@@ -589,7 +590,7 @@ mod tests {
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
         let check = store
-            .check("email:abc123", "email", "api.anthropic.com")
+            .check(Some("email:abc123"), "email", "api.anthropic.com")
             .unwrap();
         assert_eq!(check.action, ConsentAction::Redact); // expired, falls to default
     }
@@ -623,7 +624,7 @@ mod tests {
             )
             .unwrap();
         let check = store
-            .check("email:7B2HkqFn9xR4mWpD3nYvKt", "email", "api.anthropic.com")
+            .check(Some("email:7B2HkqFn9xR4mWpD3nYvKt"), "email", "api.anthropic.com")
             .unwrap();
         assert_eq!(check.action, ConsentAction::Pass);
     }
@@ -633,7 +634,7 @@ mod tests {
         let (store, _dir) = temp_store();
         let check = store
             .check_with_default(
-                "email:pending",
+                None,
                 "email",
                 "salesforce.com",
                 ConsentAction::Pass,
@@ -648,7 +649,7 @@ mod tests {
         let (store, _dir) = temp_store();
         let check = store
             .check_with_default(
-                "email:pending",
+                None,
                 "email",
                 "api.anthropic.com",
                 ConsentAction::Redact,
@@ -666,7 +667,7 @@ mod tests {
             .unwrap();
         let check = store
             .check_with_default(
-                "email:pending",
+                None,
                 "email",
                 "salesforce.com",
                 ConsentAction::Pass,

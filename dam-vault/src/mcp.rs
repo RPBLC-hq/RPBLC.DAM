@@ -33,7 +33,8 @@
 ///
 /// This will be implemented to listen for MCP protocol messages
 /// and dispatch to vault operations.
-pub fn start_mcp_server() {
+#[expect(dead_code)]
+pub(crate) fn start_mcp_server() {
     // TODO: Implement MCP server using the MCP protocol.
     //
     // The server will:

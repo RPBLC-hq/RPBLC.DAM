@@ -148,6 +148,9 @@ pub(crate) async fn process_request(
         _ => body.to_vec(),
     };
 
+    // Create a lossy string for the module pipeline (detection needs strings).
+    // Keep the original bytes so we can forward them unchanged if the pipeline
+    // doesn't modify the body (no redaction), avoiding corruption of non-UTF8 data.
     let body_str = String::from_utf8_lossy(&decompressed).to_string();
 
     // Run module flow on request body (detect → consent → vault → redact → log)
@@ -166,7 +169,13 @@ pub(crate) async fn process_request(
         );
     }
 
-    let output_body = ctx.output_body().to_string();
+    // If the pipeline modified the body (redaction occurred), use the modified string.
+    // Otherwise, forward the original raw bytes unchanged to avoid corrupting binary data.
+    let forward_body: Vec<u8> = if ctx.modified_body.is_some() {
+        ctx.output_body().as_bytes().to_vec()
+    } else {
+        decompressed
+    };
 
     // Build upstream request
     let mut req_builder = state.client.request(method, upstream_url);
@@ -187,7 +196,7 @@ pub(crate) async fn process_request(
         req_builder = req_builder.header(name.clone(), value.clone());
     }
 
-    req_builder = req_builder.body(output_body);
+    req_builder = req_builder.body(forward_body);
 
     let upstream_resp = match req_builder.send().await {
         Ok(r) => r,

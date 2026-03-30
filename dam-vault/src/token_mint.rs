@@ -20,14 +20,14 @@ pub fn mint_token(
     for attempt in 0..MAX_RETRIES {
         match store.store(data_type, plaintext) {
             Ok(token) => return Ok(token),
-            Err(DamError::Db(ref msg)) if msg.contains("UNIQUE constraint") => {
+            Err(DamError::TokenCollision(ref msg)) => {
                 // Token ID collision — retry with a new random ID
                 tracing::warn!(
                     attempt,
                     data_type = data_type.tag(),
                     "token ID collision, retrying"
                 );
-                last_err = Some(DamError::Db(msg.clone()));
+                last_err = Some(DamError::TokenCollision(msg.clone()));
                 continue;
             }
             Err(e) => return Err(e),
