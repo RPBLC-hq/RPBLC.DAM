@@ -146,7 +146,7 @@ No init command. No config file. No keychain setup. Just `dam`.
 
 ## Session Scrubbing
 
-DAM ships a second binary — `dam-filter` — for cleaning coding sessions and traces before sharing them publicly. Same detection engine, no proxy required.
+DAM ships a second binary — `dam-filter` — for stripping PII and secrets from any text or JSON. Clean coding sessions before sharing, sanitize logs, scrub database exports. Same detection engine, no proxy required.
 
 ```bash
 # Pipe a session through dam-filter
@@ -158,7 +158,7 @@ cat session.json | dam-filter > clean.json
   Output: {"role": "user", "content": "My key is [DAM:LLM_KEY] email [DAM:EMAIL]"}
 ```
 
-The `[DAM:TYPE]` placeholders are permanent — originals are destroyed, not stored. Use this to strip PII and secrets from AI agent sessions before contributing to public training data.
+The `[DAM:TYPE]` placeholders are permanent — originals are destroyed, not stored.
 
 ```bash
 # Works with extraction tools

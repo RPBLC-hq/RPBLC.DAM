@@ -9,7 +9,7 @@ use std::io::{self, Read};
 #[derive(Parser)]
 #[command(
     name = "dam-filter",
-    about = "Strip PII and secrets from coding sessions and traces"
+    about = "Strip PII and secrets from any text or JSON"
 )]
 struct Cli {
     /// Input format: auto-detects JSON vs plain text

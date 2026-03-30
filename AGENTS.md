@@ -34,7 +34,7 @@ Spine + Vertebrae model. The spine knows nothing about detection, consent, stora
 | `dam-redact` | Replace body text with tokens for Verdict::Redact detections | Action vertebra |
 | `dam-log` | Detection event logging, `dam stats` | Action vertebra |
 | `dam-cli` | Binary entry point, CLI commands, wires spine + vertebrae | Binary |
-| `dam-filter` | Standalone PII/secret filter for sessions — detect + redact, no vault/proxy | Binary |
+| `dam-filter` | Standalone PII/secret filter for any text or JSON — detect + redact, no vault/proxy | Binary |
 | `_legacy/` | Old v0.3.1 codebase — reference only, do not build | Archive |
 
 ### Dependency graph

@@ -3,7 +3,7 @@ name = "dam-filter"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Standalone PII/secret filter for coding sessions and traces — no vault, no proxy, just detect and redact"
+description = "Strip PII and secrets from any text or JSON — no vault, no proxy, just detect and redact"
 
 [[bin]]
 name = "dam-filter"
