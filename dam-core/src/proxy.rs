@@ -1,6 +1,6 @@
 use crate::destination::Destination;
 use crate::flow::FlowExecutor;
-use crate::module_trait::FlowContext;
+use crate::module_trait::{FlowContext, Verdict};
 use crate::stream::{SseBuffer, StreamingTokenizer};
 use crate::tls::CertCache;
 use crate::token::Token;
@@ -167,6 +167,18 @@ pub(crate) async fn process_request(
             types = ?types,
             "pipeline results"
         );
+    }
+
+    // Safety invariant: if any detection has Verdict::Redact, modified_body MUST be set.
+    // If it's not (e.g., redact module crashed), we cannot forward the original body.
+    let has_redactions = ctx.detections.iter().any(|d| d.verdict == Verdict::Redact);
+    if has_redactions && ctx.modified_body.is_none() {
+        tracing::error!("detections marked Redact but body was not modified — blocking request");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "DAM: redaction failed, request blocked for safety".to_string(),
+        )
+            .into_response();
     }
 
     // If the pipeline modified the body (redaction occurred), use the modified string.

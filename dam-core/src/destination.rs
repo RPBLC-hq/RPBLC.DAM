@@ -26,15 +26,18 @@ impl Destination {
     /// Uses exact or suffix matching (`.domain`) to prevent spoofing.
     /// For example, `evilanthropiccom.com` will NOT match `anthropic.com`.
     pub fn from_host(host: &str) -> Self {
-        if host_matches(host, "anthropic.com") {
+        // Normalize: lowercase + strip trailing DNS root dot
+        let lower = host.to_ascii_lowercase();
+        let normalized = lower.strip_suffix('.').unwrap_or(&lower);
+        if host_matches(normalized, "anthropic.com") {
             Self::Llm {
                 provider: LlmProvider::Anthropic,
             }
-        } else if host_matches(host, "openai.com") || host_matches(host, "chatgpt.com") {
+        } else if host_matches(normalized, "openai.com") || host_matches(normalized, "chatgpt.com") {
             Self::Llm {
                 provider: LlmProvider::OpenAI,
             }
-        } else if host_matches(host, "openrouter.ai") {
+        } else if host_matches(normalized, "openrouter.ai") {
             Self::Llm {
                 provider: LlmProvider::OpenRouter,
             }
@@ -200,5 +203,19 @@ mod tests {
     #[test]
     fn test_extract_host_bare() {
         assert_eq!(extract_host("api.openai.com"), "api.openai.com");
+    }
+
+    #[test]
+    fn test_case_insensitive_matching() {
+        assert!(Destination::from_host("API.OpenAI.COM").is_llm());
+        assert!(Destination::from_host("Api.Anthropic.Com").is_llm());
+        assert!(Destination::from_host("OPENROUTER.AI").is_llm());
+    }
+
+    #[test]
+    fn test_trailing_dot_stripped() {
+        assert!(Destination::from_host("api.openai.com.").is_llm());
+        assert!(Destination::from_host("anthropic.com.").is_llm());
+        assert!(!Destination::from_host("evil.com.").is_llm());
     }
 }

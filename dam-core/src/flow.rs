@@ -45,17 +45,31 @@ impl FlowExecutor {
                 let name = module.name();
                 let is_safety_critical = name == "consent" || name == "redact";
                 if is_safety_critical {
-                    // Fail-closed: force all pending detections to Redact.
-                    // A consent/redact failure must not allow sensitive data through.
+                    // Fail-closed: force ALL detections to Redact, not just Pending.
+                    // Consent may have partially set some to Pass before erroring.
+                    // Redact failure means modified_body was never set — the proxy must
+                    // not forward the original body with PII in it.
                     tracing::error!(
                         module = name,
                         error = %e,
-                        "safety-critical action module failed — forcing pending detections to Redact"
+                        "safety-critical action module failed — forcing all detections to Redact"
                     );
                     for detection in &mut ctx.detections {
-                        if detection.verdict == Verdict::Pending {
-                            detection.verdict = Verdict::Redact;
+                        detection.verdict = Verdict::Redact;
+                    }
+                    // If redact failed, we must synthesize a safe body so the proxy
+                    // doesn't fall back to forwarding original bytes.
+                    if name == "redact" && ctx.modified_body.is_none() && !ctx.detections.is_empty() {
+                        // Replace all detected spans with opaque [REDACTED] markers.
+                        let mut safe_body = ctx.request_body.clone();
+                        let mut sorted: Vec<_> = ctx.detections.iter().collect();
+                        sorted.sort_by(|a, b| b.span.start.cmp(&a.span.start));
+                        for det in sorted {
+                            if det.span.start <= safe_body.len() && det.span.end <= safe_body.len() {
+                                safe_body.replace_range(det.span.start..det.span.end, "[REDACTED]");
+                            }
                         }
+                        ctx.modified_body = Some(safe_body);
                     }
                 } else {
                     // Fail-open for non-critical action modules (vault, log)
@@ -364,7 +378,9 @@ mod tests {
     }
 
     #[test]
-    fn test_consent_failure_preserves_existing_verdicts() {
+    fn test_consent_failure_forces_pass_to_redact() {
+        // Consent failure must force ALL detections to Redact,
+        // including any that were partially set to Pass before the error.
         let det_mod = Arc::new(MockDetector {
             name: "det",
             detection: Some(det(0, 5, 0.9, "det")),
@@ -375,9 +391,26 @@ mod tests {
         });
         let exec = FlowExecutor::new(vec![det_mod, failing_consent]);
         let mut c = ctx("hello");
-        // Pre-set a Pass verdict — consent failure should only force Pending → Redact
         exec.run(&mut c).unwrap();
-        // Since detection starts as Pending, it gets forced to Redact
         assert_eq!(c.detections[0].verdict, Verdict::Redact);
+    }
+
+    #[test]
+    fn test_redact_failure_synthesizes_safe_body() {
+        let det_mod = Arc::new(MockDetector {
+            name: "det",
+            detection: Some(det(0, 5, 0.9, "det")),
+            should_match: true,
+        });
+        let failing_redact: Arc<dyn Module> = Arc::new(FailingActionModule {
+            module_name: "redact",
+        });
+        let exec = FlowExecutor::new(vec![det_mod, failing_redact]);
+        let mut c = ctx("hello world");
+        exec.run(&mut c).unwrap();
+        // Redact failure must synthesize a safe body so proxy doesn't forward originals
+        assert!(c.modified_body.is_some());
+        assert!(c.modified_body.as_ref().unwrap().contains("[REDACTED]"));
+        assert!(!c.modified_body.as_ref().unwrap().contains("hello"));
     }
 }
