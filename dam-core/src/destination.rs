@@ -33,7 +33,8 @@ impl Destination {
             Self::Llm {
                 provider: LlmProvider::Anthropic,
             }
-        } else if host_matches(normalized, "openai.com") || host_matches(normalized, "chatgpt.com") {
+        } else if host_matches(normalized, "openai.com") || host_matches(normalized, "chatgpt.com")
+        {
             Self::Llm {
                 provider: LlmProvider::OpenAI,
             }

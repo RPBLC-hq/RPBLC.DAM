@@ -59,13 +59,15 @@ impl FlowExecutor {
                     }
                     // If redact failed, we must synthesize a safe body so the proxy
                     // doesn't fall back to forwarding original bytes.
-                    if name == "redact" && ctx.modified_body.is_none() && !ctx.detections.is_empty() {
+                    if name == "redact" && ctx.modified_body.is_none() && !ctx.detections.is_empty()
+                    {
                         // Replace all detected spans with opaque [REDACTED] markers.
                         let mut safe_body = ctx.request_body.clone();
                         let mut sorted: Vec<_> = ctx.detections.iter().collect();
                         sorted.sort_by(|a, b| b.span.start.cmp(&a.span.start));
                         for det in sorted {
-                            if det.span.start <= safe_body.len() && det.span.end <= safe_body.len() {
+                            if det.span.start <= safe_body.len() && det.span.end <= safe_body.len()
+                            {
                                 safe_body.replace_range(det.span.start..det.span.end, "[REDACTED]");
                             }
                         }

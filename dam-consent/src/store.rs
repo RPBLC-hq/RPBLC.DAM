@@ -624,7 +624,11 @@ mod tests {
             )
             .unwrap();
         let check = store
-            .check(Some("email:7B2HkqFn9xR4mWpD3nYvKt"), "email", "api.anthropic.com")
+            .check(
+                Some("email:7B2HkqFn9xR4mWpD3nYvKt"),
+                "email",
+                "api.anthropic.com",
+            )
             .unwrap();
         assert_eq!(check.action, ConsentAction::Pass);
     }
@@ -633,12 +637,7 @@ mod tests {
     fn test_check_with_default_pass_no_rules() {
         let (store, _dir) = temp_store();
         let check = store
-            .check_with_default(
-                None,
-                "email",
-                "salesforce.com",
-                ConsentAction::Pass,
-            )
+            .check_with_default(None, "email", "salesforce.com", ConsentAction::Pass)
             .unwrap();
         assert_eq!(check.action, ConsentAction::Pass);
         assert_eq!(check.reason, "no_matching_rule");
@@ -648,12 +647,7 @@ mod tests {
     fn test_check_with_default_redact_no_rules() {
         let (store, _dir) = temp_store();
         let check = store
-            .check_with_default(
-                None,
-                "email",
-                "api.anthropic.com",
-                ConsentAction::Redact,
-            )
+            .check_with_default(None, "email", "api.anthropic.com", ConsentAction::Redact)
             .unwrap();
         assert_eq!(check.action, ConsentAction::Redact);
         assert_eq!(check.reason, "no_matching_rule");
@@ -666,12 +660,7 @@ mod tests {
             .grant("email", None, "salesforce.com", ConsentAction::Redact, None)
             .unwrap();
         let check = store
-            .check_with_default(
-                None,
-                "email",
-                "salesforce.com",
-                ConsentAction::Pass,
-            )
+            .check_with_default(None, "email", "salesforce.com", ConsentAction::Pass)
             .unwrap();
         assert_eq!(check.action, ConsentAction::Redact); // explicit rule overrides default Pass
     }
