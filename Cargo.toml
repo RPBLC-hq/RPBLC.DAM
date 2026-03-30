@@ -1,5 +1,5 @@
 [workspace]
-members = ["dam-core", "dam-detect-pii", "dam-detect-secrets", "dam-consent", "dam-vault", "dam-redact", "dam-log", "dam-cli"]
+members = ["dam-core", "dam-detect-pii", "dam-detect-secrets", "dam-consent", "dam-vault", "dam-redact", "dam-log", "dam-cli", "dam-filter"]
 resolver = "2"
 
 [workspace.package]

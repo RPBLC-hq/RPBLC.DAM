@@ -8,7 +8,8 @@ DAM (Data Access Mediator) mediates access to sensitive data in transit. It sits
 
 ```bash
 cargo build --workspace              # debug build
-cargo build --release -p dam-cli     # release binary
+cargo build --release -p dam-cli     # release proxy binary
+cargo build --release -p dam-filter  # release filter binary
 cargo test --workspace               # all tests
 cargo clippy --workspace -- -D warnings  # lint
 cargo fmt --all --check              # format check
@@ -33,6 +34,7 @@ Spine + Vertebrae model. The spine knows nothing about detection, consent, stora
 | `dam-redact` | Replace body text with tokens for Verdict::Redact detections | Action vertebra |
 | `dam-log` | Detection event logging, `dam stats` | Action vertebra |
 | `dam-cli` | Binary entry point, CLI commands, wires spine + vertebrae | Binary |
+| `dam-filter` | Standalone PII/secret filter for sessions — detect + redact, no vault/proxy | Binary |
 | `_legacy/` | Old v0.3.1 codebase — reference only, do not build | Archive |
 
 ### Dependency graph
@@ -46,13 +48,22 @@ dam-vault          → dam-core
 dam-redact         → dam-core, dam-vault
 dam-log            → dam-core
 dam-cli            → all of the above
+dam-filter         → dam-core, dam-detect-pii, dam-detect-secrets (no vault/consent/redact/log)
 ```
 
-### Default module flow
+### Default module flow (dam-cli proxy)
 
 ```
 detect-pii → detect-secrets → consent → vault → redact → log
 ```
+
+### Filter flow (dam-filter standalone)
+
+```
+stdin → detect-pii → detect-secrets → dedup → replace with [DAM:TYPE] → stdout
+```
+
+dam-filter skips consent/vault/redact/log. Every detection is replaced with a branded placeholder (`[DAM:EMAIL]`, `[DAM:SSN]`, etc.). No vault tokens, no storage.
 
 - **detect-***: find sensitive data, append `Detection` objects with `verdict: Pending`
 - **consent**: check rules, set `verdict: Pass` or `verdict: Redact` per detection

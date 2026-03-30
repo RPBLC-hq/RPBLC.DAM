@@ -22,20 +22,16 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            binary: dam
-            asset: dam-x86_64-unknown-linux-gnu
+            ext: ""
           - target: aarch64-apple-darwin
             os: macos-latest
-            binary: dam
-            asset: dam-aarch64-apple-darwin
+            ext: ""
           - target: x86_64-apple-darwin
             os: macos-15
-            binary: dam
-            asset: dam-x86_64-apple-darwin
+            ext: ""
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            binary: dam.exe
-            asset: dam-x86_64-pc-windows-msvc.exe
+            ext: ".exe"
     steps:
       - uses: actions/checkout@v4
 
@@ -53,18 +49,30 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      - name: Build
+      - name: Build dam
         run: cargo build --release --target ${{ matrix.target }} --package dam-cli --bin dam
 
-      - name: Rename binary
-        shell: bash
-        run: cp target/${{ matrix.target }}/release/${{ matrix.binary }} ${{ matrix.asset }}
+      - name: Build dam-filter
+        run: cargo build --release --target ${{ matrix.target }} --package dam-filter --bin dam-filter
 
-      - name: Upload artifact
+      - name: Stage binaries
+        shell: bash
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/dam${{ matrix.ext }} staging/dam-${{ matrix.target }}${{ matrix.ext }}
+          cp target/${{ matrix.target }}/release/dam-filter${{ matrix.ext }} staging/dam-filter-${{ matrix.target }}${{ matrix.ext }}
+
+      - name: Upload dam artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
+          name: dam-${{ matrix.target }}
+          path: staging/dam-${{ matrix.target }}${{ matrix.ext }}
+
+      - name: Upload dam-filter artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dam-filter-${{ matrix.target }}
+          path: staging/dam-filter-${{ matrix.target }}${{ matrix.ext }}
 
   release:
     name: Create Release
@@ -119,16 +127,24 @@ jobs:
 
       - name: Copy binaries into npm packages
         run: |
+          # Linux x64
           cp artifacts/dam-x86_64-unknown-linux-gnu/dam-x86_64-unknown-linux-gnu npm/dam-linux-x64/bin/dam
-          chmod +x npm/dam-linux-x64/bin/dam
+          cp artifacts/dam-filter-x86_64-unknown-linux-gnu/dam-filter-x86_64-unknown-linux-gnu npm/dam-linux-x64/bin/dam-filter
+          chmod +x npm/dam-linux-x64/bin/dam npm/dam-linux-x64/bin/dam-filter
 
+          # macOS ARM64
           cp artifacts/dam-aarch64-apple-darwin/dam-aarch64-apple-darwin npm/dam-darwin-arm64/bin/dam
-          chmod +x npm/dam-darwin-arm64/bin/dam
+          cp artifacts/dam-filter-aarch64-apple-darwin/dam-filter-aarch64-apple-darwin npm/dam-darwin-arm64/bin/dam-filter
+          chmod +x npm/dam-darwin-arm64/bin/dam npm/dam-darwin-arm64/bin/dam-filter
 
+          # macOS x64
           cp artifacts/dam-x86_64-apple-darwin/dam-x86_64-apple-darwin npm/dam-darwin-x64/bin/dam
-          chmod +x npm/dam-darwin-x64/bin/dam
+          cp artifacts/dam-filter-x86_64-apple-darwin/dam-filter-x86_64-apple-darwin npm/dam-darwin-x64/bin/dam-filter
+          chmod +x npm/dam-darwin-x64/bin/dam npm/dam-darwin-x64/bin/dam-filter
 
-          cp artifacts/dam-x86_64-pc-windows-msvc.exe/dam-x86_64-pc-windows-msvc.exe npm/dam-win32-x64/bin/dam.exe
+          # Windows x64
+          cp artifacts/dam-x86_64-pc-windows-msvc/dam-x86_64-pc-windows-msvc.exe npm/dam-win32-x64/bin/dam.exe
+          cp artifacts/dam-filter-x86_64-pc-windows-msvc/dam-filter-x86_64-pc-windows-msvc.exe npm/dam-win32-x64/bin/dam-filter.exe
 
       - name: Set versions in package.json files
         run: |

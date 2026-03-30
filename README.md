@@ -12,6 +12,7 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#how-it-works">How It Works</a> &middot;
+  <a href="#session-scrubbing">Session Scrubbing</a> &middot;
   <a href="#consent">Consent</a> &middot;
   <a href="#detection">Detection</a> &middot;
   <a href="#cli">CLI</a>
@@ -43,7 +44,8 @@ brew install dam
 npx dam
 curl -fsSL https://get.dam.dev | sh
 
-# Available now (requires Rust 1.94+)
+# Available now
+npm install -g @rpblc/dam
 cargo install --path dam-cli
 ```
 
@@ -141,6 +143,32 @@ On first run, DAM auto-creates:
 - `~/.dam/log.db` — detection log (SQLite)
 
 No init command. No config file. No keychain setup. Just `dam`.
+
+## Session Scrubbing
+
+DAM ships a second binary — `dam-filter` — for cleaning coding sessions and traces before sharing them publicly. Same detection engine, no proxy required.
+
+```bash
+# Pipe a session through dam-filter
+cat session.json | dam-filter > clean.json
+```
+
+```
+  Input:  {"role": "user", "content": "My key is sk-ant-api03-abc... email john@acme.com"}
+  Output: {"role": "user", "content": "My key is [DAM:LLM_KEY] email [DAM:EMAIL]"}
+```
+
+The `[DAM:TYPE]` placeholders are permanent — originals are destroyed, not stored. Use this to strip PII and secrets from AI agent sessions before contributing to public training data.
+
+```bash
+# Works with extraction tools
+ai-data-extract dump --format json | dam-filter > clean-session.json
+
+# See what was found
+dam-filter session.json --report > clean.json 2>report.txt
+```
+
+`dam-filter` reads JSON or plain text from stdin or a file. JSON mode walks the structure and independently filters every string value, preserving the document shape.
 
 ## Consent
 
@@ -292,7 +320,7 @@ LLM endpoints are auto-detected by host. LLM calls get the full pipeline (detect
 
 ## Architecture
 
-8 crates, single binary:
+9 crates, two binaries:
 
 ```
 dam-core             Spine — proxy, Module trait, FlowExecutor, streaming, config
@@ -302,7 +330,8 @@ dam-consent          Vertebra — consent rules, verdict assignment
 dam-vault            Vertebra — encrypt and store all detected values
 dam-redact           Vertebra — replace body text for redacted detections
 dam-log              Vertebra — detection event logging, stats
-dam-cli              Binary — wires spine + vertebrae, unified CLI
+dam-cli              Binary — full proxy + vault + consent + MCP
+dam-filter           Binary — standalone PII/secret filter (no proxy, no vault)
 ```
 
 ### The module contract
@@ -328,8 +357,9 @@ Detection modules set `verdict: Pending`. The consent module sets it to `Pass` o
 
 ```bash
 cargo build --workspace          # debug build
-cargo test --workspace           # 343 tests
-cargo build --release -p dam-cli # release binary
+cargo test --workspace              # 418 tests
+cargo build --release -p dam-cli    # release proxy binary
+cargo build --release -p dam-filter # release filter binary
 ```
 
 ## Roadmap
@@ -339,11 +369,14 @@ cargo build --release -p dam-cli # release binary
 - [x] Secrets detection (API keys, JWTs, private keys, credential URLs)
 - [x] Consent model (layered rules, per-type/per-token, TTL, default deny)
 - [x] Encrypted vault (AES-256-GCM, auto-generated key, dedup)
-- [x] Forward proxy with streaming support
+- [x] HTTPS proxy (CONNECT + selective TLS interception)
+- [x] Streaming (SSE, WebSocket, zstd decompression)
 - [x] CLI (consent grant/deny/list/revoke, resolve, tokens, stats, log)
 - [x] MCP server (resolve tokens, grant/deny/revoke consent, list tokens, stats with pass/redact breakdown)
 - [x] Verdict-aware logging (redacted vs passed vs logged)
 - [x] Auto-resolve: tokens in LLM responses resolved back to original values before returning to client
+- [x] Session scrubbing (`dam-filter` — strip PII/secrets from coding sessions, `[DAM:TYPE]` branded placeholders)
+- [x] JSON-aware scanning (user/assistant content only, skips system prompts and tool definitions)
 
 **Next:**
 - [ ] Config TOML modules (custom detection rules, drop in `~/.dam/modules/`)

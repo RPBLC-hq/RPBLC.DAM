@@ -576,6 +576,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dam-filter"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dam-core",
+ "dam-detect-pii",
+ "dam-detect-secrets",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dam-log"
 version = "0.4.0"
 dependencies = [

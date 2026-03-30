@@ -8,7 +8,8 @@ See [AGENTS.md](AGENTS.md) for development instructions.
 - **Pipeline:** detect-pii → detect-secrets → consent → vault → redact → log
 - **Build:** `cargo build --workspace`
 - **Test:** `cargo test --workspace`
-- **Run:** `cargo run -p dam-cli` or `cargo run -p dam-cli -- --port 8080`
+- **Run proxy:** `cargo run -p dam-cli` or `cargo run -p dam-cli -- --port 8080`
+- **Run filter:** `echo '{"msg":"alice@test.com"}' | cargo run -p dam-filter -- --format json`
 - **Lint:** `cargo clippy --workspace -- -D warnings`
 - **Format:** `cargo fmt --check`
 
@@ -24,4 +25,5 @@ See [AGENTS.md](AGENTS.md) for development instructions.
 | `dam-redact` | Vertebra — replace body text for redacted detections |
 | `dam-log` | Vertebra — detection event logging, stats |
 | `dam-cli` | Binary — wires spine + vertebrae, CLI commands |
+| `dam-filter` | Binary — standalone PII/secret filter for sessions (no vault/proxy) |
 | `_legacy/` | Old v0.3.1 codebase — reference only, do not build |

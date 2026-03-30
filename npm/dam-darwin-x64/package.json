@@ -1,0 +1,13 @@
+{
+  "name": "@rpblc/dam-darwin-x64",
+  "version": "0.4.0",
+  "description": "DAM binaries for macOS x64",
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "preferUnplugged": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RPBLC-hq/RPBLC.DAM.git"
+  }
+}
