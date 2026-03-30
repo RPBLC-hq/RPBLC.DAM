@@ -85,10 +85,13 @@ mod tests {
         Detection {
             data_type,
             value: value.to_string(),
-            span: Span { start: 0, end: value.len() },
+            span: Span {
+                start: 0,
+                end: value.len(),
+            },
             confidence: 0.95,
             source_module: module.to_string(),
-                verdict: dam_core::Verdict::Pending,
+            verdict: dam_core::Verdict::Pending,
         }
     }
 
@@ -109,7 +112,9 @@ mod tests {
         let (module, _, _dir) = temp_log_module();
         let ctx = FlowContext::new(
             "hello".to_string(),
-            Destination::Other { host: "example.com".to_string() },
+            Destination::Other {
+                host: "example.com".to_string(),
+            },
         );
         assert!(module.matches(&ctx));
 
@@ -127,7 +132,9 @@ mod tests {
         let (module, store, _dir) = temp_log_module();
         let mut ctx = FlowContext::new(
             "hello world".to_string(),
-            Destination::Other { host: "example.com".to_string() },
+            Destination::Other {
+                host: "example.com".to_string(),
+            },
         );
         module.process(&mut ctx).unwrap();
         assert_eq!(store.count().unwrap(), 0);
@@ -138,7 +145,9 @@ mod tests {
         let (module, store, _dir) = temp_log_module();
         let mut ctx = FlowContext::new(
             "my email is test@example.com".to_string(),
-            Destination::Other { host: "example.com".to_string() },
+            Destination::Other {
+                host: "example.com".to_string(),
+            },
         );
         ctx.detections.push(make_detection(
             SensitiveDataType::Email,
@@ -184,7 +193,9 @@ mod tests {
         let (module, store, _dir) = temp_log_module();
         let mut ctx = FlowContext::new(
             "test@example.com".to_string(),
-            Destination::Llm { provider: dam_core::LlmProvider::Anthropic },
+            Destination::Llm {
+                provider: dam_core::LlmProvider::Anthropic,
+            },
         );
         let mut det = make_detection(SensitiveDataType::Email, "test@example.com", "detect-pii");
         det.verdict = dam_core::Verdict::Redact;
@@ -200,7 +211,9 @@ mod tests {
         let (module, store, _dir) = temp_log_module();
         let mut ctx = FlowContext::new(
             "test@example.com".to_string(),
-            Destination::Llm { provider: dam_core::LlmProvider::Anthropic },
+            Destination::Llm {
+                provider: dam_core::LlmProvider::Anthropic,
+            },
         );
         let mut det = make_detection(SensitiveDataType::Email, "test@example.com", "detect-pii");
         det.verdict = dam_core::Verdict::Pass;
@@ -216,7 +229,9 @@ mod tests {
         let (module, store, _dir) = temp_log_module();
         let mut ctx = FlowContext::new(
             "email and phone".to_string(),
-            Destination::Other { host: "target.com".to_string() },
+            Destination::Other {
+                host: "target.com".to_string(),
+            },
         );
         ctx.detections.push(make_detection(
             SensitiveDataType::Email,
@@ -249,7 +264,10 @@ mod tests {
     #[test]
     fn test_preview_unicode() {
         // Unicode characters should be treated as individual chars, not bytes.
-        assert_eq!(LogModule::make_preview("\u{00e9}mail@test.com"), "\u{00e9}mai...");
+        assert_eq!(
+            LogModule::make_preview("\u{00e9}mail@test.com"),
+            "\u{00e9}mai..."
+        );
     }
 
     #[test]
@@ -257,7 +275,9 @@ mod tests {
         let (module, _, _dir) = temp_log_module();
         let mut ctx = FlowContext::new(
             "original body".to_string(),
-            Destination::Other { host: "example.com".to_string() },
+            Destination::Other {
+                host: "example.com".to_string(),
+            },
         );
         ctx.detections.push(make_detection(
             SensitiveDataType::Email,
@@ -282,9 +302,21 @@ mod tests {
                 provider: dam_core::LlmProvider::Anthropic,
             },
         );
-        ctx.detections.push(make_detection(SensitiveDataType::Ssn, "123-45-6789", "mod-a"));
-        ctx.detections.push(make_detection(SensitiveDataType::CreditCard, "4111111111111111", "mod-b"));
-        ctx.detections.push(make_detection(SensitiveDataType::ApiKey, "sk-live-abc123def456", "mod-c"));
+        ctx.detections.push(make_detection(
+            SensitiveDataType::Ssn,
+            "123-45-6789",
+            "mod-a",
+        ));
+        ctx.detections.push(make_detection(
+            SensitiveDataType::CreditCard,
+            "4111111111111111",
+            "mod-b",
+        ));
+        ctx.detections.push(make_detection(
+            SensitiveDataType::ApiKey,
+            "sk-live-abc123def456",
+            "mod-c",
+        ));
 
         module.process(&mut ctx).unwrap();
         assert_eq!(store.count().unwrap(), 3);

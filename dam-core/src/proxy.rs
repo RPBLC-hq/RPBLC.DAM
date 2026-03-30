@@ -37,6 +37,17 @@ pub struct ProxyState {
     pub resolver: Option<TokenResolver>,
     /// TLS interceptor for CONNECT tunnels. If None, CONNECT requests are blind-tunneled.
     pub tls: Option<Arc<CertCache>>,
+    /// Hosts to blind-tunnel (skip TLS interception). Substring match.
+    pub exclude_hosts: Arc<Vec<String>>,
+}
+
+impl ProxyState {
+    /// Check if a host should be excluded from TLS interception.
+    pub fn is_excluded(&self, host: &str) -> bool {
+        self.exclude_hosts
+            .iter()
+            .any(|pat| host.contains(pat.as_str()))
+    }
 }
 
 /// Start the proxy server on the given port.
@@ -49,9 +60,9 @@ pub async fn start_proxy(state: ProxyState, port: u16) -> Result<(), crate::DamE
         .with_state(state.clone());
 
     let addr = format!("0.0.0.0:{port}");
-    let listener = TcpListener::bind(&addr).await.map_err(|e| {
-        crate::DamError::Proxy(format!("failed to bind to {addr}: {e}"))
-    })?;
+    let listener = TcpListener::bind(&addr)
+        .await
+        .map_err(|e| crate::DamError::Proxy(format!("failed to bind to {addr}: {e}")))?;
 
     tracing::info!("DAM running on :{port}");
     if state.tls.is_some() {
@@ -81,9 +92,7 @@ pub async fn start_proxy(state: ProxyState, port: u16) -> Result<(), crate::DamE
                         crate::connect::handle_connect(req, &state).await
                     } else {
                         let req = req.map(Body::new);
-                        app.oneshot(req)
-                            .await
-                            .map_err(|e: Infallible| match e {})
+                        app.oneshot(req).await.map_err(|e: Infallible| match e {})
                     }
                 }
             });
@@ -118,18 +127,20 @@ pub(crate) async fn process_request(
         .map(|s| s.to_lowercase());
 
     let decompressed = match content_encoding.as_deref() {
-        Some("zstd") => {
-            match zstd::decode_all(body.as_ref()) {
-                Ok(decoded) => {
-                    tracing::debug!(original = body.len(), decoded = decoded.len(), "decompressed zstd");
-                    decoded
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "zstd decompression failed, forwarding raw");
-                    body.to_vec()
-                }
+        Some("zstd") => match zstd::decode_all(body.as_ref()) {
+            Ok(decoded) => {
+                tracing::debug!(
+                    original = body.len(),
+                    decoded = decoded.len(),
+                    "decompressed zstd"
+                );
+                decoded
             }
-        }
+            Err(e) => {
+                tracing::warn!(error = %e, "zstd decompression failed, forwarding raw");
+                body.to_vec()
+            }
+        },
         Some(enc) => {
             tracing::warn!(encoding = %enc, "unsupported content-encoding, forwarding raw");
             body.to_vec()
@@ -162,7 +173,15 @@ pub(crate) async fn process_request(
 
     for (name, value) in headers.iter() {
         let n = name.as_str().to_lowercase();
-        if matches!(n.as_str(), "host" | "content-length" | "content-encoding" | "accept-encoding" | "x-dam-upstream" | "transfer-encoding") {
+        if matches!(
+            n.as_str(),
+            "host"
+                | "content-length"
+                | "content-encoding"
+                | "accept-encoding"
+                | "x-dam-upstream"
+                | "transfer-encoding"
+        ) {
             continue;
         }
         req_builder = req_builder.header(name.clone(), value.clone());
@@ -174,7 +193,11 @@ pub(crate) async fn process_request(
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, url = %upstream_url, "upstream request failed");
-            return (StatusCode::BAD_GATEWAY, format!("Upstream unreachable: {e}")).into_response();
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("Upstream unreachable: {e}"),
+            )
+                .into_response();
         }
     };
 
@@ -190,7 +213,10 @@ pub(crate) async fn process_request(
     for (name, value) in upstream_resp.headers().iter() {
         // Skip headers that reqwest already handled or that may be stale after body modification
         let n = name.as_str();
-        if matches!(n, "content-length" | "content-encoding" | "transfer-encoding") {
+        if matches!(
+            n,
+            "content-length" | "content-encoding" | "transfer-encoding"
+        ) {
             continue;
         }
         resp_headers.insert(name.clone(), value.clone());
@@ -216,16 +242,20 @@ pub(crate) async fn process_request(
                 let resolved = resolve_tokens_in_text(&text, &state.resolver);
                 (status, resp_headers, resolved).into_response()
             }
-            Err(e) => {
-                (StatusCode::BAD_GATEWAY, format!("Failed to read upstream response: {e}")).into_response()
-            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                format!("Failed to read upstream response: {e}"),
+            )
+                .into_response(),
         }
     } else {
         match upstream_resp.bytes().await {
             Ok(bytes) => (status, resp_headers, bytes).into_response(),
-            Err(e) => {
-                (StatusCode::BAD_GATEWAY, format!("Failed to read upstream response: {e}")).into_response()
-            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                format!("Failed to read upstream response: {e}"),
+            )
+                .into_response(),
         }
     }
 }
@@ -283,7 +313,7 @@ fn stream_sse(
                             }
                         }
                         Err(e) => {
-                            yield Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+                            yield Err(std::io::Error::other(e.to_string()));
                             break;
                         }
                     }
@@ -340,7 +370,7 @@ fn stream_sse(
                     }
                 }
                 Err(e) => {
-                    yield Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+                    yield Err(std::io::Error::other(e.to_string()));
                     break;
                 }
             }
@@ -380,10 +410,10 @@ fn find_json_string_value(event: &str) -> Option<(usize, usize)> {
 
 fn extract_upstream(headers: &HeaderMap, uri: &Uri) -> Option<String> {
     // 1. X-DAM-Upstream header (explicit routing)
-    if let Some(val) = headers.get("x-dam-upstream") {
-        if let Ok(s) = val.to_str() {
-            return Some(s.to_string());
-        }
+    if let Some(val) = headers.get("x-dam-upstream")
+        && let Ok(s) = val.to_str()
+    {
+        return Some(s.to_string());
     }
 
     // 2. Absolute URI (HTTP_PROXY mode: GET http://example.com/path)
@@ -412,7 +442,10 @@ mod tests {
     #[test]
     fn test_extract_upstream_from_header() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-dam-upstream", HeaderValue::from_static("https://api.anthropic.com/v1/messages"));
+        headers.insert(
+            "x-dam-upstream",
+            HeaderValue::from_static("https://api.anthropic.com/v1/messages"),
+        );
         let uri: Uri = "/anything".parse().unwrap();
         let result = extract_upstream(&headers, &uri);
         assert_eq!(result, Some("https://api.anthropic.com/v1/messages".into()));
@@ -421,9 +454,14 @@ mod tests {
     #[test]
     fn test_extract_upstream_from_path() {
         let headers = HeaderMap::new();
-        let uri: Uri = "/https://api.openai.com/v1/chat/completions".parse().unwrap();
+        let uri: Uri = "/https://api.openai.com/v1/chat/completions"
+            .parse()
+            .unwrap();
         let result = extract_upstream(&headers, &uri);
-        assert_eq!(result, Some("https://api.openai.com/v1/chat/completions".into()));
+        assert_eq!(
+            result,
+            Some("https://api.openai.com/v1/chat/completions".into())
+        );
     }
 
     #[test]
@@ -437,7 +475,10 @@ mod tests {
     #[test]
     fn test_extract_upstream_header_takes_priority() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-dam-upstream", HeaderValue::from_static("https://custom.api.com"));
+        headers.insert(
+            "x-dam-upstream",
+            HeaderValue::from_static("https://custom.api.com"),
+        );
         let uri: Uri = "/https://api.openai.com/v1/chat".parse().unwrap();
         let result = extract_upstream(&headers, &uri);
         assert_eq!(result, Some("https://custom.api.com".into()));

@@ -1,8 +1,8 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use dam_core::DamError;
-use rand::rngs::OsRng;
 use rand::RngCore;
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
@@ -71,7 +71,6 @@ impl EnvelopeCrypto {
             .map_err(|e| DamError::Encryption(format!("DEK wrap: {e}")))?;
 
         // Zeroize DEK
-        let mut dek = dek;
         dek.zeroize();
 
         // Combine nonces into IV
@@ -281,7 +280,12 @@ mod tests {
 
         let result = crypto.decrypt(&entry);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid IV length"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid IV length")
+        );
     }
 
     #[test]

@@ -12,34 +12,26 @@ static JWT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}").unwrap()
 });
 
-static AWS_KEY_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"AKIA[0-9A-Z]{16}").unwrap()
-});
+static AWS_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"AKIA[0-9A-Z]{16}").unwrap());
 
-static GITHUB_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"gh[ps]_[A-Za-z0-9_]{36,}").unwrap()
-});
+static GITHUB_TOKEN_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"gh[ps]_[A-Za-z0-9_]{36,}").unwrap());
 
-static STRIPE_KEY_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"[sr]k_(live|test)_[A-Za-z0-9]{24,}").unwrap()
-});
+static STRIPE_KEY_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"[sr]k_(live|test)_[A-Za-z0-9]{24,}").unwrap());
 
-static OPENAI_KEY_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"sk-[A-Za-z0-9_-]{20,}").unwrap()
-});
+static OPENAI_KEY_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sk-[A-Za-z0-9_-]{20,}").unwrap());
 
-static ANTHROPIC_KEY_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"sk-ant-[A-Za-z0-9_-]{20,}").unwrap()
-});
+static ANTHROPIC_KEY_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"sk-ant-[A-Za-z0-9_-]{20,}").unwrap());
 
 static PEM_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"-----BEGIN [A-Z ]+ PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+ PRIVATE KEY-----")
         .unwrap()
 });
 
-static CREDENTIAL_URL_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:@]+:[^\s:@]+@[^\s/]+").unwrap()
-});
+static CREDENTIAL_URL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:@]+:[^\s:@]+@[^\s/]+").unwrap());
 
 /// Matches common key assignment patterns followed by 32+ hex chars or base64.
 static GENERIC_KEY_RE: Lazy<Regex> = Lazy::new(|| {
@@ -65,7 +57,7 @@ pub fn detect_jwt(text: &str) -> Vec<Detection> {
             },
             confidence: 0.95,
             source_module: SOURCE_MODULE.into(),
-                verdict: dam_core::Verdict::Pending,
+            verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -82,7 +74,7 @@ pub fn detect_aws_keys(text: &str) -> Vec<Detection> {
             },
             confidence: 0.98,
             source_module: SOURCE_MODULE.into(),
-                verdict: dam_core::Verdict::Pending,
+            verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -99,7 +91,7 @@ pub fn detect_github_tokens(text: &str) -> Vec<Detection> {
             },
             confidence: 0.98,
             source_module: SOURCE_MODULE.into(),
-                verdict: dam_core::Verdict::Pending,
+            verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -116,7 +108,7 @@ pub fn detect_stripe_keys(text: &str) -> Vec<Detection> {
             },
             confidence: 0.98,
             source_module: SOURCE_MODULE.into(),
-                verdict: dam_core::Verdict::Pending,
+            verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -135,7 +127,7 @@ pub fn detect_openai_keys(text: &str) -> Vec<Detection> {
             },
             confidence: 0.9,
             source_module: SOURCE_MODULE.into(),
-                verdict: dam_core::Verdict::Pending,
+            verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -152,7 +144,7 @@ pub fn detect_anthropic_keys(text: &str) -> Vec<Detection> {
             },
             confidence: 0.95,
             source_module: SOURCE_MODULE.into(),
-                verdict: dam_core::Verdict::Pending,
+            verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -169,7 +161,7 @@ pub fn detect_pem_keys(text: &str) -> Vec<Detection> {
             },
             confidence: 0.99,
             source_module: SOURCE_MODULE.into(),
-                verdict: dam_core::Verdict::Pending,
+            verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -186,7 +178,7 @@ pub fn detect_credential_urls(text: &str) -> Vec<Detection> {
             },
             confidence: 0.95,
             source_module: SOURCE_MODULE.into(),
-                verdict: dam_core::Verdict::Pending,
+            verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -365,7 +357,10 @@ mod tests {
     fn test_detect_openai_does_not_match_anthropic() {
         let key = "sk-ant-api03-AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD";
         let dets = detect_openai_keys(key);
-        assert!(dets.is_empty(), "OpenAI detector must not match Anthropic keys");
+        assert!(
+            dets.is_empty(),
+            "OpenAI detector must not match Anthropic keys"
+        );
     }
 
     #[test]
@@ -423,7 +418,8 @@ mod tests {
 
     #[test]
     fn test_detect_pem_embedded_in_json() {
-        let json = r#"{"key": "-----BEGIN RSA PRIVATE KEY-----\nMII\n-----END RSA PRIVATE KEY-----"}"#;
+        let json =
+            r#"{"key": "-----BEGIN RSA PRIVATE KEY-----\nMII\n-----END RSA PRIVATE KEY-----"}"#;
         let dets = detect_pem_keys(json);
         assert_eq!(dets.len(), 1);
     }

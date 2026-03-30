@@ -82,8 +82,8 @@ impl CertificateAuthority {
             .map_err(|e| DamError::Tls(format!("parse CA cert: {e}")))?;
 
         // Load key for signing
-        let rcgen_key = KeyPair::from_pem(&key_pem)
-            .map_err(|e| DamError::Tls(format!("parse CA key: {e}")))?;
+        let rcgen_key =
+            KeyPair::from_pem(&key_pem).map_err(|e| DamError::Tls(format!("parse CA key: {e}")))?;
 
         // Re-create rcgen Certificate for signing leaf certs.
         // The re-created cert may differ in serial/signature, but that's fine —
@@ -120,9 +120,7 @@ impl CertificateAuthority {
     pub fn generate_cert(&self, hostname: &str) -> Result<InterceptCert, DamError> {
         let mut params = CertificateParams::new(vec![hostname.to_string()])
             .map_err(|e| DamError::Tls(format!("leaf params: {e}")))?;
-        params
-            .distinguished_name
-            .push(DnType::CommonName, hostname);
+        params.distinguished_name.push(DnType::CommonName, hostname);
 
         let leaf_key =
             KeyPair::generate().map_err(|e| DamError::Tls(format!("leaf key gen: {e}")))?;
@@ -134,7 +132,10 @@ impl CertificateAuthority {
         let chain = vec![leaf_der, self.ca_cert_der.clone()];
         let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
 
-        Ok(InterceptCert { cert_chain: chain, key_der })
+        Ok(InterceptCert {
+            cert_chain: chain,
+            key_der,
+        })
     }
 
     /// Get the CA certificate PEM for trust installation.

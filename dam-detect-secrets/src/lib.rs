@@ -91,10 +91,11 @@ mod tests {
         let mut ctx = make_ctx("My key is AKIAIOSFODNN7EXAMPLE here");
         m.process(&mut ctx).unwrap();
         assert!(!ctx.detections.is_empty());
-        assert!(ctx
-            .detections
-            .iter()
-            .any(|d| d.data_type == SensitiveDataType::AwsKey));
+        assert!(
+            ctx.detections
+                .iter()
+                .any(|d| d.data_type == SensitiveDataType::AwsKey)
+        );
     }
 
     #[test]
@@ -122,7 +123,7 @@ mod tests {
             },
             confidence: 0.99,
             source_module: "detect-pii".into(),
-                verdict: dam_core::Verdict::Pending,
+            verdict: dam_core::Verdict::Pending,
         });
         m.process(&mut ctx).unwrap();
         assert!(ctx.detections.len() >= 2);

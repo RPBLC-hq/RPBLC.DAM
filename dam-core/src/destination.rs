@@ -24,13 +24,21 @@ impl Destination {
     /// Classify a bare hostname as an LLM provider or other.
     pub fn from_host(host: &str) -> Self {
         if host.contains("anthropic.com") {
-            Self::Llm { provider: LlmProvider::Anthropic }
+            Self::Llm {
+                provider: LlmProvider::Anthropic,
+            }
         } else if host.contains("openai.com") || host.contains("chatgpt.com") {
-            Self::Llm { provider: LlmProvider::OpenAI }
+            Self::Llm {
+                provider: LlmProvider::OpenAI,
+            }
         } else if host.contains("openrouter.ai") {
-            Self::Llm { provider: LlmProvider::OpenRouter }
+            Self::Llm {
+                provider: LlmProvider::OpenRouter,
+            }
         } else {
-            Self::Other { host: host.to_string() }
+            Self::Other {
+                host: host.to_string(),
+            }
         }
     }
 
@@ -73,20 +81,35 @@ mod tests {
     #[test]
     fn test_anthropic_detected() {
         let d = Destination::from_url("https://api.anthropic.com/v1/messages");
-        assert!(matches!(d, Destination::Llm { provider: LlmProvider::Anthropic }));
+        assert!(matches!(
+            d,
+            Destination::Llm {
+                provider: LlmProvider::Anthropic
+            }
+        ));
         assert!(d.is_llm());
     }
 
     #[test]
     fn test_openai_detected() {
         let d = Destination::from_url("https://api.openai.com/v1/chat/completions");
-        assert!(matches!(d, Destination::Llm { provider: LlmProvider::OpenAI }));
+        assert!(matches!(
+            d,
+            Destination::Llm {
+                provider: LlmProvider::OpenAI
+            }
+        ));
     }
 
     #[test]
     fn test_openrouter_detected() {
         let d = Destination::from_url("https://openrouter.ai/api/v1/chat/completions");
-        assert!(matches!(d, Destination::Llm { provider: LlmProvider::OpenRouter }));
+        assert!(matches!(
+            d,
+            Destination::Llm {
+                provider: LlmProvider::OpenRouter
+            }
+        ));
     }
 
     #[test]

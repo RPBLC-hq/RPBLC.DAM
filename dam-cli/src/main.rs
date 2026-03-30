@@ -2,14 +2,17 @@ mod mcp;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use dam_core::Module;
 use dam_core::config::DamConfig;
 use dam_core::flow::FlowExecutor;
 use dam_core::proxy::{ProxyState, start_proxy};
-use dam_core::Module;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "dam", about = "Data Access Mediator — protect sensitive data in transit")]
+#[command(
+    name = "dam",
+    about = "Data Access Mediator — protect sensitive data in transit"
+)]
 struct Cli {
     /// Port to listen on
     #[arg(short, long, default_value = "7828")]
@@ -30,7 +33,6 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     // -- Consent commands --
-
     /// Manage consent rules
     Consent {
         #[command(subcommand)]
@@ -38,7 +40,6 @@ enum Commands {
     },
 
     // -- Vault commands --
-
     /// Resolve a token to its original value
     Resolve {
         /// Token key or [token] (e.g., email:7B2Hkq... or [email:7B2Hkq...])
@@ -48,7 +49,6 @@ enum Commands {
     Tokens,
 
     // -- Log commands --
-
     /// Show detection statistics
     Stats,
     /// Show recent detection events
@@ -59,7 +59,6 @@ enum Commands {
     },
 
     // -- Other --
-
     /// Start MCP server on stdio
     Mcp,
 
@@ -118,7 +117,11 @@ enum ConsentCommands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let filter = if cli.verbose { "debug" } else { "info,dam=info" };
+    let filter = if cli.verbose {
+        "debug"
+    } else {
+        "info,dam=info"
+    };
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -151,8 +154,8 @@ async fn main() -> Result<()> {
 async fn cmd_serve(config: &DamConfig, no_tls: bool) -> Result<()> {
     let kek = dam_vault::encrypt::load_or_generate_kek(&config.key_path())?;
     let vault_store = Arc::new(dam_vault::VaultStore::open(&config.vault_db_path(), kek)?);
-    let consent_store = Arc::new(dam_consent::ConsentStore::open(&config.consent_db_path())?);
-    let log_store = Arc::new(dam_log::LogStore::open(&config.log_db_path())?);
+    let consent_store = Arc::new(dam_consent::ConsentStore::open(config.consent_db_path())?);
+    let log_store = Arc::new(dam_log::LogStore::open(config.log_db_path())?);
 
     // Pipeline: detect-pii → detect-secrets → consent → vault → redact → log
     let modules: Vec<Arc<dyn Module>> = vec![
@@ -171,9 +174,8 @@ async fn cmd_serve(config: &DamConfig, no_tls: bool) -> Result<()> {
 
     // Auto-resolve: resolve DAM tokens in LLM responses back to original values
     let resolver_vault = vault_store.clone();
-    let resolver: dam_core::proxy::TokenResolver = Arc::new(move |token| {
-        resolver_vault.retrieve(token).ok()
-    });
+    let resolver: dam_core::proxy::TokenResolver =
+        Arc::new(move |token| resolver_vault.retrieve(token).ok());
 
     // TLS interception for CONNECT tunnels (HTTPS_PROXY mode)
     let tls = if !no_tls {
@@ -186,7 +188,13 @@ async fn cmd_serve(config: &DamConfig, no_tls: bool) -> Result<()> {
         None
     };
 
-    let state = ProxyState { flow, client, resolver: Some(resolver), tls };
+    let state = ProxyState {
+        flow,
+        client,
+        resolver: Some(resolver),
+        tls,
+        exclude_hosts: Arc::new(config.exclude_hosts.clone()),
+    };
     start_proxy(state, config.port).await?;
 
     Ok(())
@@ -265,10 +273,16 @@ fn cmd_trust(config: &DamConfig) -> Result<()> {
 // -- Consent commands --
 
 fn cmd_consent(config: &DamConfig, action: ConsentCommands) -> Result<()> {
-    let consent_store = dam_consent::ConsentStore::open(&config.consent_db_path())?;
+    let consent_store = dam_consent::ConsentStore::open(config.consent_db_path())?;
 
     match action {
-        ConsentCommands::Grant { r#type, token, value, dest, ttl } => {
+        ConsentCommands::Grant {
+            r#type,
+            token,
+            value,
+            dest,
+            ttl,
+        } => {
             let token_key = resolve_token_arg(config, token, value)?;
             let ttl_secs = parse_ttl(ttl.as_deref(), consent_store.default_ttl_secs)?;
 
@@ -290,7 +304,11 @@ fn cmd_consent(config: &DamConfig, action: ConsentCommands) -> Result<()> {
                 println!("  token={tk}");
             }
         }
-        ConsentCommands::Deny { r#type, token, dest } => {
+        ConsentCommands::Deny {
+            r#type,
+            token,
+            dest,
+        } => {
             let token_key = resolve_token_arg(config, token, None)?;
 
             let rule = consent_store.grant(
@@ -314,14 +332,20 @@ fn cmd_consent(config: &DamConfig, action: ConsentCommands) -> Result<()> {
                 return Ok(());
             }
 
-            println!("{:<38} {:<8} {:<12} {:<25} {:<10}", "ID", "ACTION", "TYPE", "DESTINATION", "EXPIRES");
+            println!(
+                "{:<38} {:<8} {:<12} {:<25} {:<10}",
+                "ID", "ACTION", "TYPE", "DESTINATION", "EXPIRES"
+            );
             println!("{}", "-".repeat(95));
             for rule in &rules {
                 let action = rule.action.as_str();
-                let token_suffix = rule.token_key.as_ref()
+                let token_suffix = rule
+                    .token_key
+                    .as_ref()
                     .map(|t| format!(" [{}]", t))
                     .unwrap_or_default();
-                let expiry = rule.expires_at
+                let expiry = rule
+                    .expires_at
                     .map(|ts| ts.to_string())
                     .unwrap_or_else(|| "permanent".into());
                 println!(
@@ -369,13 +393,16 @@ fn resolve_token_arg(
                 Ok(t) => t,
                 Err(_) => continue,
             };
-            if let Ok(stored_val) = store.retrieve(&token) {
-                if stored_val == val {
-                    return Ok(Some(entry.ref_id.clone()));
-                }
+            if let Ok(stored_val) = store.retrieve(&token)
+                && stored_val == val
+            {
+                return Ok(Some(entry.ref_id.clone()));
             }
         }
-        anyhow::bail!("Value '{}' not found in vault. It must be detected first.", val);
+        anyhow::bail!(
+            "Value '{}' not found in vault. It must be detected first.",
+            val
+        );
     }
 
     Ok(None)
@@ -405,8 +432,9 @@ fn parse_ttl(ttl: Option<&str>, default_secs: u64) -> Result<Option<u64>> {
                 // Assume seconds
                 (s, 1u64)
             };
-            let num: u64 = num_str.parse()
-                .map_err(|_| anyhow::anyhow!("Invalid TTL: '{s}'. Use 30m, 1h, 24h, 7d, or permanent."))?;
+            let num: u64 = num_str.parse().map_err(|_| {
+                anyhow::anyhow!("Invalid TTL: '{s}'. Use 30m, 1h, 24h, 7d, or permanent.")
+            })?;
             Ok(Some(num * multiplier))
         }
     }
@@ -435,10 +463,13 @@ fn cmd_tokens(config: &DamConfig) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<40} {:<12} {}", "TOKEN", "TYPE", "CREATED");
+    println!("{:<40} {:<12} CREATED", "TOKEN", "TYPE");
     println!("{}", "-".repeat(65));
     for entry in &entries {
-        println!("{:<40} {:<12} {}", entry.ref_id, entry.data_type, entry.created_at);
+        println!(
+            "{:<40} {:<12} {}",
+            entry.ref_id, entry.data_type, entry.created_at
+        );
     }
     Ok(())
 }
@@ -446,7 +477,7 @@ fn cmd_tokens(config: &DamConfig) -> Result<()> {
 // -- Log commands --
 
 fn cmd_stats(config: &DamConfig) -> Result<()> {
-    let log_store = dam_log::LogStore::open(&config.log_db_path())?;
+    let log_store = dam_log::LogStore::open(config.log_db_path())?;
     let stats = log_store.stats()?;
 
     if stats.is_empty() {
@@ -454,17 +485,23 @@ fn cmd_stats(config: &DamConfig) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<12} {:>6} {:>8} {:>6}  {}", "TYPE", "TOTAL", "REDACTED", "PASSED", "TOP DESTINATIONS");
+    println!(
+        "{:<12} {:>6} {:>8} {:>6}  TOP DESTINATIONS",
+        "TYPE", "TOTAL", "REDACTED", "PASSED"
+    );
     println!("{}", "-".repeat(75));
     for stat in &stats {
         let dests = stat.top_destinations.join(", ");
-        println!("{:<12} {:>6} {:>8} {:>6}  {}", stat.data_type, stat.count, stat.redacted, stat.passed, dests);
+        println!(
+            "{:<12} {:>6} {:>8} {:>6}  {}",
+            stat.data_type, stat.count, stat.redacted, stat.passed, dests
+        );
     }
     Ok(())
 }
 
 fn cmd_log(config: &DamConfig, limit: u32) -> Result<()> {
-    let log_store = dam_log::LogStore::open(&config.log_db_path())?;
+    let log_store = dam_log::LogStore::open(config.log_db_path())?;
     let events = log_store.query_all(Some(limit))?;
 
     if events.is_empty() {
@@ -472,10 +509,16 @@ fn cmd_log(config: &DamConfig, limit: u32) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<12} {:<20} {:<10} {}", "TYPE", "DESTINATION", "ACTION", "PREVIEW");
+    println!(
+        "{:<12} {:<20} {:<10} PREVIEW",
+        "TYPE", "DESTINATION", "ACTION"
+    );
     println!("{}", "-".repeat(65));
     for event in &events {
-        println!("{:<12} {:<20} {:<10} {}", event.data_type, event.destination, event.action, event.value_preview);
+        println!(
+            "{:<12} {:<20} {:<10} {}",
+            event.data_type, event.destination, event.action, event.value_preview
+        );
     }
     Ok(())
 }
@@ -487,8 +530,8 @@ async fn cmd_mcp(config: &DamConfig) -> Result<()> {
 
     let kek = dam_vault::encrypt::load_or_generate_kek(&config.key_path())?;
     let vault_store = Arc::new(dam_vault::VaultStore::open(&config.vault_db_path(), kek)?);
-    let consent_store = Arc::new(dam_consent::ConsentStore::open(&config.consent_db_path())?);
-    let log_store = Arc::new(dam_log::LogStore::open(&config.log_db_path())?);
+    let consent_store = Arc::new(dam_consent::ConsentStore::open(config.consent_db_path())?);
+    let log_store = Arc::new(dam_log::LogStore::open(config.log_db_path())?);
 
     let server = mcp::DamMcpServer::new(vault_store, consent_store, log_store);
     let transport = rmcp::transport::io::stdio();

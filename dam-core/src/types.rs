@@ -76,10 +76,22 @@ impl SensitiveDataType {
     /// All built-in variants (excluding Custom).
     pub fn all() -> &'static [Self] {
         &[
-            Self::Email, Self::Phone, Self::Ssn, Self::CreditCard,
-            Self::Iban, Self::IpAddress, Self::Name, Self::Address,
-            Self::JwtToken, Self::AwsKey, Self::GitHubToken, Self::StripeKey,
-            Self::ApiKey, Self::LlmApiKey, Self::PrivateKey, Self::CredentialUrl,
+            Self::Email,
+            Self::Phone,
+            Self::Ssn,
+            Self::CreditCard,
+            Self::Iban,
+            Self::IpAddress,
+            Self::Name,
+            Self::Address,
+            Self::JwtToken,
+            Self::AwsKey,
+            Self::GitHubToken,
+            Self::StripeKey,
+            Self::ApiKey,
+            Self::LlmApiKey,
+            Self::PrivateKey,
+            Self::CredentialUrl,
         ]
     }
 }
@@ -103,23 +115,50 @@ mod tests {
             assert_eq!(parsed, dt, "roundtrip failed for {tag}");
         }
         // Custom too
-        assert_eq!(SensitiveDataType::from_tag("custom"), Some(SensitiveDataType::Custom));
+        assert_eq!(
+            SensitiveDataType::from_tag("custom"),
+            Some(SensitiveDataType::Custom)
+        );
     }
 
     #[test]
     fn test_from_tag_case_insensitive() {
-        assert_eq!(SensitiveDataType::from_tag("EMAIL"), Some(SensitiveDataType::Email));
-        assert_eq!(SensitiveDataType::from_tag("Email"), Some(SensitiveDataType::Email));
-        assert_eq!(SensitiveDataType::from_tag("email"), Some(SensitiveDataType::Email));
+        assert_eq!(
+            SensitiveDataType::from_tag("EMAIL"),
+            Some(SensitiveDataType::Email)
+        );
+        assert_eq!(
+            SensitiveDataType::from_tag("Email"),
+            Some(SensitiveDataType::Email)
+        );
+        assert_eq!(
+            SensitiveDataType::from_tag("email"),
+            Some(SensitiveDataType::Email)
+        );
     }
 
     #[test]
     fn test_from_tag_aliases() {
-        assert_eq!(SensitiveDataType::from_tag("cc"), Some(SensitiveDataType::CreditCard));
-        assert_eq!(SensitiveDataType::from_tag("credit_card"), Some(SensitiveDataType::CreditCard));
-        assert_eq!(SensitiveDataType::from_tag("addr"), Some(SensitiveDataType::Address));
-        assert_eq!(SensitiveDataType::from_tag("address"), Some(SensitiveDataType::Address));
-        assert_eq!(SensitiveDataType::from_tag("ip"), Some(SensitiveDataType::IpAddress));
+        assert_eq!(
+            SensitiveDataType::from_tag("cc"),
+            Some(SensitiveDataType::CreditCard)
+        );
+        assert_eq!(
+            SensitiveDataType::from_tag("credit_card"),
+            Some(SensitiveDataType::CreditCard)
+        );
+        assert_eq!(
+            SensitiveDataType::from_tag("addr"),
+            Some(SensitiveDataType::Address)
+        );
+        assert_eq!(
+            SensitiveDataType::from_tag("address"),
+            Some(SensitiveDataType::Address)
+        );
+        assert_eq!(
+            SensitiveDataType::from_tag("ip"),
+            Some(SensitiveDataType::IpAddress)
+        );
     }
 
     #[test]

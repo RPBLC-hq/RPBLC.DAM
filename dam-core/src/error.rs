@@ -21,10 +21,7 @@ pub enum DamError {
     InvalidConfig(String),
 
     #[error("module '{name}' error: {message}")]
-    Module {
-        name: String,
-        message: String,
-    },
+    Module { name: String, message: String },
 
     #[error("proxy error: {0}")]
     Proxy(String),

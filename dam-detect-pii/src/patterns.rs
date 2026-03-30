@@ -8,35 +8,30 @@ const SOURCE_MODULE: &str = "detect-pii";
 
 // ── Compiled regex patterns ──────────────────────────────────────────
 
-static EMAIL_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}").unwrap()
-});
+static EMAIL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}").unwrap());
 
 /// E.164 international phone: +<country code><number>, 7-15 digits total.
-static PHONE_E164_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\+[1-9]\d{6,14}").unwrap()
-});
+static PHONE_E164_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\+[1-9]\d{6,14}").unwrap());
 
 /// NANP phone: (XXX) XXX-XXXX or XXX-XXX-XXXX or XXX.XXX.XXXX
-static PHONE_NANP_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?:\(\d{3}\)\s?|\d{3}[\-.])\d{3}[\-.]\d{4}").unwrap()
-});
+static PHONE_NANP_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?:\(\d{3}\)\s?|\d{3}[\-.])\d{3}[\-.]\d{4}").unwrap());
 
 /// SSN with dashes: XXX-XX-XXXX
-static SSN_DASHED_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap()
-});
+static SSN_DASHED_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap());
 
 /// SSN without dashes: 9 consecutive digits (word-bounded).
-static SSN_BARE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b\d{9}\b").unwrap()
-});
+static SSN_BARE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d{9}\b").unwrap());
 
 /// Credit card: formatted (with separators) or bare 13-16 digits.
 /// Formatted: XXXX-XXXX-XXXX-XXXX (Visa/MC) or XXXX-XXXXXX-XXXXX (Amex).
 /// Bare: 13-16 contiguous digits. Does NOT match 17+ digit sequences (avoids timestamps).
 static CREDIT_CARD_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b\d{4}[\s\-]\d{4}[\s\-]\d{4}[\s\-]\d{4}\b|\b\d{4}[\s\-]\d{6}[\s\-]\d{5}\b|\b\d{13,16}\b").unwrap()
+    Regex::new(
+        r"\b\d{4}[\s\-]\d{4}[\s\-]\d{4}[\s\-]\d{4}\b|\b\d{4}[\s\-]\d{6}[\s\-]\d{5}\b|\b\d{13,16}\b",
+    )
+    .unwrap()
 });
 
 /// IBAN: 2 letter country code, 2 check digits, 4-30 alphanumeric BBAN chars.
@@ -64,7 +59,7 @@ pub fn detect_emails(text: &str) -> Vec<Detection> {
             },
             confidence: 0.95,
             source_module: SOURCE_MODULE.into(),
-                verdict: dam_core::Verdict::Pending,
+            verdict: dam_core::Verdict::Pending,
         })
         .collect()
 }
@@ -93,9 +88,9 @@ pub fn detect_phones(text: &str) -> Vec<Detection> {
         let digits: String = m.as_str().chars().filter(|c| c.is_ascii_digit()).collect();
         if validators::phone_length(&digits) {
             // Only add if not already covered by an E.164 detection at the same span.
-            let already = detections.iter().any(|d| {
-                d.span.start <= m.start() && d.span.end >= m.end()
-            });
+            let already = detections
+                .iter()
+                .any(|d| d.span.start <= m.start() && d.span.end >= m.end());
             if !already {
                 detections.push(Detection {
                     data_type: SensitiveDataType::Phone,
@@ -106,7 +101,7 @@ pub fn detect_phones(text: &str) -> Vec<Detection> {
                     },
                     confidence: 0.85,
                     source_module: SOURCE_MODULE.into(),
-                verdict: dam_core::Verdict::Pending,
+                    verdict: dam_core::Verdict::Pending,
                 });
             }
         }
@@ -174,7 +169,7 @@ pub fn detect_credit_cards(text: &str) -> Vec<Detection> {
                     },
                     confidence: 0.95,
                     source_module: SOURCE_MODULE.into(),
-                verdict: dam_core::Verdict::Pending,
+                    verdict: dam_core::Verdict::Pending,
                 })
             } else {
                 None
@@ -197,7 +192,7 @@ pub fn detect_ibans(text: &str) -> Vec<Detection> {
                     },
                     confidence: 0.95,
                     source_module: SOURCE_MODULE.into(),
-                verdict: dam_core::Verdict::Pending,
+                    verdict: dam_core::Verdict::Pending,
                 })
             } else {
                 None
@@ -220,7 +215,7 @@ pub fn detect_ip_addresses(text: &str) -> Vec<Detection> {
                     },
                     confidence: 0.90,
                     source_module: SOURCE_MODULE.into(),
-                verdict: dam_core::Verdict::Pending,
+                    verdict: dam_core::Verdict::Pending,
                 })
             } else {
                 None

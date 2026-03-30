@@ -35,9 +35,7 @@ pub fn mint_token(
     }
 
     Err(last_err.unwrap_or_else(|| {
-        DamError::Db(format!(
-            "failed to mint token after {MAX_RETRIES} retries"
-        ))
+        DamError::Db(format!("failed to mint token after {MAX_RETRIES} retries"))
     }))
 }
 

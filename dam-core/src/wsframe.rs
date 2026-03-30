@@ -112,7 +112,14 @@ pub fn parse_frame(buf: &[u8]) -> Option<(Frame, usize)> {
         unmask(&mut payload, mask_key);
     }
 
-    Some((Frame { fin, opcode, payload }, total))
+    Some((
+        Frame {
+            fin,
+            opcode,
+            payload,
+        },
+        total,
+    ))
 }
 
 /// Serialize a frame to wire format. If `mask` is true, generates a random mask key.
@@ -171,6 +178,7 @@ fn rand_mask_key() -> [u8; 4] {
 
 /// Reassembles fragmented WebSocket messages.
 /// Control frames (ping/pong/close) are returned immediately regardless of fragment state.
+#[derive(Default)]
 pub struct FrameAssembler {
     fragments: Vec<u8>,
     started_opcode: Option<Opcode>,
@@ -178,10 +186,7 @@ pub struct FrameAssembler {
 
 impl FrameAssembler {
     pub fn new() -> Self {
-        Self {
-            fragments: Vec::new(),
-            started_opcode: None,
-        }
+        Self::default()
     }
 
     /// Feed a frame. Returns the complete message (payload + original opcode) when done,
@@ -351,22 +356,24 @@ mod tests {
         let mut asm = FrameAssembler::new();
 
         // Fragment 1: Text, FIN=false
-        assert!(asm
-            .feed(Frame {
+        assert!(
+            asm.feed(Frame {
                 fin: false,
                 opcode: Opcode::Text,
                 payload: b"hel".to_vec(),
             })
-            .is_none());
+            .is_none()
+        );
 
         // Fragment 2: Continuation, FIN=false
-        assert!(asm
-            .feed(Frame {
+        assert!(
+            asm.feed(Frame {
                 fin: false,
                 opcode: Opcode::Continuation,
                 payload: b"lo ".to_vec(),
             })
-            .is_none());
+            .is_none()
+        );
 
         // Fragment 3: Continuation, FIN=true
         let (payload, opcode) = asm
@@ -385,13 +392,14 @@ mod tests {
         let mut asm = FrameAssembler::new();
 
         // Start fragmented text
-        assert!(asm
-            .feed(Frame {
+        assert!(
+            asm.feed(Frame {
                 fin: false,
                 opcode: Opcode::Text,
                 payload: b"part1".to_vec(),
             })
-            .is_none());
+            .is_none()
+        );
 
         // Ping in the middle — returned immediately
         let (payload, opcode) = asm

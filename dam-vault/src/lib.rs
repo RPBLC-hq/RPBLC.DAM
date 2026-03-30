@@ -66,7 +66,10 @@ mod tests {
         Detection {
             data_type: dt,
             value: value.to_string(),
-            span: Span { start: 0, end: value.len() },
+            span: Span {
+                start: 0,
+                end: value.len(),
+            },
             confidence: 0.95,
             source_module: "test".into(),
             verdict: Verdict::Pending,
@@ -85,8 +88,18 @@ mod tests {
     fn test_matches_all_traffic() {
         let (_dir, store) = make_store();
         let m = VaultModule::new(store);
-        let llm = FlowContext::new("x".into(), Destination::Llm { provider: LlmProvider::Anthropic });
-        let other = FlowContext::new("x".into(), Destination::Other { host: "example.com".into() });
+        let llm = FlowContext::new(
+            "x".into(),
+            Destination::Llm {
+                provider: LlmProvider::Anthropic,
+            },
+        );
+        let other = FlowContext::new(
+            "x".into(),
+            Destination::Other {
+                host: "example.com".into(),
+            },
+        );
         assert!(m.matches(&llm));
         assert!(m.matches(&other)); // vault stores everything now
     }
@@ -96,10 +109,16 @@ mod tests {
         let (_dir, store) = make_store();
         let m = VaultModule::new(store.clone());
 
-        let mut ctx = FlowContext::new("email and ssn".into(),
-            Destination::Llm { provider: LlmProvider::Anthropic });
-        ctx.detections.push(make_detection(SensitiveDataType::Email, "test@example.com"));
-        ctx.detections.push(make_detection(SensitiveDataType::Ssn, "123-45-6789"));
+        let mut ctx = FlowContext::new(
+            "email and ssn".into(),
+            Destination::Llm {
+                provider: LlmProvider::Anthropic,
+            },
+        );
+        ctx.detections
+            .push(make_detection(SensitiveDataType::Email, "test@example.com"));
+        ctx.detections
+            .push(make_detection(SensitiveDataType::Ssn, "123-45-6789"));
 
         m.process(&mut ctx).unwrap();
 
@@ -119,9 +138,14 @@ mod tests {
         let (_dir, store) = make_store();
         let m = VaultModule::new(store);
 
-        let mut ctx = FlowContext::new("test@example.com".into(),
-            Destination::Llm { provider: LlmProvider::Anthropic });
-        ctx.detections.push(make_detection(SensitiveDataType::Email, "test@example.com"));
+        let mut ctx = FlowContext::new(
+            "test@example.com".into(),
+            Destination::Llm {
+                provider: LlmProvider::Anthropic,
+            },
+        );
+        ctx.detections
+            .push(make_detection(SensitiveDataType::Email, "test@example.com"));
 
         m.process(&mut ctx).unwrap();
 
@@ -135,10 +159,16 @@ mod tests {
         let (_dir, store) = make_store();
         let m = VaultModule::new(store.clone());
 
-        let mut ctx = FlowContext::new("x".into(),
-            Destination::Other { host: "example.com".into() });
-        ctx.detections.push(make_detection(SensitiveDataType::Email, "alice@x.com"));
-        ctx.detections.push(make_detection(SensitiveDataType::Email, "alice@x.com"));
+        let mut ctx = FlowContext::new(
+            "x".into(),
+            Destination::Other {
+                host: "example.com".into(),
+            },
+        );
+        ctx.detections
+            .push(make_detection(SensitiveDataType::Email, "alice@x.com"));
+        ctx.detections
+            .push(make_detection(SensitiveDataType::Email, "alice@x.com"));
 
         m.process(&mut ctx).unwrap();
 
@@ -152,8 +182,12 @@ mod tests {
         let (_dir, store) = make_store();
         let m = VaultModule::new(store);
 
-        let mut ctx = FlowContext::new("clean".into(),
-            Destination::Other { host: "x.com".into() });
+        let mut ctx = FlowContext::new(
+            "clean".into(),
+            Destination::Other {
+                host: "x.com".into(),
+            },
+        );
         m.process(&mut ctx).unwrap();
 
         assert!(ctx.tokens_created.is_empty());

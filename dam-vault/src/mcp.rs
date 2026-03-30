@@ -28,7 +28,7 @@
 /// - Input: `{ "token": "[email:a3f71bc9]", "accessor": "tool:send_email", "purpose": "delivery", "ttl_seconds": 300 }`
 /// - Output: `{ "granted": true, "expires_at": 1710000300 }`
 /// - Creates a time-limited consent grant.
-
+///
 /// Start the MCP server (stub).
 ///
 /// This will be implemented to listen for MCP protocol messages

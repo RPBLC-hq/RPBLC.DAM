@@ -2,9 +2,9 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::body::Body;
+use hyper::Request;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::Request;
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -51,7 +51,7 @@ async fn handle_tunnel(
     port: u16,
     state: &ProxyState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let should_intercept = state.tls.is_some() && Destination::from_host(host).is_llm();
+    let should_intercept = state.tls.is_some() && !state.is_excluded(host);
 
     if !should_intercept {
         // Blind tunnel: bidirectional byte forwarding, no inspection
@@ -172,8 +172,7 @@ async fn handle_intercepted_request(
 async fn connect_upstream_tls(
     host: &str,
     port: u16,
-) -> Result<tokio_rustls::client::TlsStream<TcpStream>, Box<dyn std::error::Error + Send + Sync>>
-{
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, Box<dyn std::error::Error + Send + Sync>> {
     let mut root_store = rustls::RootCertStore::empty();
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
@@ -237,14 +236,14 @@ async fn relay_websocket(
             return Ok(hyper::Response::builder()
                 .status(502)
                 .body(Body::from("WS: upstream closed"))
-                .unwrap())
+                .unwrap());
         }
         Ok(n) => n,
         Err(e) => {
             return Ok(hyper::Response::builder()
                 .status(502)
                 .body(Body::from(format!("WS read failed: {e}")))
-                .unwrap())
+                .unwrap());
         }
     };
 
@@ -365,26 +364,27 @@ async fn relay_websocket_inspected(
         }
     }
     // Forward subprotocols if present
-    if let Some(protos) = headers.get("sec-websocket-protocol") {
-        if let Ok(v) = protos.to_str() {
-            for proto in v.split(',') {
-                builder = builder.with_sub_protocol(proto.trim());
-            }
+    if let Some(protos) = headers.get("sec-websocket-protocol")
+        && let Ok(v) = protos.to_str()
+    {
+        for proto in v.split(',') {
+            builder = builder.with_sub_protocol(proto.trim());
         }
     }
 
     // 3. Perform WS handshake with upstream (tungstenite handles everything)
-    let (upstream_ws, _upstream_resp) =
-        match tokio_tungstenite::client_async(builder, upstream_tls).await {
-            Ok(pair) => pair,
-            Err(e) => {
-                tracing::debug!(error = %e, host = %host, "WS inspected: upstream handshake failed");
-                return Ok(hyper::Response::builder()
-                    .status(502)
-                    .body(Body::from(format!("WebSocket handshake failed: {e}")))
-                    .unwrap());
-            }
-        };
+    let (upstream_ws, _upstream_resp) = match tokio_tungstenite::client_async(builder, upstream_tls)
+        .await
+    {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::debug!(error = %e, host = %host, "WS inspected: upstream handshake failed");
+            return Ok(hyper::Response::builder()
+                .status(502)
+                .body(Body::from(format!("WebSocket handshake failed: {e}")))
+                .unwrap());
+        }
+    };
 
     // 4. Build 101 response for the client using their Sec-WebSocket-Key
     let client_key = headers
@@ -432,7 +432,7 @@ async fn relay_websocket_inspected(
 async fn run_inspected_ws_relay<C, U>(
     client_ws: tokio_tungstenite::WebSocketStream<C>,
     upstream_ws: tokio_tungstenite::WebSocketStream<U>,
-    host: &str,
+    _host: &str,
     state: &ProxyState,
 ) where
     C: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -485,10 +485,10 @@ async fn run_inspected_ws_relay<C, U>(
 }
 
 fn parse_host_port(authority: &str) -> (String, u16) {
-    if let Some((host, port_str)) = authority.rsplit_once(':') {
-        if let Ok(port) = port_str.parse::<u16>() {
-            return (host.to_string(), port);
-        }
+    if let Some((host, port_str)) = authority.rsplit_once(':')
+        && let Ok(port) = port_str.parse::<u16>()
+    {
+        return (host.to_string(), port);
     }
     (authority.to_string(), 443)
 }

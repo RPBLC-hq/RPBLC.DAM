@@ -65,9 +65,15 @@ mod tests {
     }
 
     impl Module for MockDetector {
-        fn name(&self) -> &str { self.name }
-        fn module_type(&self) -> ModuleType { ModuleType::Detection }
-        fn matches(&self, _ctx: &FlowContext) -> bool { self.should_match }
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn module_type(&self) -> ModuleType {
+            ModuleType::Detection
+        }
+        fn matches(&self, _ctx: &FlowContext) -> bool {
+            self.should_match
+        }
         fn process(&self, ctx: &mut FlowContext) -> Result<(), DamError> {
             if let Some(d) = &self.detection {
                 ctx.detections.push(d.clone());
@@ -82,9 +88,15 @@ mod tests {
     }
 
     impl Module for MockAction {
-        fn name(&self) -> &str { "mock-action" }
-        fn module_type(&self) -> ModuleType { ModuleType::Action }
-        fn matches(&self, _ctx: &FlowContext) -> bool { self.should_match }
+        fn name(&self) -> &str {
+            "mock-action"
+        }
+        fn module_type(&self) -> ModuleType {
+            ModuleType::Action
+        }
+        fn matches(&self, _ctx: &FlowContext) -> bool {
+            self.should_match
+        }
         fn process(&self, ctx: &mut FlowContext) -> Result<(), DamError> {
             if !ctx.detections.is_empty() {
                 ctx.modified_body = Some(ctx.request_body.to_uppercase());
@@ -97,11 +109,20 @@ mod tests {
     struct FailingModule;
 
     impl Module for FailingModule {
-        fn name(&self) -> &str { "failing" }
-        fn module_type(&self) -> ModuleType { ModuleType::Detection }
-        fn matches(&self, _ctx: &FlowContext) -> bool { true }
+        fn name(&self) -> &str {
+            "failing"
+        }
+        fn module_type(&self) -> ModuleType {
+            ModuleType::Detection
+        }
+        fn matches(&self, _ctx: &FlowContext) -> bool {
+            true
+        }
         fn process(&self, _ctx: &mut FlowContext) -> Result<(), DamError> {
-            Err(DamError::Module { name: "failing".into(), message: "boom".into() })
+            Err(DamError::Module {
+                name: "failing".into(),
+                message: "boom".into(),
+            })
         }
     }
 
@@ -117,7 +138,12 @@ mod tests {
     }
 
     fn ctx(body: &str) -> FlowContext {
-        FlowContext::new(body.into(), Destination::Other { host: "example.com".into() })
+        FlowContext::new(
+            body.into(),
+            Destination::Other {
+                host: "example.com".into(),
+            },
+        )
     }
 
     #[test]

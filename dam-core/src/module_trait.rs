@@ -25,23 +25,22 @@ impl Span {
     pub fn len(&self) -> usize {
         self.end - self.start
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
 }
 
 /// Verdict set by the consent module for each detection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Verdict {
     /// No consent check yet — detection just found.
+    #[default]
     Pending,
     /// Consent says: tokenize/redact this value.
     Redact,
     /// Consent says: let the real value pass through.
     Pass,
-}
-
-impl Default for Verdict {
-    fn default() -> Self {
-        Self::Pending
-    }
 }
 
 /// A single detection of sensitive data in the request body.
@@ -90,7 +89,9 @@ impl FlowContext {
         }
         // Sort by confidence descending — highest confidence wins
         self.detections.sort_by(|a, b| {
-            b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal)
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         let mut kept: Vec<Detection> = Vec::with_capacity(self.detections.len());
@@ -154,7 +155,12 @@ mod tests {
 
     #[test]
     fn test_flow_context_dedup_overlapping() {
-        let mut ctx = FlowContext::new("test".into(), Destination::Other { host: "example.com".into() });
+        let mut ctx = FlowContext::new(
+            "test".into(),
+            Destination::Other {
+                host: "example.com".into(),
+            },
+        );
         ctx.detections.push(make_detection(0, 10, 0.8, "a"));
         ctx.detections.push(make_detection(5, 15, 0.9, "b"));
         ctx.dedup_detections();
@@ -164,7 +170,12 @@ mod tests {
 
     #[test]
     fn test_flow_context_dedup_no_overlap() {
-        let mut ctx = FlowContext::new("test".into(), Destination::Other { host: "example.com".into() });
+        let mut ctx = FlowContext::new(
+            "test".into(),
+            Destination::Other {
+                host: "example.com".into(),
+            },
+        );
         ctx.detections.push(make_detection(0, 5, 0.8, "a"));
         ctx.detections.push(make_detection(10, 15, 0.9, "b"));
         ctx.dedup_detections();
@@ -173,7 +184,12 @@ mod tests {
 
     #[test]
     fn test_flow_context_dedup_across_modules() {
-        let mut ctx = FlowContext::new("test".into(), Destination::Other { host: "example.com".into() });
+        let mut ctx = FlowContext::new(
+            "test".into(),
+            Destination::Other {
+                host: "example.com".into(),
+            },
+        );
         // Same span from two modules — keep highest confidence
         ctx.detections.push(make_detection(0, 10, 0.7, "mod-a"));
         ctx.detections.push(make_detection(0, 10, 0.95, "mod-b"));
@@ -184,7 +200,12 @@ mod tests {
 
     #[test]
     fn test_flow_context_empty() {
-        let mut ctx = FlowContext::new("hello".into(), Destination::Other { host: "x.com".into() });
+        let mut ctx = FlowContext::new(
+            "hello".into(),
+            Destination::Other {
+                host: "x.com".into(),
+            },
+        );
         ctx.dedup_detections();
         assert!(ctx.detections.is_empty());
         assert_eq!(ctx.output_body(), "hello");
@@ -192,7 +213,12 @@ mod tests {
 
     #[test]
     fn test_flow_context_modified_body() {
-        let mut ctx = FlowContext::new("original".into(), Destination::Other { host: "x.com".into() });
+        let mut ctx = FlowContext::new(
+            "original".into(),
+            Destination::Other {
+                host: "x.com".into(),
+            },
+        );
         assert_eq!(ctx.output_body(), "original");
         ctx.modified_body = Some("modified".into());
         assert_eq!(ctx.output_body(), "modified");

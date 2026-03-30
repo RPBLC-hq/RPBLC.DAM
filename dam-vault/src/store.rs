@@ -28,8 +28,7 @@ impl VaultStore {
     ///
     /// Applies the schema and enables WAL mode.
     pub fn open(db_path: &Path, kek: [u8; 32]) -> Result<Self, DamError> {
-        let conn = Connection::open(db_path)
-            .map_err(|e| DamError::Db(format!("open: {e}")))?;
+        let conn = Connection::open(db_path).map_err(|e| DamError::Db(format!("open: {e}")))?;
 
         // Enable WAL mode
         conn.pragma_update(None, "journal_mode", "WAL")
@@ -61,15 +60,14 @@ impl VaultStore {
     ///
     /// Deduplication: if the same normalized value+type already exists,
     /// the existing token is returned without creating a new entry.
-    pub fn store(
-        &self,
-        data_type: SensitiveDataType,
-        plaintext: &str,
-    ) -> Result<Token, DamError> {
+    pub fn store(&self, data_type: SensitiveDataType, plaintext: &str) -> Result<Token, DamError> {
         let normalized = normalize(data_type, plaintext);
         let hash = compute_hash(data_type, &normalized);
 
-        let conn = self.conn.lock().map_err(|e| DamError::Db(format!("lock: {e}")))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DamError::Db(format!("lock: {e}")))?;
 
         // Check for duplicate
         let existing: Option<String> = conn
@@ -118,7 +116,10 @@ impl VaultStore {
     /// Retrieve and decrypt a value by its token.
     pub fn retrieve(&self, token: &Token) -> Result<String, DamError> {
         let ref_id = token.key();
-        let conn = self.conn.lock().map_err(|e| DamError::Db(format!("lock: {e}")))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DamError::Db(format!("lock: {e}")))?;
 
         let (ciphertext, dek_enc, iv): (Vec<u8>, Vec<u8>, Vec<u8>) = conn
             .query_row(
@@ -142,7 +143,10 @@ impl VaultStore {
     /// Delete a vault entry by its token.
     pub fn delete(&self, token: &Token) -> Result<(), DamError> {
         let ref_id = token.key();
-        let conn = self.conn.lock().map_err(|e| DamError::Db(format!("lock: {e}")))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DamError::Db(format!("lock: {e}")))?;
 
         let rows = conn
             .execute("DELETE FROM entries WHERE ref_id = ?1", [&ref_id])
@@ -158,8 +162,14 @@ impl VaultStore {
     /// List vault entry metadata, optionally filtered by data type.
     ///
     /// No decryption is performed.
-    pub fn list(&self, filter_type: Option<SensitiveDataType>) -> Result<Vec<VaultEntry>, DamError> {
-        let conn = self.conn.lock().map_err(|e| DamError::Db(format!("lock: {e}")))?;
+    pub fn list(
+        &self,
+        filter_type: Option<SensitiveDataType>,
+    ) -> Result<Vec<VaultEntry>, DamError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DamError::Db(format!("lock: {e}")))?;
 
         let mut entries = Vec::new();
 
@@ -207,7 +217,10 @@ impl VaultStore {
 
     /// Count the total number of entries in the vault.
     pub fn count(&self) -> Result<usize, DamError> {
-        let conn = self.conn.lock().map_err(|e| DamError::Db(format!("lock: {e}")))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DamError::Db(format!("lock: {e}")))?;
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
@@ -218,7 +231,10 @@ impl VaultStore {
 
     /// Check if a ref_id already exists in the store.
     pub fn exists(&self, ref_id: &str) -> Result<bool, DamError> {
-        let conn = self.conn.lock().map_err(|e| DamError::Db(format!("lock: {e}")))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| DamError::Db(format!("lock: {e}")))?;
 
         let count: i64 = conn
             .query_row(
@@ -271,7 +287,9 @@ mod tests {
     fn test_store_and_retrieve() {
         let (_dir, store) = temp_store();
 
-        let token = store.store(SensitiveDataType::Email, "alice@example.com").unwrap();
+        let token = store
+            .store(SensitiveDataType::Email, "alice@example.com")
+            .unwrap();
         assert_eq!(token.data_type, SensitiveDataType::Email);
 
         let value = store.retrieve(&token).unwrap();
@@ -282,8 +300,12 @@ mod tests {
     fn test_store_dedup_returns_same_token() {
         let (_dir, store) = temp_store();
 
-        let t1 = store.store(SensitiveDataType::Email, "alice@example.com").unwrap();
-        let t2 = store.store(SensitiveDataType::Email, "alice@example.com").unwrap();
+        let t1 = store
+            .store(SensitiveDataType::Email, "alice@example.com")
+            .unwrap();
+        let t2 = store
+            .store(SensitiveDataType::Email, "alice@example.com")
+            .unwrap();
 
         assert_eq!(t1.key(), t2.key());
         assert_eq!(store.count().unwrap(), 1);
@@ -293,8 +315,12 @@ mod tests {
     fn test_dedup_different_types_not_deduped() {
         let (_dir, store) = temp_store();
 
-        let t1 = store.store(SensitiveDataType::Email, "test@test.com").unwrap();
-        let t2 = store.store(SensitiveDataType::Name, "test@test.com").unwrap();
+        let t1 = store
+            .store(SensitiveDataType::Email, "test@test.com")
+            .unwrap();
+        let t2 = store
+            .store(SensitiveDataType::Name, "test@test.com")
+            .unwrap();
 
         assert_ne!(t1.key(), t2.key());
         assert_eq!(store.count().unwrap(), 2);
@@ -304,8 +330,12 @@ mod tests {
     fn test_normalize_credit_card() {
         let (_dir, store) = temp_store();
 
-        let t1 = store.store(SensitiveDataType::CreditCard, "4111-1111-1111-1111").unwrap();
-        let t2 = store.store(SensitiveDataType::CreditCard, "4111 1111 1111 1111").unwrap();
+        let t1 = store
+            .store(SensitiveDataType::CreditCard, "4111-1111-1111-1111")
+            .unwrap();
+        let t2 = store
+            .store(SensitiveDataType::CreditCard, "4111 1111 1111 1111")
+            .unwrap();
 
         // Both should dedup to the same entry
         assert_eq!(t1.key(), t2.key());
@@ -316,8 +346,12 @@ mod tests {
     fn test_normalize_phone() {
         let (_dir, store) = temp_store();
 
-        let t1 = store.store(SensitiveDataType::Phone, "+1-555-123-4567").unwrap();
-        let t2 = store.store(SensitiveDataType::Phone, "+1 555 123 4567").unwrap();
+        let t1 = store
+            .store(SensitiveDataType::Phone, "+1-555-123-4567")
+            .unwrap();
+        let t2 = store
+            .store(SensitiveDataType::Phone, "+1 555 123 4567")
+            .unwrap();
 
         assert_eq!(t1.key(), t2.key());
     }
@@ -326,8 +360,12 @@ mod tests {
     fn test_normalize_iban() {
         let (_dir, store) = temp_store();
 
-        let t1 = store.store(SensitiveDataType::Iban, "DE89 3704 0044 0532 0130 00").unwrap();
-        let t2 = store.store(SensitiveDataType::Iban, "DE89370400440532013000").unwrap();
+        let t1 = store
+            .store(SensitiveDataType::Iban, "DE89 3704 0044 0532 0130 00")
+            .unwrap();
+        let t2 = store
+            .store(SensitiveDataType::Iban, "DE89370400440532013000")
+            .unwrap();
 
         assert_eq!(t1.key(), t2.key());
     }
@@ -336,7 +374,9 @@ mod tests {
     fn test_delete() {
         let (_dir, store) = temp_store();
 
-        let token = store.store(SensitiveDataType::Email, "del@test.com").unwrap();
+        let token = store
+            .store(SensitiveDataType::Email, "del@test.com")
+            .unwrap();
         assert_eq!(store.count().unwrap(), 1);
 
         store.delete(&token).unwrap();
@@ -370,7 +410,9 @@ mod tests {
         let (_dir, store) = temp_store();
 
         store.store(SensitiveDataType::Email, "a@test.com").unwrap();
-        store.store(SensitiveDataType::Phone, "+15551234567").unwrap();
+        store
+            .store(SensitiveDataType::Phone, "+15551234567")
+            .unwrap();
         store.store(SensitiveDataType::Email, "b@test.com").unwrap();
 
         let entries = store.list(None).unwrap();
@@ -382,7 +424,9 @@ mod tests {
         let (_dir, store) = temp_store();
 
         store.store(SensitiveDataType::Email, "a@test.com").unwrap();
-        store.store(SensitiveDataType::Phone, "+15551234567").unwrap();
+        store
+            .store(SensitiveDataType::Phone, "+15551234567")
+            .unwrap();
         store.store(SensitiveDataType::Email, "b@test.com").unwrap();
 
         let emails = store.list(Some(SensitiveDataType::Email)).unwrap();
@@ -445,7 +489,9 @@ mod tests {
     fn test_vault_entry_metadata() {
         let (_dir, store) = temp_store();
 
-        let token = store.store(SensitiveDataType::Email, "meta@test.com").unwrap();
+        let token = store
+            .store(SensitiveDataType::Email, "meta@test.com")
+            .unwrap();
         let entries = store.list(None).unwrap();
 
         assert_eq!(entries.len(), 1);
@@ -485,11 +531,15 @@ mod tests {
     fn test_delete_then_store_same_value() {
         let (_dir, store) = temp_store();
 
-        let t1 = store.store(SensitiveDataType::Email, "reuse@test.com").unwrap();
+        let t1 = store
+            .store(SensitiveDataType::Email, "reuse@test.com")
+            .unwrap();
         store.delete(&t1).unwrap();
 
         // Storing again should work (no dedup because entry was deleted)
-        let t2 = store.store(SensitiveDataType::Email, "reuse@test.com").unwrap();
+        let t2 = store
+            .store(SensitiveDataType::Email, "reuse@test.com")
+            .unwrap();
         // New token generated (different ID)
         assert_ne!(t1.key(), t2.key());
         assert_eq!(store.retrieve(&t2).unwrap(), "reuse@test.com");

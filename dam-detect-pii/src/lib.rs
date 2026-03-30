@@ -205,9 +205,8 @@ mod tests {
     #[test]
     fn process_multiple_pii_types() {
         let m = PiiDetectionModule::new();
-        let mut ctx = make_ctx(
-            "Email: user@test.com, Phone: +14155551234, SSN: 123-45-6789, IP: 8.8.8.8",
-        );
+        let mut ctx =
+            make_ctx("Email: user@test.com, Phone: +14155551234, SSN: 123-45-6789, IP: 8.8.8.8");
         m.process(&mut ctx).unwrap();
 
         let types: Vec<_> = ctx.detections.iter().map(|d| d.data_type).collect();

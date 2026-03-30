@@ -29,14 +29,16 @@ impl Module for RedactModule {
         ModuleType::Action
     }
 
-    /// Redact module only runs for LLM destinations (non-LLM traffic is logged only).
-    fn matches(&self, ctx: &FlowContext) -> bool {
-        ctx.destination.is_llm()
+    /// Redact module runs on all traffic — verdict drives redaction, not destination.
+    fn matches(&self, _ctx: &FlowContext) -> bool {
+        true
     }
 
     fn process(&self, ctx: &mut FlowContext) -> Result<(), DamError> {
         // Only redact detections with Verdict::Redact
-        let to_redact: Vec<&Detection> = ctx.detections.iter()
+        let to_redact: Vec<&Detection> = ctx
+            .detections
+            .iter()
             .filter(|d| d.verdict == Verdict::Redact)
             .collect();
 
@@ -87,14 +89,24 @@ mod tests {
     }
 
     fn llm_dest() -> Destination {
-        Destination::Llm { provider: LlmProvider::Anthropic }
+        Destination::Llm {
+            provider: LlmProvider::Anthropic,
+        }
     }
 
     fn other_dest() -> Destination {
-        Destination::Other { host: "example.com".into() }
+        Destination::Other {
+            host: "example.com".into(),
+        }
     }
 
-    fn make_detection(dt: SensitiveDataType, value: &str, start: usize, end: usize, verdict: Verdict) -> Detection {
+    fn make_detection(
+        dt: SensitiveDataType,
+        value: &str,
+        start: usize,
+        end: usize,
+        verdict: Verdict,
+    ) -> Detection {
         Detection {
             data_type: dt,
             value: value.to_string(),
@@ -113,13 +125,48 @@ mod tests {
     }
 
     #[test]
-    fn test_matches_llm_only() {
+    fn test_matches_all_traffic() {
         let (_dir, store) = make_store();
         let m = RedactModule::new(store);
         let ctx_llm = FlowContext::new("x".into(), llm_dest());
         let ctx_other = FlowContext::new("x".into(), other_dest());
         assert!(m.matches(&ctx_llm));
-        assert!(!m.matches(&ctx_other));
+        assert!(m.matches(&ctx_other));
+    }
+
+    #[test]
+    fn test_non_llm_pass_verdict_no_redaction() {
+        let (_dir, store) = make_store();
+        let m = RedactModule::new(store);
+        let mut ctx = FlowContext::new("test@example.com".into(), other_dest());
+        ctx.detections.push(make_detection(
+            SensitiveDataType::Email,
+            "test@example.com",
+            0,
+            16,
+            Verdict::Pass,
+        ));
+        m.process(&mut ctx).unwrap();
+        assert!(ctx.modified_body.is_none());
+        assert!(ctx.tokens_created.is_empty());
+    }
+
+    #[test]
+    fn test_non_llm_explicit_redact_verdict() {
+        let (_dir, store) = make_store();
+        let m = RedactModule::new(store);
+        let mut ctx = FlowContext::new("test@example.com".into(), other_dest());
+        ctx.detections.push(make_detection(
+            SensitiveDataType::Email,
+            "test@example.com",
+            0,
+            16,
+            Verdict::Redact,
+        ));
+        m.process(&mut ctx).unwrap();
+        let modified = ctx.modified_body.as_ref().unwrap();
+        assert!(!modified.contains("test@example.com"));
+        assert!(modified.contains("[email:"));
     }
 
     #[test]
@@ -132,8 +179,20 @@ mod tests {
         //         7         18      26           38
         let body = "Email: alice@x.com Phone: +15551234567";
         let mut ctx = FlowContext::new(body.into(), llm_dest());
-        ctx.detections.push(make_detection(SensitiveDataType::Email, "alice@x.com", 7, 18, Verdict::Pass));
-        ctx.detections.push(make_detection(SensitiveDataType::Phone, "+15551234567", 26, 38, Verdict::Redact));
+        ctx.detections.push(make_detection(
+            SensitiveDataType::Email,
+            "alice@x.com",
+            7,
+            18,
+            Verdict::Pass,
+        ));
+        ctx.detections.push(make_detection(
+            SensitiveDataType::Phone,
+            "+15551234567",
+            26,
+            38,
+            Verdict::Redact,
+        ));
 
         m.process(&mut ctx).unwrap();
 
@@ -153,7 +212,13 @@ mod tests {
         let m = RedactModule::new(store);
 
         let mut ctx = FlowContext::new("test@example.com".into(), llm_dest());
-        ctx.detections.push(make_detection(SensitiveDataType::Email, "test@example.com", 0, 16, Verdict::Pass));
+        ctx.detections.push(make_detection(
+            SensitiveDataType::Email,
+            "test@example.com",
+            0,
+            16,
+            Verdict::Pass,
+        ));
 
         m.process(&mut ctx).unwrap();
         assert!(ctx.modified_body.is_none()); // No modification
@@ -167,8 +232,20 @@ mod tests {
 
         let body = "Email: test@x.com SSN: 123-45-6789";
         let mut ctx = FlowContext::new(body.into(), llm_dest());
-        ctx.detections.push(make_detection(SensitiveDataType::Email, "test@x.com", 7, 17, Verdict::Redact));
-        ctx.detections.push(make_detection(SensitiveDataType::Ssn, "123-45-6789", 23, 34, Verdict::Redact));
+        ctx.detections.push(make_detection(
+            SensitiveDataType::Email,
+            "test@x.com",
+            7,
+            17,
+            Verdict::Redact,
+        ));
+        ctx.detections.push(make_detection(
+            SensitiveDataType::Ssn,
+            "123-45-6789",
+            23,
+            34,
+            Verdict::Redact,
+        ));
 
         m.process(&mut ctx).unwrap();
 
@@ -201,7 +278,13 @@ mod tests {
         let m = RedactModule::new(store);
 
         let mut ctx = FlowContext::new("test@example.com".into(), llm_dest());
-        ctx.detections.push(make_detection(SensitiveDataType::Email, "test@example.com", 0, 16, Verdict::Pending));
+        ctx.detections.push(make_detection(
+            SensitiveDataType::Email,
+            "test@example.com",
+            0,
+            16,
+            Verdict::Pending,
+        ));
 
         m.process(&mut ctx).unwrap();
         assert!(ctx.modified_body.is_none()); // Pending = not redacted

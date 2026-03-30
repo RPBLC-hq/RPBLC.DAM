@@ -218,11 +218,7 @@ impl<'a> Scanner<'a> {
             }
         }
 
-        if found {
-            Some(ranges)
-        } else {
-            None
-        }
+        if found { Some(ranges) } else { None }
     }
 
     fn scan_messages_array(&mut self, ranges: &mut Vec<(usize, usize)>) -> Option<()> {
@@ -407,7 +403,8 @@ mod tests {
 
     #[test]
     fn assistant_message_scanned() {
-        let body = r#"{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"}]}"#;
+        let body =
+            r#"{"messages":[{"role":"user","content":"a"},{"role":"assistant","content":"b"}]}"#;
         let ranges = scannable_ranges(body).unwrap();
         assert_eq!(ranges.len(), 2);
         assert_eq!(&body[ranges[0].0..ranges[0].1], "a");
@@ -426,7 +423,8 @@ mod tests {
 
     #[test]
     fn content_blocks_text() {
-        let body = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"email: a@b.com"}]}]}"#;
+        let body =
+            r#"{"messages":[{"role":"user","content":[{"type":"text","text":"email: a@b.com"}]}]}"#;
         let ranges = scannable_ranges(body).unwrap();
         assert_eq!(ranges.len(), 1);
         assert_eq!(&body[ranges[0].0..ranges[0].1], "email: a@b.com");
@@ -525,7 +523,8 @@ mod tests {
 
     #[test]
     fn messages_not_first_key() {
-        let body = r#"{"model":"gpt-4","temperature":0.7,"messages":[{"role":"user","content":"hi"}]}"#;
+        let body =
+            r#"{"model":"gpt-4","temperature":0.7,"messages":[{"role":"user","content":"hi"}]}"#;
         let ranges = scannable_ranges(body).unwrap();
         assert_eq!(ranges.len(), 1);
         assert_eq!(&body[ranges[0].0..ranges[0].1], "hi");
@@ -557,10 +556,7 @@ mod tests {
         let ranges = scannable_ranges(body).unwrap();
         // Should get: user msg 1, assistant msg, user msg 2 — NOT system msg
         assert_eq!(ranges.len(), 3);
-        assert_eq!(
-            &body[ranges[0].0..ranges[0].1],
-            "My phone is +14155551234"
-        );
+        assert_eq!(&body[ranges[0].0..ranges[0].1], "My phone is +14155551234");
         assert_eq!(
             &body[ranges[1].0..ranges[1].1],
             "I noted your phone number."
@@ -593,10 +589,7 @@ mod tests {
         let ranges = scannable_ranges(body).unwrap();
         // instructions is top-level (like system), NOT scanned
         assert_eq!(ranges.len(), 1);
-        assert_eq!(
-            &body[ranges[0].0..ranges[0].1],
-            "my email is bob@test.com"
-        );
+        assert_eq!(&body[ranges[0].0..ranges[0].1], "my email is bob@test.com");
     }
 
     #[test]
@@ -604,10 +597,7 @@ mod tests {
         let body = r#"{"model":"gpt-4.1","input":"call me at +14155551234"}"#;
         let ranges = scannable_ranges(body).unwrap();
         assert_eq!(ranges.len(), 1);
-        assert_eq!(
-            &body[ranges[0].0..ranges[0].1],
-            "call me at +14155551234"
-        );
+        assert_eq!(&body[ranges[0].0..ranges[0].1], "call me at +14155551234");
     }
 
     #[test]
@@ -640,10 +630,7 @@ mod tests {
         let body = r#"{"model":"gpt-4.1","input":[{"role":"user","content":"echo banana@apple.com"}],"tools":[{"type":"function","function":{"name":"shell","parameters":{}}}]}"#;
         let ranges = scannable_ranges(body).unwrap();
         assert_eq!(ranges.len(), 1);
-        assert_eq!(
-            &body[ranges[0].0..ranges[0].1],
-            "echo banana@apple.com"
-        );
+        assert_eq!(&body[ranges[0].0..ranges[0].1], "echo banana@apple.com");
     }
 
     #[test]
@@ -655,10 +642,7 @@ mod tests {
             &body[ranges[0].0..ranges[0].1],
             "my email is alice@test.com"
         );
-        assert_eq!(
-            &body[ranges[1].0..ranges[1].1],
-            "Got it, alice@test.com."
-        );
+        assert_eq!(&body[ranges[1].0..ranges[1].1], "Got it, alice@test.com.");
         assert_eq!(&body[ranges[2].0..ranges[2].1], "now send it");
     }
 }

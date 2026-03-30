@@ -6,12 +6,18 @@ pub struct SseBuffer {
     scan_from: usize,
 }
 
-impl SseBuffer {
-    pub fn new() -> Self {
+impl Default for SseBuffer {
+    fn default() -> Self {
         Self {
             buf: BytesMut::new(),
             scan_from: 0,
         }
+    }
+}
+
+impl SseBuffer {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Feed raw bytes into the buffer.
@@ -48,8 +54,10 @@ fn find_event_boundary(buf: &[u8]) -> Option<(usize, usize)> {
             return Some((i, 2));
         }
         if i + 3 < buf.len()
-            && buf[i] == b'\r' && buf[i + 1] == b'\n'
-            && buf[i + 2] == b'\r' && buf[i + 3] == b'\n'
+            && buf[i] == b'\r'
+            && buf[i + 1] == b'\n'
+            && buf[i + 2] == b'\r'
+            && buf[i + 3] == b'\n'
         {
             return Some((i, 4));
         }

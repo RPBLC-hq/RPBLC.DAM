@@ -35,8 +35,7 @@ pub struct LogStore {
 impl LogStore {
     /// Open (or create) a log database at `db_path`, apply schema, enable WAL mode.
     pub fn open(db_path: impl AsRef<Path>) -> Result<Self, DamError> {
-        let conn = Connection::open(db_path)
-            .map_err(|e| DamError::Db(e.to_string()))?;
+        let conn = Connection::open(db_path).map_err(|e| DamError::Db(e.to_string()))?;
 
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| DamError::Db(e.to_string()))?;
@@ -214,7 +213,9 @@ impl LogStore {
             .map_err(|e| DamError::Db(e.to_string()))?;
 
         let type_rows: Vec<(String, u64, u64, u64)> = type_stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
             .map_err(|e| DamError::Db(e.to_string()))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| DamError::Db(e.to_string()))?;
@@ -291,7 +292,13 @@ mod tests {
     fn test_log_and_count() {
         let (store, _dir) = temp_store();
         store
-            .log_event("email", "api.openai.com", "tokenized", "detect-pii", "test...")
+            .log_event(
+                "email",
+                "api.openai.com",
+                "tokenized",
+                "detect-pii",
+                "test...",
+            )
             .unwrap();
         assert_eq!(store.count().unwrap(), 1);
 
@@ -304,9 +311,15 @@ mod tests {
     #[test]
     fn test_query_all_ordering() {
         let (store, _dir) = temp_store();
-        store.log_event("email", "a.com", "logged", "mod-a", "a@b...").unwrap();
-        store.log_event("phone", "b.com", "logged", "mod-b", "555-...").unwrap();
-        store.log_event("ssn", "c.com", "logged", "mod-c", "123-...").unwrap();
+        store
+            .log_event("email", "a.com", "logged", "mod-a", "a@b...")
+            .unwrap();
+        store
+            .log_event("phone", "b.com", "logged", "mod-b", "555-...")
+            .unwrap();
+        store
+            .log_event("ssn", "c.com", "logged", "mod-c", "123-...")
+            .unwrap();
 
         let events = store.query_all(None).unwrap();
         assert_eq!(events.len(), 3);
@@ -331,9 +344,15 @@ mod tests {
     #[test]
     fn test_query_by_destination() {
         let (store, _dir) = temp_store();
-        store.log_event("email", "a.com", "logged", "mod", "a@b...").unwrap();
-        store.log_event("phone", "b.com", "logged", "mod", "555-...").unwrap();
-        store.log_event("ssn", "a.com", "logged", "mod", "123-...").unwrap();
+        store
+            .log_event("email", "a.com", "logged", "mod", "a@b...")
+            .unwrap();
+        store
+            .log_event("phone", "b.com", "logged", "mod", "555-...")
+            .unwrap();
+        store
+            .log_event("ssn", "a.com", "logged", "mod", "123-...")
+            .unwrap();
 
         let events = store.query_by_destination("a.com", None).unwrap();
         assert_eq!(events.len(), 2);
@@ -343,7 +362,9 @@ mod tests {
     #[test]
     fn test_query_by_destination_empty() {
         let (store, _dir) = temp_store();
-        store.log_event("email", "a.com", "logged", "mod", "a@b...").unwrap();
+        store
+            .log_event("email", "a.com", "logged", "mod", "a@b...")
+            .unwrap();
 
         let events = store.query_by_destination("nonexistent.com", None).unwrap();
         assert!(events.is_empty());
@@ -352,9 +373,15 @@ mod tests {
     #[test]
     fn test_query_by_type() {
         let (store, _dir) = temp_store();
-        store.log_event("email", "a.com", "logged", "mod", "a@b...").unwrap();
-        store.log_event("email", "b.com", "tokenized", "mod", "c@d...").unwrap();
-        store.log_event("phone", "a.com", "logged", "mod", "555-...").unwrap();
+        store
+            .log_event("email", "a.com", "logged", "mod", "a@b...")
+            .unwrap();
+        store
+            .log_event("email", "b.com", "tokenized", "mod", "c@d...")
+            .unwrap();
+        store
+            .log_event("phone", "a.com", "logged", "mod", "555-...")
+            .unwrap();
 
         let events = store.query_by_type("email", None).unwrap();
         assert_eq!(events.len(), 2);
@@ -365,7 +392,9 @@ mod tests {
     fn test_query_by_type_with_limit() {
         let (store, _dir) = temp_store();
         for _ in 0..5 {
-            store.log_event("email", "x.com", "logged", "mod", "a@b...").unwrap();
+            store
+                .log_event("email", "x.com", "logged", "mod", "a@b...")
+                .unwrap();
         }
         let events = store.query_by_type("email", Some(2)).unwrap();
         assert_eq!(events.len(), 2);
@@ -381,10 +410,18 @@ mod tests {
     #[test]
     fn test_stats_aggregation() {
         let (store, _dir) = temp_store();
-        store.log_event("email", "a.com", "logged", "mod", "a@b...").unwrap();
-        store.log_event("email", "b.com", "logged", "mod", "c@d...").unwrap();
-        store.log_event("email", "a.com", "logged", "mod", "e@f...").unwrap();
-        store.log_event("phone", "a.com", "logged", "mod", "555-...").unwrap();
+        store
+            .log_event("email", "a.com", "logged", "mod", "a@b...")
+            .unwrap();
+        store
+            .log_event("email", "b.com", "logged", "mod", "c@d...")
+            .unwrap();
+        store
+            .log_event("email", "a.com", "logged", "mod", "e@f...")
+            .unwrap();
+        store
+            .log_event("phone", "a.com", "logged", "mod", "555-...")
+            .unwrap();
 
         let stats = store.stats().unwrap();
         assert_eq!(stats.len(), 2);
@@ -417,7 +454,13 @@ mod tests {
     fn test_log_event_fields_roundtrip() {
         let (store, _dir) = temp_store();
         store
-            .log_event("cc", "payments.example.com", "tokenized", "detect-pii", "4111...")
+            .log_event(
+                "cc",
+                "payments.example.com",
+                "tokenized",
+                "detect-pii",
+                "4111...",
+            )
             .unwrap();
 
         let events = store.query_all(None).unwrap();

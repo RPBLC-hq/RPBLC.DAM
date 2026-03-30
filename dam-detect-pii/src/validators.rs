@@ -31,7 +31,7 @@ pub fn luhn(digits: &str) -> bool {
         sum += n;
     }
 
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 /// Mod-97 validation for IBAN numbers (ISO 7064).
@@ -86,10 +86,7 @@ pub fn mod97(iban: &str) -> bool {
 ///
 /// Expects a string of exactly 9 digits (no dashes).
 pub fn ssn_area(digits: &str) -> bool {
-    let clean: Vec<u8> = digits
-        .bytes()
-        .filter(|b| b.is_ascii_digit())
-        .collect();
+    let clean: Vec<u8> = digits.bytes().filter(|b| b.is_ascii_digit()).collect();
 
     if clean.len() != 9 {
         return false;
@@ -119,7 +116,9 @@ pub fn ssn_area(digits: &str) -> bool {
 
 /// Parse a slice of ASCII digit bytes into a u32.
 fn parse_digits(bytes: &[u8]) -> u32 {
-    bytes.iter().fold(0u32, |acc, &b| acc * 10 + (b - b'0') as u32)
+    bytes
+        .iter()
+        .fold(0u32, |acc, &b| acc * 10 + (b - b'0') as u32)
 }
 
 /// Validate phone number length (digit count between 7 and 15 inclusive, per E.164).
@@ -141,10 +140,7 @@ pub fn phone_length(digits: &str) -> bool {
 /// - 192.168.0.0/16
 /// - 127.0.0.0/8 (loopback)
 pub fn ip_is_private(ip: &str) -> bool {
-    let octets: Vec<u8> = ip
-        .split('.')
-        .filter_map(|s| s.parse::<u8>().ok())
-        .collect();
+    let octets: Vec<u8> = ip.split('.').filter_map(|s| s.parse::<u8>().ok()).collect();
 
     if octets.len() != 4 {
         return false; // not a valid IPv4 — caller should handle
@@ -152,13 +148,7 @@ pub fn ip_is_private(ip: &str) -> bool {
 
     let (a, b) = (octets[0], octets[1]);
 
-    matches!(
-        (a, b),
-        (10, _)
-            | (172, 16..=31)
-            | (192, 168)
-            | (127, _)
-    )
+    matches!((a, b), (10, _) | (172, 16..=31) | (192, 168) | (127, _))
 }
 
 #[cfg(test)]
@@ -276,7 +266,7 @@ mod tests {
 
     #[test]
     fn ssn_wrong_length() {
-        assert!(!ssn_area("12345678"));  // 8 digits
+        assert!(!ssn_area("12345678")); // 8 digits
         assert!(!ssn_area("1234567890")); // 10 digits
     }
 
