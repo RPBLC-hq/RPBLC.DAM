@@ -1,7 +1,7 @@
 {
   "name": "@rpblc/dam-darwin-arm64",
-  "version": "0.1.0",
-  "description": "DAM binary for macOS ARM64",
+  "version": "0.4.0",
+  "description": "DAM binaries for macOS ARM64",
   "os": ["darwin"],
   "cpu": ["arm64"],
   "preferUnplugged": true,

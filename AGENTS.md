@@ -2,144 +2,196 @@
 
 ## What is DAM?
 
-DAM (Data Access Mediator) is a PII firewall for AI agents. It intercepts personal data before it enters LLM context windows, replaces it with typed references like `[email:a3f71bc9]`, stores encrypted originals in a local vault, and resolves references only at execution boundaries with consent checks.
+DAM (Data Access Mediator) mediates access to sensitive data in transit. It sits between applications and the internet as a forward proxy. It detects sensitive data, checks consent rules, stores everything encrypted, redacts what isn't approved, and logs all activity.
 
 ## Build Commands
 
 ```bash
-cargo build                          # debug build
-cargo build --release                # release build (single binary)
+cargo build --workspace              # debug build
+cargo build --release -p dam-cli     # release proxy binary
+cargo build --release -p dam-filter  # release filter binary
 cargo test --workspace               # all tests
-cargo clippy --workspace -- -D warnings  # lint (matches CI exactly — warnings are errors)
-cargo fmt --all --check              # format check (matches CI exactly)
+cargo clippy --workspace -- -D warnings  # lint
+cargo fmt --all --check              # format check
 cargo fmt --all                      # auto-fix formatting
+cargo run -p dam-cli                 # start proxy on :7828
+cargo run -p dam-cli -- --port 8080  # custom port
 ```
 
 ## Architecture
 
-Cargo workspace with focused crates:
+Spine + Vertebrae model. The spine knows nothing about detection, consent, storage, or logging. Each vertebra is a module that plugs into the spine via the `Module` trait.
 
-- **dam-core** — Types, reference format, config, errors
-- **dam-vault** — Encrypted local storage (SQLite + AES-256-GCM envelope encryption)
-- **dam-detect** — PII detection pipeline (regex, user rules, NER stub, xref stub)
-- **dam-resolve** — Outbound resolution with consent check
-- **dam-mcp** — MCP server with 7 tools
-- **dam-http** — HTTP proxy, streaming SSE resolver, Anthropic API types
-- **dam-cli** — CLI binary (`dam` command)
+### Crates
+
+| Crate | Role | Type |
+|---|---|---|
+| `dam-core` | Proxy engine, Module trait, FlowExecutor, FlowContext, streaming, config | Spine |
+| `dam-detect-pii` | PII detection (email, phone, SSN, CC, IBAN, IP) | Detection vertebra |
+| `dam-detect-secrets` | Secrets detection (API keys, JWTs, private keys, credentials) | Detection vertebra |
+| `dam-consent` | Consent rules, verdict assignment (pass/redact per detection) | Filter vertebra |
+| `dam-vault` | Encrypt and store ALL detected values (AES-256-GCM, SQLite) | Storage vertebra |
+| `dam-redact` | Replace body text with tokens for Verdict::Redact detections | Action vertebra |
+| `dam-log` | Detection event logging, `dam stats` | Action vertebra |
+| `dam-cli` | Binary entry point, CLI commands, wires spine + vertebrae | Binary |
+| `dam-filter` | Standalone PII/secret filter for any text or JSON — detect + redact, no vault/proxy | Binary |
+| `_legacy/` | Old v0.3.1 codebase — reference only, do not build | Archive |
+
+### Dependency graph
+
+```
+dam-core           → (no internal deps)
+dam-detect-pii     → dam-core
+dam-detect-secrets → dam-core
+dam-consent        → dam-core
+dam-vault          → dam-core
+dam-redact         → dam-core, dam-vault
+dam-log            → dam-core
+dam-cli            → all of the above
+dam-filter         → dam-core, dam-detect-pii, dam-detect-secrets (no vault/consent/redact/log)
+```
+
+### Default module flow (dam-cli proxy)
+
+```
+detect-pii → detect-secrets → consent → vault → redact → log
+```
+
+### Filter flow (dam-filter standalone)
+
+```
+stdin → detect-pii → detect-secrets → dedup → replace with [DAM:TYPE] → stdout
+```
+
+dam-filter skips consent/vault/redact/log. Every detection is replaced with a branded placeholder (`[DAM:EMAIL]`, `[DAM:SSN]`, etc.). No vault tokens, no storage.
+
+- **detect-***: find sensitive data, append `Detection` objects with `verdict: Pending`
+- **consent**: check rules, set `verdict: Pass` or `verdict: Redact` per detection
+- **vault**: store ALL detections encrypted (pass AND redact) for audit/recovery
+- **redact**: replace body text only for `verdict: Redact` detections (LLM calls only)
+- **log**: record everything
+
+### Module trait
+
+Every vertebra implements:
+
+```rust
+pub enum Verdict { Pending, Redact, Pass }
+
+pub trait Module: Send + Sync {
+    fn name(&self) -> &str;
+    fn module_type(&self) -> ModuleType; // Detection or Action
+    fn matches(&self, ctx: &FlowContext) -> bool;
+    fn process(&self, ctx: &mut FlowContext) -> Result<(), DamError>;
+}
+```
+
+Modules communicate through `FlowContext` — a shared struct with `detections: Vec<Detection>`, `modified_body`, `tokens_created`, and `destination`. Modules append data, never remove.
 
 ## Key Design Decisions
 
-- **Envelope encryption**: Each PII value gets its own DEK, wrapped by a KEK from OS keychain
-- **Typed references**: `[email:a3f71bc9]` format lets LLMs reason about PII type without seeing values
-- **Consent-by-default-denied**: No tool can resolve PII without explicit consent
-- **Hash-chained audit**: Every operation logged with SHA-256 chain for tamper detection
-- **Deduplication**: Same value+type stored once, returns existing reference
+- **Envelope encryption**: Each value gets a random DEK (AES-256-GCM), wrapped by a KEK stored at `~/.dam/key`
+- **Auto-generated key**: No OS keychain. 32 random bytes written to file with 0600 permissions on first run.
+- **Typed tokens**: `[email:a3f71b]` format — 128-bit UUID in base58 (22 chars). LLMs reason about data type without seeing values.
+- **Deduplication**: Same value+type stored once, returns existing token
+- **Separate DBs**: `~/.dam/dam.db` (vault), `~/.dam/consent.db` (rules), `~/.dam/log.db` (events)
+- **Zero config**: `dam` with no arguments starts the proxy. No TOML, no init, no setup.
+- **Default deny**: No data passes through LLM calls without explicit consent.
+- **Vault stores everything**: Both passed and redacted values stored for audit and recovery.
+- **Graceful degradation**: Never break traffic. Detection failure → pass through. Vault failure → redact without token.
 
-## MCP Tools
+## CLI Commands
 
-| Tool | Purpose |
-|------|---------|
-| `dam_scan` | Scan text for PII, return redacted version |
-| `dam_resolve` | Resolve refs for action execution (consent-checked) |
-| `dam_consent` | Grant/revoke consent (ref + accessor + purpose) |
-| `dam_vault_search` | Search vault by type, returns refs only |
-| `dam_status` | Vault stats, entry counts, recent activity |
-| `dam_reveal` | Override: temporarily reveal PII (audited) |
-| `dam_compare` | Derived operations without revealing (Phase 3 stub) |
+Commands are grouped by the module that owns them.
 
-## Locales
+### Proxy
 
-Detection patterns are organized by geographic locale in `crates/dam-detect/src/locales/`:
+| Command | Purpose |
+|---------|---------|
+| `dam` | Start proxy on default port (7828) |
+| `dam --port 8080` | Start proxy on custom port |
+| `dam -v` | Verbose output |
 
-- `global.rs` — patterns not specific to any country (email, credit card, intl phone, IPv4, DOB)
-- `us.rs` — US-specific patterns (SSN, US phone)
-- `mod.rs` — `build_patterns()` dispatcher that assembles patterns from active locales
+### Consent (dam-consent)
 
-**Adding a new locale**: create `xx.rs`, add `mod xx;` + match arm in `mod.rs`, create `docs/locales/xx.md`.
+| Command | Purpose |
+|---------|---------|
+| `dam consent grant [OPTIONS]` | Grant consent — allow data to pass |
+| `dam consent deny [OPTIONS]` | Deny — explicitly block data |
+| `dam consent list` | List all active rules |
+| `dam consent revoke <id>` | Remove a rule |
 
-**Classification rule**: if a pattern is country-specific, it goes in that locale module; otherwise it goes in `global.rs`.
+Grant/deny options: `--type <tag>`, `--token <key>`, `--value <raw>`, `--dest <host>`, `--ttl <duration>`
 
-Keep `docs/locales/` in sync when patterns change.
+### Vault (dam-vault)
 
-## PII Types
+| Command | Purpose |
+|---------|---------|
+| `dam resolve <token>` | Resolve a token to its original value |
+| `dam tokens` | List all tokens in the vault |
 
-The full PII type reference lives in **`docs/pii-types.md`**. When adding a new `PiiType` variant:
+### Log (dam-log)
 
-1. Follow the steps in `docs/pii-types.md` → "Adding a New PII Type"
-2. **Update `docs/pii-types.md`** with the new row in the appropriate category table
-3. Add tests in the locale's `#[cfg(test)]` module and/or `stage_regex.rs`
+| Command | Purpose |
+|---------|---------|
+| `dam stats` | Detection counts by type and destination |
+| `dam log [-n 50]` | Show recent detection events |
 
-The README (`PII Detection` section) shows only a curated spotlight of the most commonly leaked/critical types — do **not** expand that table. Update `docs/pii-types.md` for the complete list.
+## Consent Model
 
-## Governance Files
+Rules are layered — most specific match wins:
 
-Keep these files up to date when making changes:
+1. Token + exact destination (highest priority)
+2. Token + wildcard destination
+3. Type + exact destination
+4. Type + wildcard destination
+5. Wildcard type + exact destination
+6. Wildcard type + wildcard destination
+7. No match → redact (default deny)
 
-- **CHANGELOG.md** — add entries under an `[Unreleased]` section for every user-facing change (new features, bug fixes, breaking changes). When releasing, rename `[Unreleased]` to `[version] — date`.
-- **SECURITY.md** — update scope if new security-sensitive components are added (e.g., new encryption schemes, auth mechanisms, network-exposed endpoints).
-- **CONTRIBUTING.md** — update if build steps, PR process, or code conventions change.
+Default TTL: 24 hours. `--ttl permanent` for no expiration.
 
-## Workflow
+## Proxy Usage
 
-- Before creating a PR, pull the latest `main` and rebase your branch to avoid merge conflicts.
+Set the `X-DAM-Upstream` header to route through DAM:
+
+```bash
+curl -H "X-DAM-Upstream: https://api.anthropic.com/v1/messages" \
+     -H "x-api-key: $ANTHROPIC_API_KEY" \
+     -H "content-type: application/json" \
+     -d '{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"My email is alice@example.com"}]}' \
+     http://localhost:7828/
+```
+
+Or use path-based routing:
+
+```bash
+curl -d '...' http://localhost:7828/https://api.anthropic.com/v1/messages
+```
 
 ## Conventions
 
 - Error type: `DamError` / `DamResult<T>` in dam-core
-- PII types: `PiiType` enum with `tag()` for short form, `Display` for long
-- References: `PiiRef` with `key()` → `"email:a3f71bc9"`, `display()` → `"[email:a3f71bc9]"`
+- Data types: `SensitiveDataType` enum with `tag()` for short form
+- Tokens: `Token` with `key()` → `"email:a3f71b"`, `display()` → `"[email:a3f71b]"`. IDs are 128-bit UUID base58-encoded (22 chars).
+- Verdicts: `Verdict::Pending` (just detected), `Verdict::Redact` (tokenize), `Verdict::Pass` (let through)
 - All vault operations go through `VaultStore` (mutex-protected SQLite)
-- Consent: `ConsentManager::check_consent(conn, ref_id, accessor, purpose)`
-- Audit: `AuditLog::record_locked(conn, ref_id, accessor, purpose, action, granted, detail)`
+- Module names: `"detect-pii"`, `"detect-secrets"`, `"consent"`, `"vault"`, `"redact"`, `"dam-log"`
+
+## Adding a new module
+
+1. Create a new crate: `cargo init --lib dam-<name>`
+2. Add `dam-core` as a dependency
+3. Implement the `Module` trait
+4. Wire it into `dam-cli/src/main.rs` in the module chain
+5. Add to workspace `Cargo.toml` members
+6. Add CLI subcommands if the module needs them
 
 ## Release Checklist
 
-When preparing a release, follow these steps in order:
-
-### 1. Pre-release Verification
-
-- [ ] All CI checks pass on `main` (`cargo test --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo fmt --all --check`)
-- [ ] No unmerged feature branches intended for this release
-
-### 2. Version Bump
-
-- [ ] Bump `version` in root `Cargo.toml` (`[workspace.package]` — all crates inherit from it)
-- [ ] Run `cargo build` to update `Cargo.lock`
-
-### 3. Changelog
-
-- [ ] Rename `[Unreleased]` section in `CHANGELOG.md` to `[X.Y.Z] — YYYY-MM-DD`
-- [ ] Add a new empty `[Unreleased]` section above it
-
-### 4. Documentation Review
-
-Review all READMEs and docs against the changelog. For each entry in the new release section, check if any docs need updating:
-
-- [ ] **README.md** (root) — Quick Start, CLI Reference, Integration routes, feature descriptions, PII types spotlight, config examples
-- [ ] **docs/pii-types.md** — full PiiType reference; add rows for any new types in this release
-- [ ] **npm/dam/README.md** — npm package page on npmjs.com; keep CLI commands, routes table, and feature list in sync
-- [ ] **docs/integrations.md** — daemon setup, proxy routes, MCP server config, install instructions
-- [ ] **docs/ARCHITECTURE.md** — if internals changed (new crates, new encryption schemes, new pipeline stages)
-- [ ] **docs/security-model.md** — if security-relevant changes were made
-- [ ] **docs/routing.md** — if proxy routing or upstream handling changed
-- [ ] **SECURITY.md** — if new attack surface was added (new endpoints, new auth mechanisms)
-- [ ] **CONTRIBUTING.md** — if build steps, PR process, or dependencies changed
-
-### 5. Commit and Tag
-
-- [ ] Commit all changes: version bump, changelog, doc updates
-- [ ] Push to `main`
-- [ ] Create and push tag: `git tag vX.Y.Z && git push origin vX.Y.Z`
-
-### 6. Verify Release
-
-- [ ] GitHub Actions release workflow completes (all 4 platform builds + GitHub Release + npm publish)
-- [ ] GitHub Release page has binaries and checksums
-- [ ] npm packages updated: check https://www.npmjs.com/package/@rpblc/dam
-- [ ] `npm install -g @rpblc/dam` installs the new version
-- [ ] `npx @rpblc/dam --help` works
-
-### 7. Post-release
-
-- [ ] Delete the release branch if one was used
-- [ ] Close any related GitHub issues with a comment referencing the release
+1. All tests pass: `cargo test --workspace`
+2. Lint clean: `cargo clippy --workspace -- -D warnings`
+3. Format clean: `cargo fmt --all --check`
+4. Bump version in root `Cargo.toml`
+5. Update changelog
+6. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`

@@ -1,0 +1,43 @@
+[package]
+name = "dam-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DAM spine — proxy engine, module trait, flow executor"
+
+[dependencies]
+tokio.workspace = true
+axum.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+bytes.workspace = true
+async-stream.workspace = true
+hyper.workspace = true
+http-body-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+hex.workspace = true
+rand.workspace = true
+bs58.workspace = true
+uuid.workspace = true
+zstd.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-pemfile.workspace = true
+webpki-roots.workspace = true
+dashmap.workspace = true
+hyper-util.workspace = true
+tower.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio-tungstenite.workspace = true
+tungstenite.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
