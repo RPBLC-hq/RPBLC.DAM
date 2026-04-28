@@ -1,0 +1,13 @@
+[package]
+name = "dam-log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dam-core.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

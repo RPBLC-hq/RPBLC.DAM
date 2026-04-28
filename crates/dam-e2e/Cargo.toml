@@ -1,0 +1,16 @@
+[package]
+name = "dam-e2e"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+axum.workspace = true
+dam-core.workspace = true
+dam-log.workspace = true
+dam-vault.workspace = true
+reqwest.workspace = true
+tempfile.workspace = true
+tokio.workspace = true

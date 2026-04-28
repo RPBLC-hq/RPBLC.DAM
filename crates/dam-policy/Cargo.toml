@@ -1,0 +1,9 @@
+[package]
+name = "dam-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dam-config.workspace = true
+dam-core.workspace = true

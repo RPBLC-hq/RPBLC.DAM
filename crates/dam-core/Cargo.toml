@@ -1,0 +1,10 @@
+[package]
+name = "dam-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bs58.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

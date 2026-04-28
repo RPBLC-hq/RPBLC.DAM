@@ -1,0 +1,1385 @@
+use axum::{
+    Router,
+    body::{Body, Bytes},
+    extract::{DefaultBodyLimit, State},
+    http::{HeaderMap, Method, StatusCode, Uri, header},
+    response::{IntoResponse, Response},
+    routing::get,
+};
+use dam_core::{
+    EventSink, LogEvent, LogEventType, LogLevel, VaultReadError, VaultReader, VaultRecord,
+    VaultWriter,
+};
+use dam_policy::PolicyEngine;
+use futures_util::TryStreamExt;
+use reqwest::Url;
+use std::{collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
+use tokio::net::TcpListener;
+
+const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_REQUEST_BYTES: usize = 10 * 1024 * 1024;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProxyError {
+    #[error("proxy is disabled")]
+    Disabled,
+
+    #[error("proxy target is missing")]
+    MissingTarget,
+
+    #[error("unsupported proxy provider: {0}")]
+    UnsupportedProvider(String),
+
+    #[error("invalid proxy listen address {addr}: {source}")]
+    InvalidListen {
+        addr: String,
+        source: std::net::AddrParseError,
+    },
+
+    #[error("failed to bind proxy listener {addr}: {source}")]
+    Bind {
+        addr: SocketAddr,
+        source: std::io::Error,
+    },
+
+    #[error("proxy server failed: {0}")]
+    Server(std::io::Error),
+
+    #[error("failed to build upstream URL: {0}")]
+    UpstreamUrl(String),
+
+    #[error("vault backend is unavailable and fail-closed is configured: {0}")]
+    VaultUnavailable(String),
+
+    #[error("log backend is unavailable and fail-closed is configured: {0}")]
+    LogUnavailable(String),
+
+    #[error("consent backend is unavailable: {0}")]
+    ConsentUnavailable(String),
+}
+
+#[derive(Clone)]
+pub struct ProxyState {
+    target: dam_config::ProxyTargetConfig,
+    default_failure_mode: dam_config::ProxyFailureMode,
+    resolve_inbound: bool,
+    vault: Arc<dyn ProxyVault>,
+    consent_store: Option<Arc<dam_consent::ConsentStore>>,
+    log_sink: Option<Arc<dyn EventSink>>,
+    policy: dam_policy::StaticPolicy,
+    replacement_options: dam_core::ReplacementPlanOptions,
+    client: reqwest::Client,
+}
+
+trait ProxyVault: VaultWriter + VaultReader {}
+
+impl<T> ProxyVault for T where T: VaultWriter + VaultReader {}
+
+struct FailingVault {
+    message: String,
+}
+
+impl VaultWriter for FailingVault {
+    fn write(&self, _record: &VaultRecord) -> Result<(), dam_core::VaultWriteError> {
+        Err(dam_core::VaultWriteError::new(self.message.clone()))
+    }
+}
+
+impl VaultReader for FailingVault {
+    fn read(&self, _reference: &dam_core::Reference) -> Result<Option<String>, VaultReadError> {
+        Err(VaultReadError::new(self.message.clone()))
+    }
+}
+
+pub async fn run(config: dam_config::DamConfig) -> Result<(), ProxyError> {
+    let addr = config
+        .proxy
+        .listen
+        .parse()
+        .map_err(|source| ProxyError::InvalidListen {
+            addr: config.proxy.listen.clone(),
+            source,
+        })?;
+    let app = build_app(config)?;
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|source| ProxyError::Bind { addr, source })?;
+
+    axum::serve(listener, app).await.map_err(ProxyError::Server)
+}
+
+pub fn build_app(config: dam_config::DamConfig) -> Result<Router, ProxyError> {
+    if !config.proxy.enabled {
+        return Err(ProxyError::Disabled);
+    }
+
+    let target = config
+        .proxy
+        .targets
+        .first()
+        .cloned()
+        .ok_or(ProxyError::MissingTarget)?;
+
+    if target.provider != "openai-compatible" {
+        return Err(ProxyError::UnsupportedProvider(target.provider));
+    }
+
+    let replacement_options = dam_core::ReplacementPlanOptions {
+        deduplicate_replacements: config.policy.deduplicate_replacements,
+    };
+
+    let state = ProxyState {
+        target,
+        default_failure_mode: config.proxy.default_failure_mode,
+        resolve_inbound: config.proxy.resolve_inbound,
+        vault: open_vault(&config)?,
+        consent_store: open_consent_store(&config)?,
+        log_sink: open_log_sink(&config)?,
+        policy: dam_policy::StaticPolicy::from(config.policy),
+        replacement_options,
+        client: http_client()?,
+    };
+
+    Ok(Router::new()
+        .route("/health", get(health))
+        .fallback(proxy)
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
+        .with_state(Arc::new(state)))
+}
+
+fn http_client() -> Result<reqwest::Client, ProxyError> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(UPSTREAM_REQUEST_TIMEOUT)
+        .build()
+        .map_err(|error| ProxyError::UpstreamUrl(error.to_string()))
+}
+
+fn open_vault(config: &dam_config::DamConfig) -> Result<Arc<dyn ProxyVault>, ProxyError> {
+    match config.vault.backend {
+        dam_config::VaultBackend::Sqlite => match dam_vault::Vault::open(&config.vault.sqlite_path)
+        {
+            Ok(vault) => Ok(Arc::new(vault)),
+            Err(error)
+                if config.failure.vault_write == dam_config::VaultWriteFailureMode::RedactOnly =>
+            {
+                Ok(Arc::new(FailingVault {
+                    message: error.to_string(),
+                }))
+            }
+            Err(error) => Err(ProxyError::VaultUnavailable(error.to_string())),
+        },
+        dam_config::VaultBackend::Remote
+            if config.failure.vault_write == dam_config::VaultWriteFailureMode::RedactOnly =>
+        {
+            Ok(Arc::new(FailingVault {
+                message: "remote vault backend is not implemented".to_string(),
+            }))
+        }
+        dam_config::VaultBackend::Remote => Err(ProxyError::VaultUnavailable(
+            "remote vault backend is not implemented".to_string(),
+        )),
+    }
+}
+
+fn open_consent_store(
+    config: &dam_config::DamConfig,
+) -> Result<Option<Arc<dam_consent::ConsentStore>>, ProxyError> {
+    if !config.consent.enabled {
+        return Ok(None);
+    }
+
+    match config.consent.backend {
+        dam_config::ConsentBackend::Sqlite => {
+            dam_consent::ConsentStore::open(&config.consent.sqlite_path)
+                .map(Arc::new)
+                .map(Some)
+                .map_err(|error| ProxyError::ConsentUnavailable(error.to_string()))
+        }
+    }
+}
+
+fn open_log_sink(config: &dam_config::DamConfig) -> Result<Option<Arc<dyn EventSink>>, ProxyError> {
+    if !config.log.enabled || config.log.backend == dam_config::LogBackend::None {
+        return Ok(None);
+    }
+
+    match config.log.backend {
+        dam_config::LogBackend::Sqlite => match dam_log::LogStore::open(&config.log.sqlite_path) {
+            Ok(store) => Ok(Some(Arc::new(store))),
+            Err(_) if config.failure.log_write == dam_config::LogWriteFailureMode::WarnContinue => {
+                Ok(None)
+            }
+            Err(error) => Err(ProxyError::LogUnavailable(error.to_string())),
+        },
+        dam_config::LogBackend::Remote
+            if config.failure.log_write == dam_config::LogWriteFailureMode::WarnContinue =>
+        {
+            Ok(None)
+        }
+        dam_config::LogBackend::Remote => Err(ProxyError::LogUnavailable(
+            "remote log backend is not implemented".to_string(),
+        )),
+        dam_config::LogBackend::None => Ok(None),
+    }
+}
+
+async fn health(State(state): State<Arc<ProxyState>>) -> Response {
+    let (proxy_state, message) = if state.target_requires_missing_api_key(&HeaderMap::new()) {
+        (
+            dam_api::ProxyState::ConfigRequired,
+            "target API key is missing".to_string(),
+        )
+    } else {
+        (dam_api::ProxyState::Protected, "proxy is ready".to_string())
+    };
+
+    status_response(StatusCode::OK, proxy_state, message, None, &state.target)
+}
+
+async fn proxy(
+    State(state): State<Arc<ProxyState>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let operation_id = dam_core::generate_operation_id();
+
+    if state.target_requires_missing_api_key(&headers) {
+        record_proxy_event(
+            &state,
+            &operation_id,
+            LogLevel::Error,
+            LogEventType::ProxyFailure,
+            "config_required",
+            "proxy target API key is missing",
+        );
+        return status_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            dam_api::ProxyState::ConfigRequired,
+            "proxy target API key is missing".to_string(),
+            Some(operation_id),
+            &state.target,
+        );
+    }
+
+    if request_has_unsupported_content_encoding(&headers) {
+        record_proxy_event(
+            &state,
+            &operation_id,
+            LogLevel::Error,
+            LogEventType::ProxyFailure,
+            "blocked",
+            "encoded request bodies are not supported",
+        );
+        return status_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            dam_api::ProxyState::Blocked,
+            "encoded request bodies are not supported".to_string(),
+            Some(operation_id),
+            &state.target,
+        );
+    }
+
+    let body_text = match std::str::from_utf8(&body) {
+        Ok(text) => text,
+        Err(_) => {
+            return handle_protection_failure(
+                state,
+                method,
+                uri,
+                headers,
+                body,
+                operation_id,
+                "request body is not utf-8",
+            )
+            .await;
+        }
+    };
+
+    let detections = dam_detect::detect(body_text);
+    let base_decisions = state.policy.decide_all(&detections);
+    let (decisions, consent_matches) = match dam_consent::apply_consents_to_decisions(
+        &base_decisions,
+        state.consent_store.as_deref(),
+    ) {
+        Ok(result) => result,
+        Err(_) => {
+            return handle_protection_failure(
+                state,
+                method,
+                uri,
+                headers,
+                body,
+                operation_id,
+                "consent check failed",
+            )
+            .await;
+        }
+    };
+
+    if decisions
+        .iter()
+        .any(|decision| decision.action == dam_core::PolicyAction::Block)
+    {
+        let plan = blocked_plan_from_decisions(&decisions);
+        record_filter_events(&state, &operation_id, &decisions, &plan, &consent_matches);
+        record_proxy_event(
+            &state,
+            &operation_id,
+            LogLevel::Warn,
+            LogEventType::ProxyFailure,
+            "blocked",
+            "proxy request blocked by policy",
+        );
+        return status_response(
+            StatusCode::FORBIDDEN,
+            dam_api::ProxyState::Blocked,
+            "proxy request blocked by policy".to_string(),
+            Some(operation_id),
+            &state.target,
+        );
+    }
+
+    let plan = dam_core::build_replacement_plan_from_decisions_with_options(
+        &decisions,
+        state.vault.as_ref(),
+        state.replacement_options,
+    );
+    record_filter_events(&state, &operation_id, &decisions, &plan, &consent_matches);
+
+    let protected_body = dam_redact::redact(body_text, &plan.replacements);
+    forward_or_provider_down(
+        state,
+        method,
+        uri,
+        headers,
+        Bytes::from(protected_body),
+        operation_id,
+        "protected",
+    )
+    .await
+}
+
+async fn handle_protection_failure(
+    state: Arc<ProxyState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+    operation_id: String,
+    message: &'static str,
+) -> Response {
+    match state.failure_mode() {
+        dam_config::ProxyFailureMode::BypassOnError => {
+            record_proxy_event(
+                &state,
+                &operation_id,
+                LogLevel::Warn,
+                LogEventType::ProxyBypass,
+                "bypass_on_error",
+                message,
+            );
+            forward_or_provider_down(state, method, uri, headers, body, operation_id, "bypassing")
+                .await
+        }
+        dam_config::ProxyFailureMode::RedactOnly | dam_config::ProxyFailureMode::BlockOnError => {
+            record_proxy_event(
+                &state,
+                &operation_id,
+                LogLevel::Error,
+                LogEventType::ProxyFailure,
+                "blocked",
+                message,
+            );
+            status_response(
+                StatusCode::BAD_GATEWAY,
+                dam_api::ProxyState::Blocked,
+                message.to_string(),
+                Some(operation_id),
+                &state.target,
+            )
+        }
+    }
+}
+
+async fn forward_or_provider_down(
+    state: Arc<ProxyState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+    operation_id: String,
+    action: &'static str,
+) -> Response {
+    match forward_request(&state, method, uri, headers, body, &operation_id).await {
+        Ok(response) => {
+            let event_type = if action == "bypassing" {
+                LogEventType::ProxyBypass
+            } else {
+                LogEventType::ProxyForward
+            };
+            record_proxy_event(
+                &state,
+                &operation_id,
+                LogLevel::Info,
+                event_type,
+                action,
+                "proxy request forwarded",
+            );
+            response
+        }
+        Err(error) => {
+            record_proxy_event(
+                &state,
+                &operation_id,
+                LogLevel::Error,
+                LogEventType::ProxyFailure,
+                "provider_down",
+                "upstream provider is unavailable",
+            );
+            status_response(
+                StatusCode::BAD_GATEWAY,
+                dam_api::ProxyState::ProviderDown,
+                error,
+                Some(operation_id),
+                &state.target,
+            )
+        }
+    }
+}
+
+async fn forward_request(
+    state: &ProxyState,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+    operation_id: &str,
+) -> Result<Response, String> {
+    let url = upstream_url(&state.target.upstream, &uri)?;
+    let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
+        .map_err(|error| error.to_string())?;
+    let mut request = state.client.request(reqwest_method, url).body(body);
+    let request_connection_headers = connection_header_tokens(&headers);
+
+    for (name, value) in headers.iter() {
+        if should_skip_request_header(
+            name.as_str(),
+            state.target.api_key.is_some(),
+            &request_connection_headers,
+        ) {
+            continue;
+        }
+        request = request.header(name, value);
+    }
+
+    if let Some(api_key) = &state.target.api_key {
+        request = request.bearer_auth(api_key.expose());
+    }
+
+    let response = request.send().await.map_err(|error| error.to_string())?;
+    let status = response.status();
+    let response_headers = response.headers().clone();
+    let response_connection_headers = connection_header_tokens(&response_headers);
+    let streaming_response = is_streaming_response(&response_headers);
+
+    if streaming_response {
+        let mut builder = Response::builder().status(status);
+        for (name, value) in response_headers.iter() {
+            if should_skip_response_header(name.as_str(), &response_connection_headers) {
+                continue;
+            }
+            builder = builder.header(name, value);
+        }
+
+        let stream = response
+            .bytes_stream()
+            .map_err(|error| std::io::Error::other(error.to_string()));
+
+        return builder
+            .body(Body::from_stream(stream))
+            .map_err(|error| error.to_string());
+    }
+
+    let response_body = response.bytes().await.map_err(|error| error.to_string())?;
+    let response_body = resolve_response_body(state, operation_id, response_body);
+
+    let mut builder = Response::builder().status(status);
+    for (name, value) in response_headers.iter() {
+        if should_skip_response_header(name.as_str(), &response_connection_headers) {
+            continue;
+        }
+        builder = builder.header(name, value);
+    }
+
+    builder
+        .body(Body::from(response_body))
+        .map_err(|error| error.to_string())
+}
+
+fn resolve_response_body(state: &ProxyState, operation_id: &str, body: Bytes) -> Bytes {
+    if !state.resolve_inbound {
+        return body;
+    }
+
+    let body_text = match std::str::from_utf8(body.as_ref()) {
+        Ok(text) => text,
+        Err(_) => return body,
+    };
+    let plan = dam_core::build_resolve_plan(body_text, state.vault.as_ref());
+    if plan.references.is_empty() {
+        return body;
+    }
+
+    record_resolve_events(state, operation_id, &plan);
+    if plan.resolved_count() == 0 {
+        return body;
+    }
+
+    Bytes::from(dam_core::apply_resolve_plan(body_text, &plan))
+}
+
+fn upstream_url(base: &str, uri: &Uri) -> Result<String, String> {
+    let mut url = Url::parse(base).map_err(|error| error.to_string())?;
+    let base_path = url.path().trim_end_matches('/');
+    let request_path = uri.path().trim_start_matches('/');
+    let path = match (
+        base_path.is_empty() || base_path == "/",
+        request_path.is_empty(),
+    ) {
+        (true, true) => "/".to_string(),
+        (true, false) => format!("/{request_path}"),
+        (false, true) => base_path.to_string(),
+        (false, false) => format!("{base_path}/{request_path}"),
+    };
+    url.set_path(&path);
+    url.set_query(uri.query());
+    Ok(url.to_string())
+}
+
+fn should_skip_request_header(
+    name: &str,
+    target_sets_authorization: bool,
+    connection_headers: &HashSet<String>,
+) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    connection_headers.contains(&normalized)
+        || matches!(
+            normalized.as_str(),
+            "host"
+                | "content-length"
+                | "connection"
+                | "transfer-encoding"
+                | "te"
+                | "trailer"
+                | "upgrade"
+                | "keep-alive"
+                | "proxy-authorization"
+                | "proxy-authenticate"
+        )
+        || (target_sets_authorization && normalized == "authorization")
+}
+
+fn should_skip_response_header(name: &str, connection_headers: &HashSet<String>) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    connection_headers.contains(&normalized)
+        || matches!(
+            normalized.as_str(),
+            "content-length"
+                | "connection"
+                | "transfer-encoding"
+                | "te"
+                | "trailer"
+                | "upgrade"
+                | "keep-alive"
+                | "proxy-authenticate"
+        )
+}
+
+fn connection_header_tokens(headers: &HeaderMap) -> HashSet<String> {
+    headers
+        .get_all(header::CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .collect()
+}
+
+fn is_streaming_response(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(';')
+                .any(|part| part.trim().eq_ignore_ascii_case("text/event-stream"))
+        })
+}
+
+fn request_has_unsupported_content_encoding(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .any(|part| !part.eq_ignore_ascii_case("identity"))
+        })
+}
+
+fn blocked_plan_from_decisions(
+    decisions: &[dam_core::PolicyDecision],
+) -> dam_core::ReplacementPlan {
+    dam_core::ReplacementPlan {
+        blocked: decisions
+            .iter()
+            .filter(|decision| decision.action == dam_core::PolicyAction::Block)
+            .map(|decision| dam_core::BlockedDetection {
+                kind: decision.detection.kind,
+                span: decision.detection.span,
+            })
+            .collect(),
+        ..dam_core::ReplacementPlan::default()
+    }
+}
+
+fn record_filter_events(
+    state: &ProxyState,
+    operation_id: &str,
+    decisions: &[dam_core::PolicyDecision],
+    plan: &dam_core::ReplacementPlan,
+    consent_matches: &[dam_consent::ConsentMatch],
+) {
+    let Some(sink) = &state.log_sink else {
+        return;
+    };
+
+    for event in dam_core::build_filter_log_events_from_decisions(operation_id, decisions, plan) {
+        let _ = sink.record(&event);
+    }
+
+    for consent_match in consent_matches {
+        let event = LogEvent::new(
+            operation_id,
+            LogLevel::Info,
+            LogEventType::Consent,
+            "active consent allowed detected value",
+        )
+        .with_kind(consent_match.kind)
+        .with_action(format!("allow:{}", consent_match.consent_id));
+        let _ = sink.record(&event);
+    }
+}
+
+fn record_resolve_events(state: &ProxyState, operation_id: &str, plan: &dam_core::ResolvePlan) {
+    let Some(sink) = &state.log_sink else {
+        return;
+    };
+
+    for event in dam_core::build_resolve_log_events(operation_id, plan) {
+        let _ = sink.record(&event);
+    }
+}
+
+fn record_proxy_event(
+    state: &ProxyState,
+    operation_id: &str,
+    level: LogLevel,
+    event_type: LogEventType,
+    action: &'static str,
+    message: &'static str,
+) {
+    let Some(sink) = &state.log_sink else {
+        return;
+    };
+
+    let event = LogEvent::new(operation_id, level, event_type, message).with_action(action);
+    let _ = sink.record(&event);
+}
+
+fn status_response(
+    status: StatusCode,
+    state: dam_api::ProxyState,
+    message: String,
+    operation_id: Option<String>,
+    target: &dam_config::ProxyTargetConfig,
+) -> Response {
+    let diagnostics = proxy_diagnostics(state, &message);
+
+    (
+        status,
+        [(header::CACHE_CONTROL, "no-store")],
+        axum::Json(dam_api::ProxyReport {
+            operation_id,
+            target: Some(target.name.clone()),
+            upstream: Some(target.upstream.clone()),
+            state,
+            message,
+            diagnostics,
+        }),
+    )
+        .into_response()
+}
+
+fn proxy_diagnostics(state: dam_api::ProxyState, message: &str) -> Vec<dam_api::Diagnostic> {
+    match state {
+        dam_api::ProxyState::Protected => Vec::new(),
+        dam_api::ProxyState::Bypassing => vec![dam_api::Diagnostic::new(
+            dam_api::DiagnosticSeverity::Warning,
+            "bypassing",
+            message,
+        )],
+        dam_api::ProxyState::Blocked => vec![dam_api::Diagnostic::new(
+            dam_api::DiagnosticSeverity::Error,
+            "blocked",
+            message,
+        )],
+        dam_api::ProxyState::ProviderDown => vec![dam_api::Diagnostic::new(
+            dam_api::DiagnosticSeverity::Error,
+            "provider_down",
+            message,
+        )],
+        dam_api::ProxyState::ConfigRequired => vec![dam_api::Diagnostic::new(
+            dam_api::DiagnosticSeverity::Error,
+            "config_required",
+            message,
+        )],
+        dam_api::ProxyState::DamDown => vec![dam_api::Diagnostic::new(
+            dam_api::DiagnosticSeverity::Error,
+            "dam_down",
+            message,
+        )],
+    }
+}
+
+impl ProxyState {
+    fn failure_mode(&self) -> dam_config::ProxyFailureMode {
+        self.target
+            .effective_failure_mode(self.default_failure_mode)
+    }
+
+    fn target_requires_missing_api_key(&self, headers: &HeaderMap) -> bool {
+        self.target.api_key_env.is_some()
+            && self.target.api_key.is_none()
+            && !headers.contains_key(header::AUTHORIZATION)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::routing::post;
+    use std::sync::Mutex;
+    fn proxy_config(upstream: String) -> dam_config::DamConfig {
+        let dir = tempfile::tempdir().unwrap().keep();
+        let mut config = dam_config::DamConfig::default();
+        config.vault.sqlite_path = dir.join("vault.db");
+        config.consent.sqlite_path = dir.join("consent.db");
+        config.log.enabled = true;
+        config.log.sqlite_path = dir.join("log.db");
+        config.proxy.enabled = true;
+        config.proxy.targets.push(dam_config::ProxyTargetConfig {
+            name: "test-openai".to_string(),
+            provider: "openai-compatible".to_string(),
+            upstream,
+            failure_mode: None,
+            api_key_env: None,
+            api_key: None,
+        });
+        config
+    }
+
+    async fn spawn_app(app: Router) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    async fn spawn_echo_upstream() -> String {
+        async fn echo(body: Bytes) -> Response {
+            (StatusCode::OK, body).into_response()
+        }
+
+        spawn_app(Router::new().route("/v1/chat/completions", post(echo))).await
+    }
+
+    async fn spawn_capture_echo_upstream(seen_body: Arc<Mutex<Option<String>>>) -> String {
+        async fn echo(
+            State(seen_body): State<Arc<Mutex<Option<String>>>>,
+            body: Bytes,
+        ) -> Response {
+            let body_text =
+                String::from_utf8(body.to_vec()).expect("upstream body should be utf-8");
+            *seen_body.lock().unwrap() = Some(body_text.clone());
+            (StatusCode::OK, body_text).into_response()
+        }
+
+        spawn_app(
+            Router::new()
+                .route("/v1/chat/completions", post(echo))
+                .with_state(seen_body),
+        )
+        .await
+    }
+
+    async fn spawn_capture_headers_upstream(
+        seen_headers: Arc<Mutex<Vec<(String, String)>>>,
+    ) -> String {
+        async fn echo(
+            State(seen_headers): State<Arc<Mutex<Vec<(String, String)>>>>,
+            headers: HeaderMap,
+        ) -> Response {
+            *seen_headers.lock().unwrap() = headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .to_str()
+                        .ok()
+                        .map(|value| (name.as_str().to_string(), value.to_string()))
+                })
+                .collect();
+            (StatusCode::OK, "{}").into_response()
+        }
+
+        spawn_app(
+            Router::new()
+                .route("/v1/chat/completions", post(echo))
+                .with_state(seen_headers),
+        )
+        .await
+    }
+
+    async fn spawn_capture_sse_upstream(seen_body: Arc<Mutex<Option<String>>>) -> String {
+        async fn sse(State(seen_body): State<Arc<Mutex<Option<String>>>>, body: Bytes) -> Response {
+            let body_text =
+                String::from_utf8(body.to_vec()).expect("upstream body should be utf-8");
+            *seen_body.lock().unwrap() = Some(body_text.clone());
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "text/event-stream")],
+                format!("event: response.output_text.delta\ndata: {body_text}\n\n"),
+            )
+                .into_response()
+        }
+
+        spawn_app(
+            Router::new()
+                .route("/v1/responses", post(sse))
+                .with_state(seen_body),
+        )
+        .await
+    }
+
+    async fn proxy_report(response: reqwest::Response) -> dam_api::ProxyReport {
+        response.json().await.expect("proxy report json")
+    }
+
+    #[test]
+    fn upstream_url_preserves_path_and_query() {
+        let uri = Uri::from_static("/v1/chat/completions?stream=false");
+
+        let url = upstream_url("https://api.example.test/base", &uri).unwrap();
+
+        assert_eq!(
+            url,
+            "https://api.example.test/base/v1/chat/completions?stream=false"
+        );
+    }
+
+    #[tokio::test]
+    async fn redacts_outbound_request_and_resolves_inbound_response() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_capture_echo_upstream(upstream_seen.clone()).await;
+        let mut config = proxy_config(upstream);
+        config.proxy.resolve_inbound = true;
+        let vault_path = config.vault.sqlite_path.clone();
+        let log_path = config.log.sqlite_path.clone();
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body(r#"{"messages":[{"content":"email alice@example.com"}]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        let body = response.text().await.unwrap();
+        assert!(body.contains("alice@example.com"));
+        assert!(!body.contains("[email:"));
+
+        let upstream_body = upstream_seen.lock().unwrap().clone().unwrap();
+        assert!(!upstream_body.contains("alice@example.com"));
+        assert!(upstream_body.contains("[email:"));
+        assert_eq!(
+            dam_vault::Vault::open(vault_path).unwrap().count().unwrap(),
+            1
+        );
+        assert!(dam_log::LogStore::open(log_path).unwrap().count().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn reuses_references_for_duplicate_outbound_values_by_default() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_capture_echo_upstream(upstream_seen.clone()).await;
+        let config = proxy_config(upstream);
+        let vault_path = config.vault.sqlite_path.clone();
+        let log_path = config.log.sqlite_path.clone();
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body(r#"{"input":"email alice@example.com again alice@example.com"}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let upstream_body = upstream_seen.lock().unwrap().clone().unwrap();
+        let references = dam_core::find_references(&upstream_body);
+        assert_eq!(references.len(), 2);
+        assert_eq!(references[0].reference, references[1].reference);
+        assert_eq!(
+            dam_vault::Vault::open(&vault_path)
+                .unwrap()
+                .count()
+                .unwrap(),
+            1
+        );
+
+        let logs = dam_log::LogStore::open(log_path).unwrap().list().unwrap();
+        assert_eq!(
+            logs.iter()
+                .filter(|entry| entry.event_type == "vault_write")
+                .count(),
+            1
+        );
+        assert_eq!(
+            logs.iter()
+                .filter(|entry| entry.event_type == "redaction")
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn redacts_spaced_email_variants_from_outbound_history() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_capture_echo_upstream(upstream_seen.clone()).await;
+        let config = proxy_config(upstream);
+        let vault_path = config.vault.sqlite_path.clone();
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body(
+                r#"{"messages":[{"role":"assistant","content":"wololo@ w.com"},{"role":"user","content":"wololo @w.com"}]}"#,
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let upstream_body = upstream_seen.lock().unwrap().clone().unwrap();
+        assert!(!upstream_body.contains("wololo@ w.com"));
+        assert!(!upstream_body.contains("wololo @w.com"));
+        assert!(upstream_body.contains("[email:"));
+        assert_eq!(
+            dam_vault::Vault::open(&vault_path)
+                .unwrap()
+                .count()
+                .unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn active_consent_allows_outbound_value() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_capture_echo_upstream(upstream_seen.clone()).await;
+        let config = proxy_config(upstream);
+        let consent_path = config.consent.sqlite_path.clone();
+        let vault_path = config.vault.sqlite_path.clone();
+        let log_path = config.log.sqlite_path.clone();
+        dam_consent::ConsentStore::open(&consent_path)
+            .unwrap()
+            .grant(&dam_consent::GrantConsent {
+                kind: dam_core::SensitiveType::Email,
+                value: "alice@example.com".to_string(),
+                vault_key: None,
+                ttl_seconds: 60,
+                created_by: "test".to_string(),
+                reason: None,
+            })
+            .unwrap();
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body(r#"{"input":"email alice@example.com"}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let upstream_body = upstream_seen.lock().unwrap().clone().unwrap();
+        assert!(upstream_body.contains("alice@example.com"));
+        assert_eq!(
+            dam_vault::Vault::open(vault_path).unwrap().count().unwrap(),
+            0
+        );
+        let logs = dam_log::LogStore::open(log_path).unwrap().list().unwrap();
+        assert!(logs.iter().any(|entry| {
+            entry.event_type == "consent"
+                && entry
+                    .action
+                    .as_deref()
+                    .is_some_and(|a| a.starts_with("allow:"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn target_api_key_replaces_inbound_authorization() {
+        let seen_headers = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let upstream = spawn_capture_headers_upstream(seen_headers.clone()).await;
+        let mut config = proxy_config(upstream);
+        config.proxy.targets[0].api_key_env = Some("TEST_UPSTREAM_KEY".to_string());
+        config.proxy.targets[0].api_key = Some(dam_config::SecretValue::new(
+            "TEST_UPSTREAM_KEY",
+            "upstream-secret",
+        ));
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .header(header::AUTHORIZATION, "Bearer local-agent-secret")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let authorization_values = seen_headers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+            .map(|(_, value)| value.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(authorization_values, ["Bearer upstream-secret"]);
+    }
+
+    #[tokio::test]
+    async fn hop_by_hop_and_connection_listed_headers_are_not_forwarded() {
+        let seen_headers = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let upstream = spawn_capture_headers_upstream(seen_headers.clone()).await;
+        let proxy = spawn_app(build_app(proxy_config(upstream)).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .header(header::CONNECTION, "x-drop-me, keep-alive")
+            .header("x-drop-me", "secret")
+            .header("te", "trailers")
+            .header("trailer", "x-trailer")
+            .header("upgrade", "websocket")
+            .header("proxy-authorization", "Basic local")
+            .header("x-keep-me", "ok")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = seen_headers.lock().unwrap();
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| { name.eq_ignore_ascii_case("x-keep-me") && value == "ok" })
+        );
+        for blocked in [
+            "connection",
+            "x-drop-me",
+            "te",
+            "trailer",
+            "upgrade",
+            "proxy-authorization",
+        ] {
+            assert!(
+                !headers
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(blocked)),
+                "{blocked} should not be forwarded"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn leaves_inbound_response_references_unresolved_by_default() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_capture_echo_upstream(upstream_seen.clone()).await;
+        let config = proxy_config(upstream);
+        let vault_path = config.vault.sqlite_path.clone();
+        let log_path = config.log.sqlite_path.clone();
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body(r#"{"messages":[{"content":"email alice@example.com"}]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        let body = response.text().await.unwrap();
+        assert!(!body.contains("alice@example.com"));
+        assert!(body.contains("[email:"));
+
+        let upstream_body = upstream_seen.lock().unwrap().clone().unwrap();
+        assert_eq!(body, upstream_body);
+        assert_eq!(
+            dam_vault::Vault::open(vault_path).unwrap().count().unwrap(),
+            1
+        );
+
+        let logs = dam_log::LogStore::open(log_path).unwrap().list().unwrap();
+        assert!(!logs.iter().any(|entry| entry.event_type == "vault_read"));
+        assert!(!logs.iter().any(|entry| entry.event_type == "resolve"));
+    }
+
+    #[tokio::test]
+    async fn streams_event_stream_responses_without_inbound_resolution() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_capture_sse_upstream(upstream_seen.clone()).await;
+        let config = proxy_config(upstream);
+        let vault_path = config.vault.sqlite_path.clone();
+        let log_path = config.log.sqlite_path.clone();
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/responses"))
+            .body(r#"{"input":[{"content":"email erin@example.com"}],"stream":true}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/event-stream")
+        );
+        let body = response.text().await.unwrap();
+        assert!(!body.contains("erin@example.com"));
+        assert!(body.contains("[email:"));
+
+        let upstream_body = upstream_seen.lock().unwrap().clone().unwrap();
+        assert!(!upstream_body.contains("erin@example.com"));
+        assert!(upstream_body.contains("[email:"));
+        assert_eq!(
+            dam_vault::Vault::open(vault_path).unwrap().count().unwrap(),
+            1
+        );
+
+        let logs = dam_log::LogStore::open(log_path).unwrap().list().unwrap();
+        assert!(!logs.iter().any(|entry| entry.event_type == "vault_read"));
+        assert!(!logs.iter().any(|entry| entry.event_type == "resolve"));
+    }
+
+    #[tokio::test]
+    async fn health_reports_protected_with_dam_api_shape() {
+        let upstream = spawn_echo_upstream().await;
+        let config = proxy_config(upstream.clone());
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{proxy}/health"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let report = proxy_report(response).await;
+        assert_eq!(report.state, dam_api::ProxyState::Protected);
+        assert_eq!(report.target, Some("test-openai".to_string()));
+        assert_eq!(report.upstream, Some(upstream));
+        assert!(report.operation_id.is_none());
+        assert!(report.diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn health_reports_config_required_with_dam_api_shape() {
+        let upstream = spawn_echo_upstream().await;
+        let mut config = proxy_config(upstream);
+        config.proxy.targets[0].api_key_env = Some("MISSING_TEST_KEY".to_string());
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{proxy}/health"))
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let report = proxy_report(response).await;
+        assert_eq!(report.state, dam_api::ProxyState::ConfigRequired);
+        assert_eq!(report.diagnostics[0].code, "config_required");
+    }
+
+    #[tokio::test]
+    async fn bypasses_invalid_utf8_when_configured() {
+        let upstream = spawn_echo_upstream().await;
+        let mut config = proxy_config(upstream);
+        config.proxy.default_failure_mode = dam_config::ProxyFailureMode::BypassOnError;
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body(vec![0xff, b'a'])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), &[0xff, b'a']);
+    }
+
+    #[tokio::test]
+    async fn blocks_invalid_utf8_when_configured() {
+        let upstream = spawn_echo_upstream().await;
+        let mut config = proxy_config(upstream);
+        config.proxy.default_failure_mode = dam_config::ProxyFailureMode::BlockOnError;
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body(vec![0xff, b'a'])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let report = proxy_report(response).await;
+        assert_eq!(report.state, dam_api::ProxyState::Blocked);
+        assert_eq!(report.diagnostics[0].code, "blocked");
+        assert!(report.message.contains("not utf-8"));
+    }
+
+    #[tokio::test]
+    async fn blocks_encoded_request_bodies_before_bypass_policy() {
+        let upstream = spawn_echo_upstream().await;
+        let mut config = proxy_config(upstream);
+        config.proxy.default_failure_mode = dam_config::ProxyFailureMode::BypassOnError;
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .header(header::CONTENT_ENCODING, "gzip")
+            .body("not actually gzip")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let report = proxy_report(response).await;
+        assert_eq!(report.state, dam_api::ProxyState::Blocked);
+        assert!(report.message.contains("encoded request bodies"));
+    }
+
+    #[tokio::test]
+    async fn policy_block_does_not_forward() {
+        let upstream = spawn_echo_upstream().await;
+        let mut config = proxy_config(upstream);
+        config.policy.default_action = dam_core::PolicyAction::Block;
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body("email alice@example.com")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let report = proxy_report(response).await;
+        assert_eq!(report.state, dam_api::ProxyState::Blocked);
+        assert_eq!(report.diagnostics[0].code, "blocked");
+    }
+
+    #[tokio::test]
+    async fn missing_proxy_api_key_reports_config_required() {
+        let upstream = spawn_echo_upstream().await;
+        let mut config = proxy_config(upstream);
+        config.proxy.targets[0].api_key_env = Some("MISSING_TEST_KEY".to_string());
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let report = proxy_report(response).await;
+        assert_eq!(report.state, dam_api::ProxyState::ConfigRequired);
+        assert_eq!(report.diagnostics[0].code, "config_required");
+    }
+
+    #[tokio::test]
+    async fn provider_down_is_reported_separately() {
+        let config = proxy_config("http://127.0.0.1:1".to_string());
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let report = proxy_report(response).await;
+        assert_eq!(report.state, dam_api::ProxyState::ProviderDown);
+        assert_eq!(report.diagnostics[0].code, "provider_down");
+    }
+
+    #[test]
+    fn unsupported_provider_fails_at_startup() {
+        let mut config = proxy_config("http://127.0.0.1:9999".to_string());
+        config.proxy.targets[0].provider = "unknown".to_string();
+
+        assert!(matches!(
+            build_app(config).unwrap_err(),
+            ProxyError::UnsupportedProvider(_)
+        ));
+    }
+
+    #[test]
+    fn disabled_proxy_fails_at_startup() {
+        let mut config = proxy_config("http://127.0.0.1:9999".to_string());
+        config.proxy.enabled = false;
+
+        assert!(matches!(
+            build_app(config).unwrap_err(),
+            ProxyError::Disabled
+        ));
+    }
+
+    #[test]
+    fn fixture_paths_are_temp_files() {
+        let config = proxy_config("http://127.0.0.1:9999".to_string());
+
+        assert!(config.vault.sqlite_path.ends_with("vault.db"));
+        assert!(config.log.sqlite_path.ends_with("log.db"));
+    }
+}
