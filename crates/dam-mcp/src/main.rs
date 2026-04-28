@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 use std::env;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default)]
@@ -25,31 +25,26 @@ fn main() {
         }
     };
 
-    let mut input = String::new();
-    if let Err(error) = io::stdin().read_to_string(&mut input) {
-        eprintln!("failed to read stdin: {error}");
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    if let Err(error) = run_stdio(&config, stdin.lock(), stdout.lock()) {
+        eprintln!("stdio error: {error}");
         std::process::exit(1);
-    }
-
-    let responses = handle_input(&config, &input);
-    let mut stdout = io::stdout();
-    for response in responses {
-        let payload = response.to_string();
-        let _ = write!(
-            stdout,
-            "Content-Length: {}\r\n\r\n{}",
-            payload.len(),
-            payload
-        );
-        let _ = stdout.flush();
     }
 }
 
-fn handle_input(config: &dam_config::DamConfig, input: &str) -> Vec<Value> {
-    parse_messages(input)
-        .into_iter()
-        .filter_map(|message| handle_message(config, &message))
-        .collect()
+fn run_stdio<R: Read, W: Write>(
+    config: &dam_config::DamConfig,
+    input: R,
+    mut output: W,
+) -> io::Result<()> {
+    let mut reader = BufReader::new(input);
+    while let Some(message) = read_message(&mut reader)? {
+        if let Some(response) = handle_message(config, &message) {
+            write_response(&mut output, &response)?;
+        }
+    }
+    Ok(())
 }
 
 fn handle_message(config: &dam_config::DamConfig, message: &Value) -> Option<Value> {
@@ -231,6 +226,62 @@ fn error(id: Option<Value>, code: i64, message: &str) -> Value {
     })
 }
 
+fn read_message<R: BufRead>(reader: &mut R) -> io::Result<Option<Value>> {
+    let Some(content_length) = read_content_length(reader)? else {
+        return Ok(None);
+    };
+    let mut body = vec![0; content_length];
+    reader.read_exact(&mut body)?;
+    serde_json::from_slice(&body)
+        .map(Some)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+fn read_content_length<R: BufRead>(reader: &mut R) -> io::Result<Option<usize>> {
+    let mut content_length = None;
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader.read_line(&mut line)?;
+        if bytes_read == 0 {
+            return if content_length.is_some() {
+                Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "unexpected EOF in message headers",
+                ))
+            } else {
+                Ok(None)
+            };
+        }
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+        if let Some(value) = line.strip_prefix("Content-Length:") {
+            content_length = Some(
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
+            );
+        }
+    }
+
+    content_length
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing Content-Length header"))
+        .map(Some)
+}
+
+fn write_response<W: Write>(output: &mut W, response: &Value) -> io::Result<()> {
+    let payload = response.to_string();
+    write!(
+        output,
+        "Content-Length: {}\r\n\r\n{}",
+        payload.len(),
+        payload
+    )?;
+    output.flush()
+}
+
+#[cfg(test)]
 fn parse_messages(input: &str) -> Vec<Value> {
     if input.trim_start().starts_with('{') {
         return serde_json::from_str(input)
@@ -328,5 +379,30 @@ mod tests {
 
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["method"], "tools/list");
+    }
+
+    #[test]
+    fn stdio_handles_framed_messages_in_sequence() {
+        let config = dam_config::DamConfig::default();
+        let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
+        let tools = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+        let input = format!(
+            "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+            initialize.len(),
+            initialize,
+            tools.len(),
+            tools
+        );
+        let mut output = Vec::new();
+
+        run_stdio(&config, input.as_bytes(), &mut output).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        let responses = parse_messages(&output);
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["id"], 1);
+        assert_eq!(responses[0]["result"]["serverInfo"]["name"], "dam-mcp");
+        assert_eq!(responses[1]["id"], 2);
+        assert!(responses[1].to_string().contains("dam_consent_list"));
     }
 }

@@ -878,26 +878,28 @@ fn validate(config: &DamConfig) -> Result<(), ConfigError> {
             field: "proxy.listen",
         });
     }
-    if config.proxy.enabled && config.proxy.targets.is_empty() {
-        return Err(ConfigError::MissingRequired {
-            field: "proxy.targets",
-        });
-    }
-    for target in &config.proxy.targets {
-        if target.name.trim().is_empty() {
+    if config.proxy.enabled {
+        if config.proxy.targets.is_empty() {
             return Err(ConfigError::MissingRequired {
-                field: "proxy.targets.name",
+                field: "proxy.targets",
             });
         }
-        if target.provider.trim().is_empty() {
-            return Err(ConfigError::MissingRequired {
-                field: "proxy.targets.provider",
-            });
-        }
-        if target.upstream.trim().is_empty() {
-            return Err(ConfigError::MissingRequired {
-                field: "proxy.targets.upstream",
-            });
+        for target in &config.proxy.targets {
+            if target.name.trim().is_empty() {
+                return Err(ConfigError::MissingRequired {
+                    field: "proxy.targets.name",
+                });
+            }
+            if target.provider.trim().is_empty() {
+                return Err(ConfigError::MissingRequired {
+                    field: "proxy.targets.provider",
+                });
+            }
+            if target.upstream.trim().is_empty() {
+                return Err(ConfigError::MissingRequired {
+                    field: "proxy.targets.upstream",
+                });
+            }
         }
     }
 
@@ -1336,6 +1338,42 @@ mod tests {
                 .map(|key| key.expose()),
             Some("secret-value")
         );
+    }
+
+    #[test]
+    fn proxy_target_env_does_not_require_upstream_when_proxy_disabled() {
+        let config = load_with_env(
+            &ConfigOverrides::default(),
+            env(&[("DAM_PROXY_TARGET_API_KEY_ENV", "TEST_KEY")]),
+        )
+        .unwrap();
+
+        assert!(!config.proxy.enabled);
+        assert_eq!(config.proxy.targets.len(), 1);
+        assert_eq!(config.proxy.targets[0].upstream, "");
+        assert_eq!(
+            config.proxy.targets[0].api_key_env,
+            Some("TEST_KEY".to_string())
+        );
+    }
+
+    #[test]
+    fn enabled_proxy_requires_target_upstream() {
+        let error = load_with_env(
+            &ConfigOverrides::default(),
+            env(&[
+                ("DAM_PROXY_ENABLED", "true"),
+                ("DAM_PROXY_TARGET_API_KEY_ENV", "TEST_KEY"),
+            ]),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ConfigError::MissingRequired {
+                field: "proxy.targets.upstream"
+            }
+        ));
     }
 
     #[test]
