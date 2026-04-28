@@ -1,0 +1,17 @@
+{
+  "name": "@rpblc/dam",
+  "version": "0.1.0",
+  "description": "Local DAM launcher for protected Claude Code and Codex API-key sessions.",
+  "license": "Apache-2.0",
+  "bin": {
+    "dam": "npm/bin/dam.js"
+  },
+  "files": [
+    "npm/bin/dam.js",
+    "npm/native/**",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

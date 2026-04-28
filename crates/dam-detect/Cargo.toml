@@ -1,0 +1,10 @@
+[package]
+name = "dam-detect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dam-core.workspace = true
+once_cell.workspace = true
+regex.workspace = true

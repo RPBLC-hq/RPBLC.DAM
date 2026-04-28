@@ -1,0 +1,56 @@
+[vault]
+backend = "sqlite"
+path = "vault.db"
+token_env = "DAM_VAULT_TOKEN"
+timeout_ms = 2000
+
+[log]
+enabled = true
+backend = "sqlite"
+path = "log.db"
+token_env = "DAM_LOG_TOKEN"
+timeout_ms = 2000
+
+[consent]
+enabled = true
+backend = "sqlite"
+path = "consent.db"
+default_ttl_seconds = 86400
+mcp_write_enabled = true
+
+[policy]
+default_action = "tokenize"
+deduplicate_replacements = true
+
+[policy.kind.email]
+action = "tokenize"
+
+[policy.kind.phone]
+action = "tokenize"
+
+[policy.kind.ssn]
+action = "tokenize"
+
+[policy.kind.cc]
+action = "tokenize"
+
+[failure]
+vault_write = "redact_only"
+log_write = "warn_continue"
+
+[web]
+addr = "127.0.0.1:2896"
+
+[proxy]
+enabled = false
+listen = "127.0.0.1:7828"
+mode = "reverse_proxy"
+default_failure_mode = "bypass_on_error"
+resolve_inbound = false
+
+[[proxy.targets]]
+name = "openai"
+provider = "openai-compatible"
+upstream = "https://api.openai.com"
+failure_mode = "bypass_on_error"
+api_key_env = "OPENAI_API_KEY"

@@ -1,394 +1,283 @@
 <div align="center">
   <h1>DAM</h1>
   <h3>Data Access Mediator</h3>
-  <p><strong>Your AI is leaking sensitive data. Fix it in 60 seconds.</strong></p>
+  <p><strong>A local privacy firewall for coding agents.</strong></p>
 </div>
 
 <p align="center">
-  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0"></a>
+  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/license-Apache_2.0-blue.svg" alt="License: Apache-2.0"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/rust-1.94%2B-orange.svg" alt="Rust 1.94+"></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D18-43853d.svg" alt="Node >=18"></a>
+  <img src="https://img.shields.io/badge/npm-%40rpblc%2Fdam-cb3837.svg" alt="npm: @rpblc/dam">
+  <img src="https://img.shields.io/badge/checks-fmt%20%7C%20clippy%20%7C%20test-2ea44f.svg" alt="Checks: fmt, clippy, test">
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#how-it-works">How It Works</a> &middot;
-  <a href="#session-scrubbing">Session Scrubbing</a> &middot;
   <a href="#consent">Consent</a> &middot;
-  <a href="#detection">Detection</a> &middot;
-  <a href="#cli">CLI</a>
+  <a href="#web-ui">Web UI</a> &middot;
+  <a href="#commands">Commands</a> &middot;
+  <a href="#v1-limits">V1 Limits</a>
 </p>
 
 ---
 
-Every time an AI agent processes a customer email, a phone number, or an API key, that data flows through servers and context windows you don't control.
+DAM runs on your machine between a coding agent and its model provider. It detects sensitive values in outbound prompts, applies local policy and consent, replaces protected values with stable references, and stores originals in a local vault so the provider only sees what you meant to share.
 
-**DAM** sits between your app and the LLM provider. It detects sensitive data, checks your consent rules, tokenizes what you haven't approved, stores encrypted originals locally, and forwards clean requests upstream. The LLM reasons about data types. It never touches data values.
+V1 is focused on the two agent paths that matter most right now:
 
+- **Claude Code** through `ANTHROPIC_BASE_URL`.
+- **Codex API-key mode** through an injected OpenAI provider config.
+
+Codex ChatGPT-login mode is deliberately blocked until that transport can be protected.
+
+```text
+You type:
+
+  "Email banana@banana.com and include card 4111-1111-1111-1111"
+
+DAM sends upstream:
+
+  "Email [email:BhjEUc1EX1JHLbeT7JUS6g]
+   and include card [cc:7j21sVjW3aN4xFqP9L6MRA]"
+
+Provider can reason over:
+
+  "there is an email"     "there is a card"
+
+Provider does not need:
+
+  banana@banana.com       4111-1111-1111-1111
 ```
-  "Send the contract to john@acme.com        "Send the contract to [email:a3f71b]
-   and CC sarah@corp.io,                      and CC [email:d4f82c],
-   charge card 4111-1111-1111-1111"  ──dam──► charge card [cc:b7e31a]"
-
-        What you type                             What the LLM sees
-```
-
-Single binary. Zero config. Plug and play.
 
 ## Quick Start
 
-### Install
+Use the one-shot npm trial when you want to try DAM without creating persistent local databases:
 
 ```bash
-# Coming soon
-brew install dam
-npx dam
-curl -fsSL https://get.dam.dev | sh
+npx @rpblc/dam claude
+```
 
-# Available now
+For Codex, use API-key mode:
+
+```bash
+OPENAI_API_KEY=sk-... npx @rpblc/dam codex --api
+```
+
+Trial mode creates temporary vault, log, and consent databases, starts the protected agent, then removes those databases when the session exits.
+
+```text
+DAM trial mode
+Vault:    /tmp/dam-trial-.../vault.db
+Log:      /tmp/dam-trial-.../log.db
+Consents: /tmp/dam-trial-.../consent.db
+```
+
+Keep the trial databases for inspection:
+
+```bash
+npx @rpblc/dam claude --keep
+```
+
+Install globally for normal persistent local state:
+
+```bash
 npm install -g @rpblc/dam
-cargo install --path dam-cli
+dam claude
+dam codex --api
 ```
 
-### Run
+With `npx`, `--persist` bypasses one-shot trial mode and uses configured/default database paths:
 
 ```bash
-dam
+npx @rpblc/dam claude --persist
 ```
 
-```
-DAM running on :7828
-```
-
-### Use
-
-Point your LLM client at DAM:
+From a source checkout:
 
 ```bash
-curl -H "X-DAM-Upstream: https://api.anthropic.com/v1/messages" \
-     -H "x-api-key: $ANTHROPIC_API_KEY" \
-     -H "content-type: application/json" \
-     -d '{
-       "model": "claude-sonnet-4-20250514",
-       "max_tokens": 1024,
-       "messages": [{"role": "user", "content": "Email john@acme.com about the meeting, SSN 123-45-6789"}]
-     }' \
-     http://localhost:7828/
-```
-
-The LLM sees: `"Email [email:a3f71b] about the meeting, SSN [ssn:b2c81e]"`
-
-The originals are encrypted in your local vault. You decide what gets through:
-
-```bash
-dam resolve email:a3f71b     # → john@acme.com
-dam consent grant --type email --dest api.anthropic.com   # let emails pass to Anthropic
-dam tokens                   # list everything in the vault
-dam stats                    # see what was detected and where
+cargo run -p dam -- claude
+cargo run -p dam -- codex --api
 ```
 
 ## How It Works
 
-```
-                 YOUR MACHINE                            CLOUD
-  ┌─────────────────────────────────────────┐    ┌──────────────────┐
-  │                                         │    │                  │
-  │  ┌───────────┐      ┌──────────────┐    │    │    LLM           │
-  │  │ User /    │      │     DAM      │    │    │    Provider      │
-  │  │ App       │─────►│              │────┼───►│                  │
-  │  │           │      │  1. Detect   │    │    │  Only sees:      │
-  │  │ "john@    │      │  2. Consent  │    │    │  [email:a3f71b]  │
-  │  │  acme.com │      │  3. Vault    │    │    │                  │
-  │  │  at 555-  │      │  4. Redact   │    │    │  Responds with:  │
-  │  │  1234"    │      │  5. Log      │    │    │  "Send to        │
-  │  │           │      │              │◄───┼────│  [email:a3f71b]" │
-  │  │  sees     │◄─────│  Response    │    │    │                  │
-  │  │  tokens   │      │  passthrough │    │    └──────────────────┘
-  │  └───────────┘      └──────┬───────┘    │
-  │       │                    │            │
-  │       │              ┌─────▼────────┐   │
-  │       └─────────────►│  Vault       │   │     User resolves tokens
-  │        dam resolve   │  (AES-256)   │   │     via CLI or MCP
-  │        dam consent   │  Consent DB  │   │     when needed
-  │                      └──────────────┘   │
-  │                                         │
-  │      Everything stays on your machine.  │
-  └─────────────────────────────────────────┘
+```text
+              local machine                                      provider
+
+  prompt ──► dam launcher ──► dam-proxy ───────────────────────► model API
+              │                 │                                    │
+              │                 ├─ detect sensitive values           │
+              │                 ├─ apply policy                      │
+              │                 ├─ apply active consents             │
+              │                 ├─ write tokenized values to vault   │
+              │                 ├─ redact outbound request           │
+              │                 └─ write non-sensitive log events    │
+              │                                                      │
+              ◄──────────────── response with DAM references ◄───────┘
+
+  vault.db       raw originals for tokenized values, local SQLite
+  consent.db     exact-value passthrough grants with TTL
+  log.db         event metadata, not raw detected values
 ```
 
-### The pipeline
+The outbound pipeline is the same shape across the proxy and `dam-filter`:
 
-Traffic flows through a chain of modules. Each module reads from and appends to a shared context. Modules never remove data — they only add detections, set verdicts, store values, or modify the outbound body.
-
-```
-detect-pii ──┐
-              ├──► consent ──► vault ──► redact ──► log
-detect-secrets┘
-```
-
-| Module | Type | What it does |
-|--------|------|-------------|
-| **detect-pii** | Detection | Finds PII: email, phone, SSN, credit card, IBAN, IP. Appends detections to the shared context. |
-| **detect-secrets** | Detection | Finds secrets: API keys, JWTs, private keys, credential URLs. Appends detections. |
-| **consent** | Filter | Checks each detection against your consent rules. Sets verdict: `pass` (let through) or `redact` (tokenize). Default: redact everything. |
-| **vault** | Storage | Stores ALL detected values encrypted — both passed and redacted — for audit and recovery. |
-| **redact** | Action | Replaces values in the request body with `[type:id]` tokens — only for detections with verdict `redact`. Passed values stay as-is. |
-| **log** | Action | Records every detection: type, destination, verdict, action taken. Never logs the actual value. |
-
-### Zero config
-
-On first run, DAM auto-creates:
-- `~/.dam/key` — 32-byte encryption key (file permissions 0600)
-- `~/.dam/dam.db` — encrypted vault (SQLite)
-- `~/.dam/consent.db` — consent rules (SQLite)
-- `~/.dam/log.db` — detection log (SQLite)
-
-No init command. No config file. No keychain setup. Just `dam`.
-
-## Session Scrubbing
-
-DAM ships a second binary — `dam-filter` — for stripping PII and secrets from any text or JSON. Clean coding sessions before sharing, sanitize logs, scrub database exports. Same detection engine, no proxy required.
-
-```bash
-# Pipe a session through dam-filter
-cat session.json | dam-filter > clean.json
+```text
+input
+  -> dam-detect
+  -> dam-policy
+  -> dam-consent active exact-value overrides
+  -> dam-core replacement plan
+  -> dam-vault for tokenized values
+  -> dam-redact
+  -> output
 ```
 
-```
-  Input:  {"role": "user", "content": "My key is sk-ant-api03-abc... email john@acme.com"}
-  Output: {"role": "user", "content": "My key is [DAM:LLM_KEY] email [DAM:EMAIL]"}
-```
+Repeated equal values reuse the same reference by default inside one request/run:
 
-The `[DAM:TYPE]` placeholders are permanent — originals are destroyed, not stored.
-
-```bash
-# Works with extraction tools
-ai-data-extract dump --format json | dam-filter > clean-session.json
-
-# See what was found
-dam-filter session.json --report > clean.json 2>report.txt
+```toml
+[policy]
+deduplicate_replacements = true
 ```
 
-`dam-filter` reads JSON or plain text from stdin or a file. JSON mode walks the structure and independently filters every string value, preserving the document shape.
+Set it to `false` if reusing the same reference leaks too much equality information for your use case.
 
 ## Consent
 
-By default, DAM redacts everything in LLM calls. You control what passes through with consent rules.
+Consent lets a specific detected value pass through unredacted until its TTL expires or the grant is revoked. It overrides `tokenize` and `redact`; it does not override `block`.
 
-### Grant consent
+Consents are exact-value grants keyed by:
 
-```bash
-# Let emails pass to Anthropic (24h default TTL)
-dam consent grant --type email --dest api.anthropic.com
-
-# Let emails pass everywhere, permanently
-dam consent grant --type email --dest "*" --ttl permanent
-
-# Let a specific token pass (use brackets or key format)
-dam consent grant --token [email:a3f71b] --dest "*" --ttl 30m
-
-# Let a specific value pass (resolves from vault)
-dam consent grant --value "john@acme.com" --dest api.anthropic.com
-
-# Let everything pass to Anthropic
-dam consent grant --type "*" --dest api.anthropic.com
+```text
+kind + value_fingerprint + scope
 ```
 
-### Deny (explicit block)
+They do not store the raw sensitive value. A grant created from the vault UI or MCP server uses a stable vault key such as:
 
-```bash
-# Never let SSNs pass anywhere, even if a broader rule allows it
-dam consent deny --type ssn --dest "*"
-
-# Block a specific token
-dam consent deny --token [cc:b7e31a] --dest "*"
+```text
+email:ANJFsZtLfEA9WeP3bZS8Nw
 ```
 
-### Manage rules
+That stable key matters because inbound reference resolution can turn bracket references back into local values before an agent sees them.
 
-```bash
-dam consent list              # show all active rules
-dam consent revoke <rule-id>  # remove a rule
+Default consent config:
+
+```toml
+[consent]
+enabled = true
+backend = "sqlite"
+path = "consent.db"
+default_ttl_seconds = 86400
+mcp_write_enabled = true
 ```
 
-### How consent works
+Revoking a consent revokes every active grant for the same exact value and scope, so duplicate vault rows cannot keep passthrough alive after revoke.
 
-Rules are layered. Most specific match wins:
+## Web UI
 
-1. **Token + exact destination** — highest priority
-2. **Token + wildcard destination**
-3. **Type + exact destination**
-4. **Type + wildcard destination**
-5. **Wildcard type + exact destination**
-6. **Wildcard type + wildcard destination**
-7. **No match → redact** (default deny)
+`dam-web` is the local admin UI for development and operator inspection:
 
-TTL defaults to 24 hours. Use `--ttl permanent` to override. Use `--ttl 30m`, `--ttl 1h`, `--ttl 7d` for custom durations.
+```bash
+dam web --config dam.example.toml
+cargo run -p dam-web -- --config dam.example.toml
+```
+
+It provides:
+
+- `/` for vault rows, cleartext values, and row-level grant/revoke actions.
+- `/consents` for active and historical consent records.
+- `/logs` for non-sensitive detection, redaction, consent, and resolve events.
+- `/diagnostics` for config and proxy health checks.
+
+The web UI displays vault values in clear text. Treat it as a local admin surface, not a public web app.
+
+## MCP
+
+DAM ships an MCP server so an agent can manage consent when enabled:
+
+```bash
+cargo run -p damctl -- mcp config
+cargo run -p dam-mcp -- --config dam.example.toml
+```
+
+Current tools:
+
+- `dam_consent_list`
+- `dam_consent_grant`
+- `dam_consent_revoke`
+
+`dam_consent_request` is intentionally parked until the notification flow exists.
+
+## Commands
+
+Protected agent launchers:
+
+```bash
+dam claude [DAM_OPTIONS] [-- CLAUDE_ARGS...]
+dam codex --api [DAM_OPTIONS] [-- CODEX_ARGS...]
+```
+
+DAM launcher options:
+
+```text
+--api                 Use Codex API-key mode through DAM
+--config <path>       Load DAM config before launcher overrides
+--listen <addr>       Local proxy listen address, default 127.0.0.1:7828
+--upstream <url>      Provider upstream
+--db <path>           Vault SQLite path, default vault.db
+--log <path>          Log SQLite path, default log.db
+--consent-db <path>   Consent SQLite path, default consent.db
+--no-log              Disable DAM log writes
+--no-resolve-inbound  Leave DAM references unresolved in inbound responses
+--resolve-inbound     Restore known DAM references in inbound responses
+```
+
+Auxiliary binaries are available from a source build and native distributions:
+
+```bash
+cargo run -p dam-filter -- --config dam.example.toml session.txt > clean.txt
+cargo run -p dam-filter -- --config dam.example.toml --report session.txt > clean.txt 2> report.txt
+```
+
+Control and diagnostics:
+
+```bash
+cargo run -p damctl -- status
+cargo run -p damctl -- config check --config dam.example.toml
+cargo run -p damctl -- mcp config --config dam.example.toml
+```
 
 ## Detection
 
-### PII (detect-pii)
+The current detector is rule-based and intentionally narrow:
 
-| Type | Tag | Example | Validation |
-|------|-----|---------|------------|
-| Email | `email` | `user@example.com` | Format |
-| Phone | `phone` | `+14155551234` | E.164 + NANP, 7-15 digits |
-| SSN | `ssn` | `123-45-6789` | Area rules (000/666/900+ rejected) |
-| Credit Card | `cc` | `4111111111111111` | Luhn checksum |
-| IBAN | `iban` | `DE89370400440532013000` | Mod97 |
-| IP Address | `ip` | `203.0.113.42` | Private ranges rejected |
+- email addresses, including common whitespace separator variants
+- NANP phone numbers in dashed form
+- US SSNs with basic invalid-area rejection
+- credit cards with Luhn validation
 
-### Secrets (detect-secrets)
+Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default policy tokenizes supported kinds.
 
-| Type | Tag | Example |
-|------|-----|---------|
-| JWT Token | `jwt` | `eyJhbGciOiJIUzI1NiIs...` |
-| AWS Key | `aws_key` | `AKIAIOSFODNN7EXAMPLE` |
-| GitHub Token | `gh_token` | `ghp_xxxxxxxxxxxxxxxxxxxx` |
-| Stripe Key | `stripe_key` | `sk_live_xxxxxxxxxxxxxxxx` |
-| OpenAI Key | `llm_key` | `sk-xxxxxxxxxxxxxxxx` |
-| Anthropic Key | `llm_key` | `sk-ant-xxxxxxxxxxxxxxxx` |
-| Private Key | `priv_key` | `-----BEGIN RSA PRIVATE KEY-----` |
-| Credential URL | `cred_url` | `postgres://user:pass@host/db` |
+## V1 Limits
 
-### Token format
+- DAM is explicit base-URL routing, not transparent HTTPS interception, VPN/TUN routing, or TLS MITM.
+- Codex ChatGPT-login mode is blocked because its current model transport is not protected by the base-URL launcher.
+- Inbound provider responses are not redetected. Known DAM references can be resolved locally with `--resolve-inbound`, but this is off by default.
+- The current vault/log/consent stores are local SQLite implementations.
+- The detector does not yet cover names, addresses, organizations, private keys, JWTs, API keys, IBANs, or IP addresses.
+- The npm package is a Node entry point around native DAM binaries; release packaging must include the platform binaries under `npm/native`.
 
-```
-[email:a3f71b]     — an email address
-[phone:c2d81e]     — a phone number
-[ssn:b7e31a]       — a social security number
-[cc:d4f82c]        — a credit card number
-[aws_key:e5a93b]   — an AWS access key
-```
-
-Each ID is a 128-bit UUID encoded in base58 (22 chars in practice). Base58 excludes `0`, `O`, `I`, `l` to avoid visual ambiguity. Same value + same type = same token (dedup). IDs in this README are shortened for readability.
-
-## CLI
-
-Commands are grouped by module.
-
-### Proxy
-
-```
-dam                          Start proxy on :7828
-dam --port 8080              Custom port
-dam -v                       Verbose output
-```
-
-### Consent (dam-consent)
-
-```
-dam consent grant [OPTIONS]  Grant consent — allow data to pass
-dam consent deny [OPTIONS]   Deny — explicitly block data
-dam consent list             List all active rules
-dam consent revoke <id>      Remove a rule
-```
-
-### Vault (dam-vault)
-
-```
-dam resolve <token>          Resolve a token to its original value
-dam tokens                   List all tokens in the vault
-```
-
-### Log (dam-log)
-
-```
-dam stats                    Detection counts by type and destination
-dam log [-n 50]              Show recent detection events
-```
-
-### Proxy routing
+## Build
 
 ```bash
-# Route via header
-curl -H "X-DAM-Upstream: https://api.anthropic.com/v1/messages" ... http://localhost:7828/
-
-# Route via path
-curl ... http://localhost:7828/https://api.openai.com/v1/chat/completions
+cargo fmt --all --check
+cargo clippy --workspace -- -D warnings
+cargo test --workspace
+npm pack --dry-run
 ```
-
-LLM endpoints are auto-detected by host. LLM calls get the full pipeline (detect → consent → vault → redact → log). Non-LLM traffic gets detect + vault + log (stored and logged, but not redacted).
-
-## Security
-
-- **Envelope encryption** — each value gets its own DEK (AES-256-GCM), wrapped by a master key
-- **Auto-generated key** — 32 random bytes at `~/.dam/key`, file permissions 0600, no OS keychain
-- **Deduplication** — same value + type stored once via normalized SHA-256 hash
-- **Separate databases** — vault, consent rules, and detection logs in different SQLite files
-- **Zero plaintext at rest** — sensitive values only exist decrypted in memory during processing
-- **Default deny** — no data passes through LLM calls without explicit consent
-
-## Architecture
-
-9 crates, two binaries:
-
-```
-dam-core             Spine — proxy, Module trait, FlowExecutor, streaming, config
-dam-detect-pii       Vertebra — PII detection patterns + validators
-dam-detect-secrets   Vertebra — secrets/credentials detection
-dam-consent          Vertebra — consent rules, verdict assignment
-dam-vault            Vertebra — encrypt and store all detected values
-dam-redact           Vertebra — replace body text for redacted detections
-dam-log              Vertebra — detection event logging, stats
-dam-cli              Binary — full proxy + vault + consent + MCP
-dam-filter           Binary — standalone PII/secret filter (no proxy, no vault)
-```
-
-### The module contract
-
-Every module implements the same trait. Modules read from and append to a shared `FlowContext`. The `Detection` struct carries a `Verdict` field that flows through the pipeline:
-
-```rust
-pub enum Verdict { Pending, Redact, Pass }
-
-pub struct Detection {
-    pub data_type: SensitiveDataType,
-    pub value: String,
-    pub span: Span,
-    pub confidence: f32,
-    pub source_module: String,
-    pub verdict: Verdict,
-}
-```
-
-Detection modules set `verdict: Pending`. The consent module sets it to `Pass` or `Redact`. Action modules read the verdict to decide what to do.
-
-### Build from source
-
-```bash
-cargo build --workspace          # debug build
-cargo test --workspace              # 418 tests
-cargo build --release -p dam-cli    # release proxy binary
-cargo build --release -p dam-filter # release filter binary
-```
-
-## Roadmap
-
-**Done:**
-- [x] PII detection (email, phone, SSN, credit card, IBAN, IP)
-- [x] Secrets detection (API keys, JWTs, private keys, credential URLs)
-- [x] Consent model (layered rules, per-type/per-token, TTL, default deny)
-- [x] Encrypted vault (AES-256-GCM, auto-generated key, dedup)
-- [x] HTTPS proxy (CONNECT + selective TLS interception)
-- [x] Streaming (SSE, WebSocket, zstd decompression)
-- [x] CLI (consent grant/deny/list/revoke, resolve, tokens, stats, log)
-- [x] MCP server (resolve tokens, grant/deny/revoke consent, list tokens, stats with pass/redact breakdown)
-- [x] Verdict-aware logging (redacted vs passed vs logged)
-- [x] Auto-resolve: tokens in LLM responses resolved back to original values before returning to client
-- [x] Session scrubbing (`dam-filter` — strip PII/secrets from coding sessions, `[DAM:TYPE]` branded placeholders)
-- [x] JSON-aware scanning (user/assistant content only, skips system prompts and tool definitions)
-
-**Next:**
-- [ ] Config TOML modules (custom detection rules, drop in `~/.dam/modules/`)
-- [ ] Configurable trust levels per accessor (auto-approve vs require human approval)
-- [ ] Notification system for consent requests (agent requests, human approves)
-- [ ] WASM module system (`dam install author/module@version`)
-- [ ] Process modules (external binaries for ML/GPU detection)
-- [ ] Analytics dashboard
-- [ ] Remote vault (Postgres)
-- [ ] Full traffic interception (corporate network deployment)
-- [ ] Module marketplace
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE) for details.
+Apache-2.0.

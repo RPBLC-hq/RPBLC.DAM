@@ -1,0 +1,12 @@
+[package]
+name = "dam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+dam-config.workspace = true
+dam-proxy.workspace = true
+reqwest.workspace = true
+tokio.workspace = true

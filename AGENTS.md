@@ -1,197 +1,62 @@
-# DAM — Development Guide
+# DAM Agent Instructions
 
-## What is DAM?
+This workspace is being rebuilt one module at a time. Keep changes small, explicit, and contract-driven.
 
-DAM (Data Access Mediator) mediates access to sensitive data in transit. It sits between applications and the internet as a forward proxy. It detects sensitive data, checks consent rules, stores everything encrypted, redacts what isn't approved, and logs all activity.
+## Open Source Guidelines
 
-## Build Commands
+This project is intended to be open source.
 
-```bash
-cargo build --workspace              # debug build
-cargo build --release -p dam-cli     # release proxy binary
-cargo build --release -p dam-filter  # release filter binary
-cargo test --workspace               # all tests
-cargo clippy --workspace -- -D warnings  # lint
-cargo fmt --all --check              # format check
-cargo fmt --all                      # auto-fix formatting
-cargo run -p dam-cli                 # start proxy on :7828
-cargo run -p dam-cli -- --port 8080  # custom port
-```
+- Do not add proprietary business logic, private customer assumptions, or environment-specific behavior to core modules.
+- Do not commit secrets, real credentials, real personal data, private URLs, or internal-only deployment details.
+- Prefer small public contracts and replaceable implementations over closed, tightly coupled integrations.
+- Keep public APIs, config keys, CLI behavior, and failure modes documented.
+- Use synthetic data in examples, tests, fixtures, docs, and manual test commands.
+- Keep dependencies minimal and compatible with the project license. Avoid adding a dependency unless it is clearly justified.
+- Do not introduce telemetry, network calls, or external services without explicit config and documentation.
+- Treat local SQLite implementations as reference implementations, not as the only possible backends.
+- Keep error messages useful, but avoid leaking raw sensitive values or secret material.
+- Preserve a clean contributor path: format, clippy, tests, docs, and clear module boundaries.
 
-## Architecture
+## Module Changes
 
-Spine + Vertebrae model. The spine knows nothing about detection, consent, storage, or logging. Each vertebra is a module that plugs into the spine via the `Module` trait.
+When editing a module under `crates/<module>`:
 
-### Crates
+- Update the matching module doc in `docs/<module>.md` in the same change.
+- Update `docs/README.md` if module responsibilities, pipeline position, or public commands change.
+- Update `dam.example.toml` if configuration keys, defaults, or supported values change.
+- Update `../RPBLC.Architecture` when an agreed design decision, implemented behavior, public interface, config key, failure mode, pipeline shape, or module boundary changes.
+- Do not introduce direct cross-module calls that bypass `dam-core` contracts.
 
-| Crate | Role | Type |
-|---|---|---|
-| `dam-core` | Proxy engine, Module trait, FlowExecutor, FlowContext, streaming, config | Spine |
-| `dam-detect-pii` | PII detection (email, phone, SSN, CC, IBAN, IP) | Detection vertebra |
-| `dam-detect-secrets` | Secrets detection (API keys, JWTs, private keys, credentials) | Detection vertebra |
-| `dam-consent` | Consent rules, verdict assignment (pass/redact per detection) | Filter vertebra |
-| `dam-vault` | Encrypt and store ALL detected values (AES-256-GCM, SQLite) | Storage vertebra |
-| `dam-redact` | Replace body text with tokens for Verdict::Redact detections | Action vertebra |
-| `dam-log` | Detection event logging, `dam stats` | Action vertebra |
-| `dam-cli` | Binary entry point, CLI commands, wires spine + vertebrae | Binary |
-| `dam-filter` | Standalone PII/secret filter for any text or JSON — detect + redact, no vault/proxy | Binary |
-| `_legacy/` | Old v0.3.1 codebase — reference only, do not build | Archive |
+## Architecture Sync
 
-### Dependency graph
+`../RPBLC.Architecture` is the authoritative contract repo. Keep it current when design decisions are agreed in discussion and when behavior is implemented in code.
 
-```
-dam-core           → (no internal deps)
-dam-detect-pii     → dam-core
-dam-detect-secrets → dam-core
-dam-consent        → dam-core
-dam-vault          → dam-core
-dam-redact         → dam-core, dam-vault
-dam-log            → dam-core
-dam-cli            → all of the above
-dam-filter         → dam-core, dam-detect-pii, dam-detect-secrets (no vault/consent/redact/log)
-```
+- Update the relevant architecture files in the same change as the DAM implementation whenever possible.
+- If an architecture update is needed but cannot be completed in the same change, call it out explicitly before considering the work done.
+- Do not let local DAM docs, README claims, config examples, or code behavior drift away from the architecture contracts.
 
-### Default module flow (dam-cli proxy)
+## Tests
 
-```
-detect-pii → detect-secrets → consent → vault → redact → log
-```
+Every module change should include relevant tests.
 
-### Filter flow (dam-filter standalone)
+- Keep existing unit tests passing.
+- Add or update unit tests for changed behavior.
+- Add edge-case coverage for boundary conditions, failure paths, invalid config, and privacy-sensitive behavior.
+- For CLI or integration behavior, update tests under the consuming module, e.g. `crates/dam-filter/tests/`.
+- For policy, vault, log, and redaction behavior, test that raw sensitive values are not persisted outside the vault.
 
-```
-stdin → detect-pii → detect-secrets → dedup → replace with [DAM:TYPE] → stdout
-```
+## Verification
 
-dam-filter skips consent/vault/redact/log. Every detection is replaced with a branded placeholder (`[DAM:EMAIL]`, `[DAM:SSN]`, etc.). No vault tokens, no storage.
-
-- **detect-***: find sensitive data, append `Detection` objects with `verdict: Pending`
-- **consent**: check rules, set `verdict: Pass` or `verdict: Redact` per detection
-- **vault**: store ALL detections encrypted (pass AND redact) for audit/recovery
-- **redact**: replace body text only for `verdict: Redact` detections (LLM calls only)
-- **log**: record everything
-
-### Module trait
-
-Every vertebra implements:
-
-```rust
-pub enum Verdict { Pending, Redact, Pass }
-
-pub trait Module: Send + Sync {
-    fn name(&self) -> &str;
-    fn module_type(&self) -> ModuleType; // Detection or Action
-    fn matches(&self, ctx: &FlowContext) -> bool;
-    fn process(&self, ctx: &mut FlowContext) -> Result<(), DamError>;
-}
-```
-
-Modules communicate through `FlowContext` — a shared struct with `detections: Vec<Detection>`, `modified_body`, `tokens_created`, and `destination`. Modules append data, never remove.
-
-## Key Design Decisions
-
-- **Envelope encryption**: Each value gets a random DEK (AES-256-GCM), wrapped by a KEK stored at `~/.dam/key`
-- **Auto-generated key**: No OS keychain. 32 random bytes written to file with 0600 permissions on first run.
-- **Typed tokens**: `[email:a3f71b]` format — 128-bit UUID in base58 (22 chars). LLMs reason about data type without seeing values.
-- **Deduplication**: Same value+type stored once, returns existing token
-- **Separate DBs**: `~/.dam/dam.db` (vault), `~/.dam/consent.db` (rules), `~/.dam/log.db` (events)
-- **Zero config**: `dam` with no arguments starts the proxy. No TOML, no init, no setup.
-- **Default deny**: No data passes through LLM calls without explicit consent.
-- **Vault stores everything**: Both passed and redacted values stored for audit and recovery.
-- **Graceful degradation**: Never break traffic. Detection failure → pass through. Vault failure → redact without token.
-
-## CLI Commands
-
-Commands are grouped by the module that owns them.
-
-### Proxy
-
-| Command | Purpose |
-|---------|---------|
-| `dam` | Start proxy on default port (7828) |
-| `dam --port 8080` | Start proxy on custom port |
-| `dam -v` | Verbose output |
-
-### Consent (dam-consent)
-
-| Command | Purpose |
-|---------|---------|
-| `dam consent grant [OPTIONS]` | Grant consent — allow data to pass |
-| `dam consent deny [OPTIONS]` | Deny — explicitly block data |
-| `dam consent list` | List all active rules |
-| `dam consent revoke <id>` | Remove a rule |
-
-Grant/deny options: `--type <tag>`, `--token <key>`, `--value <raw>`, `--dest <host>`, `--ttl <duration>`
-
-### Vault (dam-vault)
-
-| Command | Purpose |
-|---------|---------|
-| `dam resolve <token>` | Resolve a token to its original value |
-| `dam tokens` | List all tokens in the vault |
-
-### Log (dam-log)
-
-| Command | Purpose |
-|---------|---------|
-| `dam stats` | Detection counts by type and destination |
-| `dam log [-n 50]` | Show recent detection events |
-
-## Consent Model
-
-Rules are layered — most specific match wins:
-
-1. Token + exact destination (highest priority)
-2. Token + wildcard destination
-3. Type + exact destination
-4. Type + wildcard destination
-5. Wildcard type + exact destination
-6. Wildcard type + wildcard destination
-7. No match → redact (default deny)
-
-Default TTL: 24 hours. `--ttl permanent` for no expiration.
-
-## Proxy Usage
-
-Set the `X-DAM-Upstream` header to route through DAM:
+Before considering work complete, run:
 
 ```bash
-curl -H "X-DAM-Upstream: https://api.anthropic.com/v1/messages" \
-     -H "x-api-key: $ANTHROPIC_API_KEY" \
-     -H "content-type: application/json" \
-     -d '{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"My email is alice@example.com"}]}' \
-     http://localhost:7828/
+cargo fmt --all --check
+cargo clippy --workspace -- -D warnings
+cargo test --workspace
 ```
 
-Or use path-based routing:
+If a command cannot be run, document why in the final response.
 
-```bash
-curl -d '...' http://localhost:7828/https://api.anthropic.com/v1/messages
-```
+## Documentation Rule
 
-## Conventions
-
-- Error type: `DamError` / `DamResult<T>` in dam-core
-- Data types: `SensitiveDataType` enum with `tag()` for short form
-- Tokens: `Token` with `key()` → `"email:a3f71b"`, `display()` → `"[email:a3f71b]"`. IDs are 128-bit UUID base58-encoded (22 chars).
-- Verdicts: `Verdict::Pending` (just detected), `Verdict::Redact` (tokenize), `Verdict::Pass` (let through)
-- All vault operations go through `VaultStore` (mutex-protected SQLite)
-- Module names: `"detect-pii"`, `"detect-secrets"`, `"consent"`, `"vault"`, `"redact"`, `"dam-log"`
-
-## Adding a new module
-
-1. Create a new crate: `cargo init --lib dam-<name>`
-2. Add `dam-core` as a dependency
-3. Implement the `Module` trait
-4. Wire it into `dam-cli/src/main.rs` in the module chain
-5. Add to workspace `Cargo.toml` members
-6. Add CLI subcommands if the module needs them
-
-## Release Checklist
-
-1. All tests pass: `cargo test --workspace`
-2. Lint clean: `cargo clippy --workspace -- -D warnings`
-3. Format clean: `cargo fmt --all --check`
-4. Bump version in root `Cargo.toml`
-5. Update changelog
-6. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`
+Docs are part of the implementation. A module edit without corresponding docs and tests is incomplete unless the change is purely mechanical and does not affect behavior, config, contracts, or usage.

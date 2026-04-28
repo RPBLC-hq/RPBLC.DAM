@@ -1,8 +1,5 @@
-/target
+/target/
+/.dam/
 *.db
-*.db-wal
 *.db-shm
-.env
-*.pem
-*.key
-.claude/settings.local.json
+*.db-wal
