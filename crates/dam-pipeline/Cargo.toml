@@ -1,0 +1,13 @@
+[package]
+name = "dam-pipeline"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+dam-consent.workspace = true
+dam-core.workspace = true
+dam-detect.workspace = true
+dam-policy.workspace = true
+dam-redact.workspace = true
+thiserror.workspace = true

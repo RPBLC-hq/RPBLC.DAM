@@ -298,6 +298,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dam-pipeline"
+version = "0.1.0"
+dependencies = [
+ "dam-consent",
+ "dam-core",
+ "dam-detect",
+ "dam-policy",
+ "dam-redact",
+ "thiserror",
+]
+
+[[package]]
 name = "dam-policy"
 version = "0.1.0"
 dependencies = [
@@ -314,10 +326,9 @@ dependencies = [
  "dam-config",
  "dam-consent",
  "dam-core",
- "dam-detect",
  "dam-log",
+ "dam-pipeline",
  "dam-policy",
- "dam-redact",
  "dam-vault",
  "futures-util",
  "reqwest",

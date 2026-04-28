@@ -10,7 +10,6 @@ use dam_core::{
     EventSink, LogEvent, LogEventType, LogLevel, VaultReadError, VaultReader, VaultRecord,
     VaultWriter,
 };
-use dam_policy::PolicyEngine;
 use futures_util::TryStreamExt;
 use reqwest::Url;
 use std::{collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
@@ -298,11 +297,14 @@ async fn proxy(
         }
     };
 
-    let detections = dam_detect::detect(body_text);
-    let base_decisions = state.policy.decide_all(&detections);
-    let (decisions, consent_matches) = match dam_consent::apply_consents_to_decisions(
-        &base_decisions,
+    let protected = match dam_pipeline::protect_text(
+        body_text,
+        &operation_id,
+        &state.policy,
+        state.vault.as_ref(),
         state.consent_store.as_deref(),
+        state.log_sink.as_deref(),
+        state.replacement_options,
     ) {
         Ok(result) => result,
         Err(_) => {
@@ -319,12 +321,7 @@ async fn proxy(
         }
     };
 
-    if decisions
-        .iter()
-        .any(|decision| decision.action == dam_core::PolicyAction::Block)
-    {
-        let plan = blocked_plan_from_decisions(&decisions);
-        record_filter_events(&state, &operation_id, &decisions, &plan, &consent_matches);
+    if protected.is_blocked() {
         record_proxy_event(
             &state,
             &operation_id,
@@ -342,14 +339,9 @@ async fn proxy(
         );
     }
 
-    let plan = dam_core::build_replacement_plan_from_decisions_with_options(
-        &decisions,
-        state.vault.as_ref(),
-        state.replacement_options,
-    );
-    record_filter_events(&state, &operation_id, &decisions, &plan, &consent_matches);
-
-    let protected_body = dam_redact::redact(body_text, &plan.replacements);
+    let protected_body = protected
+        .output
+        .expect("non-blocked pipeline result should include output");
     forward_or_provider_down(
         state,
         method,
@@ -528,17 +520,13 @@ fn resolve_response_body(state: &ProxyState, operation_id: &str, body: Bytes) ->
         Ok(text) => text,
         Err(_) => return body,
     };
-    let plan = dam_core::build_resolve_plan(body_text, state.vault.as_ref());
-    if plan.references.is_empty() {
-        return body;
-    }
-
-    record_resolve_events(state, operation_id, &plan);
-    if plan.resolved_count() == 0 {
-        return body;
-    }
-
-    Bytes::from(dam_core::apply_resolve_plan(body_text, &plan))
+    let result = dam_pipeline::resolve_text(
+        body_text,
+        operation_id,
+        state.vault.as_ref(),
+        state.log_sink.as_deref(),
+    );
+    result.output.map(Bytes::from).unwrap_or(body)
 }
 
 fn upstream_url(base: &str, uri: &Uri) -> Result<String, String> {
@@ -632,60 +620,6 @@ fn request_has_unsupported_content_encoding(headers: &HeaderMap) -> bool {
                 .filter(|part| !part.is_empty())
                 .any(|part| !part.eq_ignore_ascii_case("identity"))
         })
-}
-
-fn blocked_plan_from_decisions(
-    decisions: &[dam_core::PolicyDecision],
-) -> dam_core::ReplacementPlan {
-    dam_core::ReplacementPlan {
-        blocked: decisions
-            .iter()
-            .filter(|decision| decision.action == dam_core::PolicyAction::Block)
-            .map(|decision| dam_core::BlockedDetection {
-                kind: decision.detection.kind,
-                span: decision.detection.span,
-            })
-            .collect(),
-        ..dam_core::ReplacementPlan::default()
-    }
-}
-
-fn record_filter_events(
-    state: &ProxyState,
-    operation_id: &str,
-    decisions: &[dam_core::PolicyDecision],
-    plan: &dam_core::ReplacementPlan,
-    consent_matches: &[dam_consent::ConsentMatch],
-) {
-    let Some(sink) = &state.log_sink else {
-        return;
-    };
-
-    for event in dam_core::build_filter_log_events_from_decisions(operation_id, decisions, plan) {
-        let _ = sink.record(&event);
-    }
-
-    for consent_match in consent_matches {
-        let event = LogEvent::new(
-            operation_id,
-            LogLevel::Info,
-            LogEventType::Consent,
-            "active consent allowed detected value",
-        )
-        .with_kind(consent_match.kind)
-        .with_action(format!("allow:{}", consent_match.consent_id));
-        let _ = sink.record(&event);
-    }
-}
-
-fn record_resolve_events(state: &ProxyState, operation_id: &str, plan: &dam_core::ResolvePlan) {
-    let Some(sink) = &state.log_sink else {
-        return;
-    };
-
-    for event in dam_core::build_resolve_log_events(operation_id, plan) {
-        let _ = sink.record(&event);
-    }
 }
 
 fn record_proxy_event(

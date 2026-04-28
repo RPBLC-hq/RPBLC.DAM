@@ -13,6 +13,7 @@ client or harness
   -> dam-proxy
   -> first configured proxy target
   -> OpenAI-compatible HTTP request body
+  -> dam-pipeline
   -> dam-detect
   -> dam-policy
   -> dam-consent active exact-value overrides
@@ -22,6 +23,7 @@ client or harness
   -> dam-log
   -> upstream provider
   -> provider response body
+  -> dam-pipeline when proxy.resolve_inbound is enabled
   -> dam-core resolve plan for existing DAM references
   -> dam-vault through VaultReader
   -> dam-log
@@ -36,7 +38,7 @@ Repeated equal outbound values reuse one tokenized reference by default within a
 
 Active consent grants let exact detected values pass through unredacted until expiry or revocation. Consent overrides `tokenize` and `redact`; it does not override `block`.
 
-The current implementation keeps routing/provider/pipeline logic inside `dam-proxy`. Future work should extract `dam-router`, `dam-provider-openai`, and `dam-pipeline` once the behavior stabilizes.
+The current implementation keeps routing and provider forwarding logic inside `dam-proxy`, but shared text processing orchestration now lives in `dam-pipeline`. Future work should extract `dam-router` and `dam-provider-openai` without changing proxy semantics.
 
 ## Usage
 
