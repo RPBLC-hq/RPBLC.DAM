@@ -65,6 +65,14 @@ impl LaunchArgs {
         }
     }
 
+    fn target_provider(&self) -> &'static str {
+        match (self.tool, self.codex_api_key_mode) {
+            (Tool::Codex, true) => "openai-compatible",
+            (Tool::Codex, false) => "chatgpt",
+            (Tool::Claude, _) => "anthropic",
+        }
+    }
+
     fn codex_provider_base_url(&self, local_base_url: &str) -> String {
         format!("{}/v1", local_base_url.trim_end_matches('/'))
     }
@@ -310,7 +318,7 @@ fn proxy_config(args: &LaunchArgs) -> Result<dam_config::DamConfig, String> {
         proxy_listen: Some(args.listen.clone()),
         proxy_resolve_inbound: args.resolve_inbound,
         proxy_target_name: Some(args.target_name().to_string()),
-        proxy_target_provider: Some("openai-compatible".to_string()),
+        proxy_target_provider: Some(args.target_provider().to_string()),
         proxy_target_upstream: Some(args.upstream.clone()),
         proxy_target_api_key_env: Some(String::new()),
         ..dam_config::ConfigOverrides::default()
@@ -696,6 +704,7 @@ mod tests {
         assert!(config.proxy.enabled);
         assert_eq!(config.proxy.targets.len(), 1);
         assert_eq!(config.proxy.targets[0].name, "openai");
+        assert_eq!(config.proxy.targets[0].provider, "openai-compatible");
         assert_eq!(config.proxy.targets[0].upstream, OPENAI_API_UPSTREAM);
         assert_eq!(config.proxy.targets[0].api_key_env, None);
         assert_eq!(config.proxy.targets[0].api_key, None);
@@ -722,6 +731,8 @@ mod tests {
 
         let config = proxy_config(&args).unwrap();
 
+        assert_eq!(config.proxy.targets[0].name, "anthropic");
+        assert_eq!(config.proxy.targets[0].provider, "anthropic");
         assert!(config.proxy.resolve_inbound);
     }
 }

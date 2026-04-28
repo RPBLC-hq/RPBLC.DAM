@@ -1,6 +1,6 @@
 use axum::{
     Router,
-    body::{Body, Bytes},
+    body::Bytes,
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
@@ -10,14 +10,11 @@ use dam_core::{
     EventSink, LogEvent, LogEventType, LogLevel, VaultReadError, VaultReader, VaultRecord,
     VaultWriter,
 };
-use dam_policy::PolicyEngine;
-use futures_util::TryStreamExt;
-use reqwest::Url;
-use std::{collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 
-const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_REQUEST_BYTES: usize = 10 * 1024 * 1024;
+const ANTHROPIC_API_KEY_HEADER: &str = "x-api-key";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
@@ -45,8 +42,8 @@ pub enum ProxyError {
     #[error("proxy server failed: {0}")]
     Server(std::io::Error),
 
-    #[error("failed to build upstream URL: {0}")]
-    UpstreamUrl(String),
+    #[error("failed to initialize provider: {0}")]
+    ProviderInit(String),
 
     #[error("vault backend is unavailable and fail-closed is configured: {0}")]
     VaultUnavailable(String),
@@ -59,6 +56,36 @@ pub enum ProxyError {
 }
 
 #[derive(Clone)]
+enum ProviderAdapter {
+    OpenAi(dam_provider_openai::OpenAiProvider),
+    Anthropic(dam_provider_anthropic::AnthropicProvider),
+}
+
+impl ProviderAdapter {
+    fn for_name(name: &str) -> Result<Self, ProxyError> {
+        match name {
+            "openai-compatible" => dam_provider_openai::OpenAiProvider::new()
+                .map(Self::OpenAi)
+                .map_err(|error| ProxyError::ProviderInit(error.to_string())),
+            "anthropic" => dam_provider_anthropic::AnthropicProvider::new()
+                .map(Self::Anthropic)
+                .map_err(|error| ProxyError::ProviderInit(error.to_string())),
+            other => Err(ProxyError::UnsupportedProvider(other.to_string())),
+        }
+    }
+
+    fn caller_auth_header_present(&self, headers: &HeaderMap) -> bool {
+        match self {
+            Self::OpenAi(_) => headers.contains_key(header::AUTHORIZATION),
+            Self::Anthropic(_) => {
+                headers.contains_key(ANTHROPIC_API_KEY_HEADER)
+                    || headers.contains_key(header::AUTHORIZATION)
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct ProxyState {
     target: dam_config::ProxyTargetConfig,
     default_failure_mode: dam_config::ProxyFailureMode,
@@ -68,7 +95,7 @@ pub struct ProxyState {
     log_sink: Option<Arc<dyn EventSink>>,
     policy: dam_policy::StaticPolicy,
     replacement_options: dam_core::ReplacementPlanOptions,
-    client: reqwest::Client,
+    provider: ProviderAdapter,
 }
 
 trait ProxyVault: VaultWriter + VaultReader {}
@@ -120,9 +147,7 @@ pub fn build_app(config: dam_config::DamConfig) -> Result<Router, ProxyError> {
         .cloned()
         .ok_or(ProxyError::MissingTarget)?;
 
-    if target.provider != "openai-compatible" {
-        return Err(ProxyError::UnsupportedProvider(target.provider));
-    }
+    let provider = ProviderAdapter::for_name(&target.provider)?;
 
     let replacement_options = dam_core::ReplacementPlanOptions {
         deduplicate_replacements: config.policy.deduplicate_replacements,
@@ -137,7 +162,7 @@ pub fn build_app(config: dam_config::DamConfig) -> Result<Router, ProxyError> {
         log_sink: open_log_sink(&config)?,
         policy: dam_policy::StaticPolicy::from(config.policy),
         replacement_options,
-        client: http_client()?,
+        provider,
     };
 
     Ok(Router::new()
@@ -145,14 +170,6 @@ pub fn build_app(config: dam_config::DamConfig) -> Result<Router, ProxyError> {
         .fallback(proxy)
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(Arc::new(state)))
-}
-
-fn http_client() -> Result<reqwest::Client, ProxyError> {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(UPSTREAM_REQUEST_TIMEOUT)
-        .build()
-        .map_err(|error| ProxyError::UpstreamUrl(error.to_string()))
 }
 
 fn open_vault(config: &dam_config::DamConfig) -> Result<Arc<dyn ProxyVault>, ProxyError> {
@@ -298,11 +315,14 @@ async fn proxy(
         }
     };
 
-    let detections = dam_detect::detect(body_text);
-    let base_decisions = state.policy.decide_all(&detections);
-    let (decisions, consent_matches) = match dam_consent::apply_consents_to_decisions(
-        &base_decisions,
+    let protected = match dam_pipeline::protect_text(
+        body_text,
+        &operation_id,
+        &state.policy,
+        state.vault.as_ref(),
         state.consent_store.as_deref(),
+        state.log_sink.as_deref(),
+        state.replacement_options,
     ) {
         Ok(result) => result,
         Err(_) => {
@@ -319,12 +339,7 @@ async fn proxy(
         }
     };
 
-    if decisions
-        .iter()
-        .any(|decision| decision.action == dam_core::PolicyAction::Block)
-    {
-        let plan = blocked_plan_from_decisions(&decisions);
-        record_filter_events(&state, &operation_id, &decisions, &plan, &consent_matches);
+    if protected.is_blocked() {
         record_proxy_event(
             &state,
             &operation_id,
@@ -342,14 +357,9 @@ async fn proxy(
         );
     }
 
-    let plan = dam_core::build_replacement_plan_from_decisions_with_options(
-        &decisions,
-        state.vault.as_ref(),
-        state.replacement_options,
-    );
-    record_filter_events(&state, &operation_id, &decisions, &plan, &consent_matches);
-
-    let protected_body = dam_redact::redact(body_text, &plan.replacements);
+    let protected_body = protected
+        .output
+        .expect("non-blocked pipeline result should include output");
     forward_or_provider_down(
         state,
         method,
@@ -458,65 +468,45 @@ async fn forward_request(
     body: Bytes,
     operation_id: &str,
 ) -> Result<Response, String> {
-    let url = upstream_url(&state.target.upstream, &uri)?;
-    let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
-        .map_err(|error| error.to_string())?;
-    let mut request = state.client.request(reqwest_method, url).body(body);
-    let request_connection_headers = connection_header_tokens(&headers);
-
-    for (name, value) in headers.iter() {
-        if should_skip_request_header(
-            name.as_str(),
-            state.target.api_key.is_some(),
-            &request_connection_headers,
-        ) {
-            continue;
+    let target_api_key = state
+        .target
+        .api_key
+        .as_ref()
+        .map(|api_key| api_key.expose());
+    match &state.provider {
+        ProviderAdapter::OpenAi(provider) => {
+            let request = dam_provider_openai::ForwardRequest {
+                upstream: &state.target.upstream,
+                method,
+                uri,
+                headers,
+                body,
+                target_api_key,
+            };
+            provider
+                .forward(request, |response_body| {
+                    resolve_response_body(state, operation_id, response_body)
+                })
+                .await
+                .map_err(|error| error.to_string())
         }
-        request = request.header(name, value);
-    }
-
-    if let Some(api_key) = &state.target.api_key {
-        request = request.bearer_auth(api_key.expose());
-    }
-
-    let response = request.send().await.map_err(|error| error.to_string())?;
-    let status = response.status();
-    let response_headers = response.headers().clone();
-    let response_connection_headers = connection_header_tokens(&response_headers);
-    let streaming_response = is_streaming_response(&response_headers);
-
-    if streaming_response {
-        let mut builder = Response::builder().status(status);
-        for (name, value) in response_headers.iter() {
-            if should_skip_response_header(name.as_str(), &response_connection_headers) {
-                continue;
-            }
-            builder = builder.header(name, value);
+        ProviderAdapter::Anthropic(provider) => {
+            let request = dam_provider_anthropic::ForwardRequest {
+                upstream: &state.target.upstream,
+                method,
+                uri,
+                headers,
+                body,
+                target_api_key,
+            };
+            provider
+                .forward(request, |response_body| {
+                    resolve_response_body(state, operation_id, response_body)
+                })
+                .await
+                .map_err(|error| error.to_string())
         }
-
-        let stream = response
-            .bytes_stream()
-            .map_err(|error| std::io::Error::other(error.to_string()));
-
-        return builder
-            .body(Body::from_stream(stream))
-            .map_err(|error| error.to_string());
     }
-
-    let response_body = response.bytes().await.map_err(|error| error.to_string())?;
-    let response_body = resolve_response_body(state, operation_id, response_body);
-
-    let mut builder = Response::builder().status(status);
-    for (name, value) in response_headers.iter() {
-        if should_skip_response_header(name.as_str(), &response_connection_headers) {
-            continue;
-        }
-        builder = builder.header(name, value);
-    }
-
-    builder
-        .body(Body::from(response_body))
-        .map_err(|error| error.to_string())
 }
 
 fn resolve_response_body(state: &ProxyState, operation_id: &str, body: Bytes) -> Bytes {
@@ -528,97 +518,13 @@ fn resolve_response_body(state: &ProxyState, operation_id: &str, body: Bytes) ->
         Ok(text) => text,
         Err(_) => return body,
     };
-    let plan = dam_core::build_resolve_plan(body_text, state.vault.as_ref());
-    if plan.references.is_empty() {
-        return body;
-    }
-
-    record_resolve_events(state, operation_id, &plan);
-    if plan.resolved_count() == 0 {
-        return body;
-    }
-
-    Bytes::from(dam_core::apply_resolve_plan(body_text, &plan))
-}
-
-fn upstream_url(base: &str, uri: &Uri) -> Result<String, String> {
-    let mut url = Url::parse(base).map_err(|error| error.to_string())?;
-    let base_path = url.path().trim_end_matches('/');
-    let request_path = uri.path().trim_start_matches('/');
-    let path = match (
-        base_path.is_empty() || base_path == "/",
-        request_path.is_empty(),
-    ) {
-        (true, true) => "/".to_string(),
-        (true, false) => format!("/{request_path}"),
-        (false, true) => base_path.to_string(),
-        (false, false) => format!("{base_path}/{request_path}"),
-    };
-    url.set_path(&path);
-    url.set_query(uri.query());
-    Ok(url.to_string())
-}
-
-fn should_skip_request_header(
-    name: &str,
-    target_sets_authorization: bool,
-    connection_headers: &HashSet<String>,
-) -> bool {
-    let normalized = name.to_ascii_lowercase();
-    connection_headers.contains(&normalized)
-        || matches!(
-            normalized.as_str(),
-            "host"
-                | "content-length"
-                | "connection"
-                | "transfer-encoding"
-                | "te"
-                | "trailer"
-                | "upgrade"
-                | "keep-alive"
-                | "proxy-authorization"
-                | "proxy-authenticate"
-        )
-        || (target_sets_authorization && normalized == "authorization")
-}
-
-fn should_skip_response_header(name: &str, connection_headers: &HashSet<String>) -> bool {
-    let normalized = name.to_ascii_lowercase();
-    connection_headers.contains(&normalized)
-        || matches!(
-            normalized.as_str(),
-            "content-length"
-                | "connection"
-                | "transfer-encoding"
-                | "te"
-                | "trailer"
-                | "upgrade"
-                | "keep-alive"
-                | "proxy-authenticate"
-        )
-}
-
-fn connection_header_tokens(headers: &HeaderMap) -> HashSet<String> {
-    headers
-        .get_all(header::CONNECTION)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase())
-        .collect()
-}
-
-fn is_streaming_response(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(';')
-                .any(|part| part.trim().eq_ignore_ascii_case("text/event-stream"))
-        })
+    let result = dam_pipeline::resolve_text(
+        body_text,
+        operation_id,
+        state.vault.as_ref(),
+        state.log_sink.as_deref(),
+    );
+    result.output.map(Bytes::from).unwrap_or(body)
 }
 
 fn request_has_unsupported_content_encoding(headers: &HeaderMap) -> bool {
@@ -632,60 +538,6 @@ fn request_has_unsupported_content_encoding(headers: &HeaderMap) -> bool {
                 .filter(|part| !part.is_empty())
                 .any(|part| !part.eq_ignore_ascii_case("identity"))
         })
-}
-
-fn blocked_plan_from_decisions(
-    decisions: &[dam_core::PolicyDecision],
-) -> dam_core::ReplacementPlan {
-    dam_core::ReplacementPlan {
-        blocked: decisions
-            .iter()
-            .filter(|decision| decision.action == dam_core::PolicyAction::Block)
-            .map(|decision| dam_core::BlockedDetection {
-                kind: decision.detection.kind,
-                span: decision.detection.span,
-            })
-            .collect(),
-        ..dam_core::ReplacementPlan::default()
-    }
-}
-
-fn record_filter_events(
-    state: &ProxyState,
-    operation_id: &str,
-    decisions: &[dam_core::PolicyDecision],
-    plan: &dam_core::ReplacementPlan,
-    consent_matches: &[dam_consent::ConsentMatch],
-) {
-    let Some(sink) = &state.log_sink else {
-        return;
-    };
-
-    for event in dam_core::build_filter_log_events_from_decisions(operation_id, decisions, plan) {
-        let _ = sink.record(&event);
-    }
-
-    for consent_match in consent_matches {
-        let event = LogEvent::new(
-            operation_id,
-            LogLevel::Info,
-            LogEventType::Consent,
-            "active consent allowed detected value",
-        )
-        .with_kind(consent_match.kind)
-        .with_action(format!("allow:{}", consent_match.consent_id));
-        let _ = sink.record(&event);
-    }
-}
-
-fn record_resolve_events(state: &ProxyState, operation_id: &str, plan: &dam_core::ResolvePlan) {
-    let Some(sink) = &state.log_sink else {
-        return;
-    };
-
-    for event in dam_core::build_resolve_log_events(operation_id, plan) {
-        let _ = sink.record(&event);
-    }
 }
 
 fn record_proxy_event(
@@ -768,7 +620,7 @@ impl ProxyState {
     fn target_requires_missing_api_key(&self, headers: &HeaderMap) -> bool {
         self.target.api_key_env.is_some()
             && self.target.api_key.is_none()
-            && !headers.contains_key(header::AUTHORIZATION)
+            && !self.provider.caller_auth_header_present(headers)
     }
 }
 
@@ -777,7 +629,12 @@ mod tests {
     use super::*;
     use axum::routing::post;
     use std::sync::Mutex;
+
     fn proxy_config(upstream: String) -> dam_config::DamConfig {
+        proxy_config_with_provider(upstream, "openai-compatible")
+    }
+
+    fn proxy_config_with_provider(upstream: String, provider: &str) -> dam_config::DamConfig {
         let dir = tempfile::tempdir().unwrap().keep();
         let mut config = dam_config::DamConfig::default();
         config.vault.sqlite_path = dir.join("vault.db");
@@ -787,12 +644,18 @@ mod tests {
         config.proxy.enabled = true;
         config.proxy.targets.push(dam_config::ProxyTargetConfig {
             name: "test-openai".to_string(),
-            provider: "openai-compatible".to_string(),
+            provider: provider.to_string(),
             upstream,
             failure_mode: None,
             api_key_env: None,
             api_key: None,
         });
+        config
+    }
+
+    fn anthropic_proxy_config(upstream: String) -> dam_config::DamConfig {
+        let mut config = proxy_config_with_provider(upstream, "anthropic");
+        config.proxy.targets[0].name = "test-anthropic".to_string();
         config
     }
 
@@ -859,6 +722,41 @@ mod tests {
         .await
     }
 
+    async fn spawn_capture_anthropic_headers_upstream(
+        seen_headers: Arc<Mutex<Vec<(String, String)>>>,
+        seen_body: Arc<Mutex<Option<String>>>,
+    ) -> String {
+        async fn echo(
+            State((seen_headers, seen_body)): State<(
+                Arc<Mutex<Vec<(String, String)>>>,
+                Arc<Mutex<Option<String>>>,
+            )>,
+            headers: HeaderMap,
+            body: Bytes,
+        ) -> Response {
+            *seen_headers.lock().unwrap() = headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .to_str()
+                        .ok()
+                        .map(|value| (name.as_str().to_string(), value.to_string()))
+                })
+                .collect();
+            let body_text =
+                String::from_utf8(body.to_vec()).expect("upstream body should be utf-8");
+            *seen_body.lock().unwrap() = Some(body_text.clone());
+            (StatusCode::OK, body_text).into_response()
+        }
+
+        spawn_app(
+            Router::new()
+                .route("/v1/messages", post(echo))
+                .with_state((seen_headers, seen_body)),
+        )
+        .await
+    }
+
     async fn spawn_capture_sse_upstream(seen_body: Arc<Mutex<Option<String>>>) -> String {
         async fn sse(State(seen_body): State<Arc<Mutex<Option<String>>>>, body: Bytes) -> Response {
             let body_text =
@@ -882,18 +780,6 @@ mod tests {
 
     async fn proxy_report(response: reqwest::Response) -> dam_api::ProxyReport {
         response.json().await.expect("proxy report json")
-    }
-
-    #[test]
-    fn upstream_url_preserves_path_and_query() {
-        let uri = Uri::from_static("/v1/chat/completions?stream=false");
-
-        let url = upstream_url("https://api.example.test/base", &uri).unwrap();
-
-        assert_eq!(
-            url,
-            "https://api.example.test/base/v1/chat/completions?stream=false"
-        );
     }
 
     #[tokio::test]
@@ -1076,6 +962,96 @@ mod tests {
             .map(|(_, value)| value.clone())
             .collect::<Vec<_>>();
         assert_eq!(authorization_values, ["Bearer upstream-secret"]);
+    }
+
+    #[tokio::test]
+    async fn anthropic_provider_forwards_caller_x_api_key_and_protects_body() {
+        let seen_headers = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let seen_body = Arc::new(Mutex::new(None::<String>));
+        let upstream =
+            spawn_capture_anthropic_headers_upstream(seen_headers.clone(), seen_body.clone()).await;
+        let proxy = spawn_app(build_app(anthropic_proxy_config(upstream)).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/messages"))
+            .header("x-api-key", "caller-secret")
+            .body(r#"{"messages":[{"content":"email alice@example.com"}]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let x_api_key_values = seen_headers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("x-api-key"))
+            .map(|(_, value)| value.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(x_api_key_values, ["caller-secret"]);
+
+        let upstream_body = seen_body.lock().unwrap().clone().unwrap();
+        assert!(!upstream_body.contains("alice@example.com"));
+        assert!(upstream_body.contains("[email:"));
+    }
+
+    #[tokio::test]
+    async fn anthropic_target_api_key_replaces_inbound_x_api_key_and_authorization() {
+        let seen_headers = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let seen_body = Arc::new(Mutex::new(None::<String>));
+        let upstream =
+            spawn_capture_anthropic_headers_upstream(seen_headers.clone(), seen_body).await;
+        let mut config = anthropic_proxy_config(upstream);
+        config.proxy.targets[0].api_key_env = Some("TEST_ANTHROPIC_KEY".to_string());
+        config.proxy.targets[0].api_key = Some(dam_config::SecretValue::new(
+            "TEST_ANTHROPIC_KEY",
+            "upstream-secret",
+        ));
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/messages"))
+            .header("x-api-key", "local-agent-secret")
+            .header(header::AUTHORIZATION, "Bearer local-authorization")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = seen_headers.lock().unwrap();
+        let x_api_key_values = headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("x-api-key"))
+            .map(|(_, value)| value.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(x_api_key_values, ["upstream-secret"]);
+        assert!(
+            !headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_missing_target_api_key_accepts_caller_x_api_key() {
+        let seen_headers = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let seen_body = Arc::new(Mutex::new(None::<String>));
+        let upstream =
+            spawn_capture_anthropic_headers_upstream(seen_headers.clone(), seen_body).await;
+        let mut config = anthropic_proxy_config(upstream);
+        config.proxy.targets[0].api_key_env = Some("MISSING_ANTHROPIC_KEY".to_string());
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/messages"))
+            .header("x-api-key", "caller-secret")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

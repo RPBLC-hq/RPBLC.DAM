@@ -10,15 +10,15 @@ dam-api.workspace = true
 dam-config.workspace = true
 dam-consent.workspace = true
 dam-core.workspace = true
-dam-detect.workspace = true
 dam-log.workspace = true
+dam-pipeline.workspace = true
 dam-policy.workspace = true
-dam-redact.workspace = true
+dam-provider-anthropic.workspace = true
+dam-provider-openai.workspace = true
 dam-vault.workspace = true
-futures-util.workspace = true
-reqwest.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+reqwest.workspace = true
 tempfile.workspace = true

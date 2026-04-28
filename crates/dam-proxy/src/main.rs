@@ -130,7 +130,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String>
 }
 
 fn usage() -> &'static str {
-    "Usage: dam-proxy [--config dam.toml] [--listen 127.0.0.1:7828] --upstream URL [--target-name NAME] [--provider openai-compatible] [--failure-mode bypass_on_error|redact_only|block_on_error] [--resolve-inbound|--no-resolve-inbound] [--api-key-env NAME|--no-api-key-env] [--db vault.db] [--log log.db|--no-log]"
+    "Usage: dam-proxy [--config dam.toml] [--listen 127.0.0.1:7828] --upstream URL [--target-name NAME] [--provider openai-compatible|anthropic] [--failure-mode bypass_on_error|redact_only|block_on_error] [--resolve-inbound|--no-resolve-inbound] [--api-key-env NAME|--no-api-key-env] [--db vault.db] [--log log.db|--no-log]"
 }
 
 #[cfg(test)]

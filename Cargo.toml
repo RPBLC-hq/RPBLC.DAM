@@ -12,6 +12,9 @@ members = [
     "crates/dam-filter",
     "crates/dam-log",
     "crates/dam-policy",
+    "crates/dam-pipeline",
+    "crates/dam-provider-anthropic",
+    "crates/dam-provider-openai",
     "crates/dam-proxy",
     "crates/dam-resolve",
     "crates/dam-redact",
@@ -38,6 +41,9 @@ dam-detect = { path = "crates/dam-detect" }
 dam-e2e = { path = "crates/dam-e2e" }
 dam-log = { path = "crates/dam-log" }
 dam-policy = { path = "crates/dam-policy" }
+dam-pipeline = { path = "crates/dam-pipeline" }
+dam-provider-anthropic = { path = "crates/dam-provider-anthropic" }
+dam-provider-openai = { path = "crates/dam-provider-openai" }
 dam-resolve = { path = "crates/dam-resolve" }
 dam-redact = { path = "crates/dam-redact" }
 dam-vault = { path = "crates/dam-vault" }

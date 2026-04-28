@@ -375,7 +375,7 @@ fn proxy_component(
     }
 
     for target in &config.proxy.targets {
-        if target.provider != "openai-compatible" {
+        if !matches!(target.provider.as_str(), "openai-compatible" | "anthropic") {
             errors.push(format!(
                 "proxy target {} uses unsupported provider {}",
                 target.name, target.provider
@@ -851,6 +851,42 @@ mod tests {
                 && diagnostic
                     .message
                     .contains("requires missing env var MISSING_TEST_OPENAI_KEY")
+        }));
+    }
+
+    #[test]
+    fn config_check_accepts_anthropic_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            r#"
+            [proxy]
+            enabled = true
+            listen = "127.0.0.1:7828"
+
+            [[proxy.targets]]
+            name = "anthropic"
+            provider = "anthropic"
+            upstream = "https://api.anthropic.com"
+            "#,
+        );
+
+        let output = config_check(ConfigCheckArgs {
+            common: CommonArgs {
+                config: dam_config::ConfigOverrides {
+                    config_path: Some(path),
+                    ..dam_config::ConfigOverrides::default()
+                },
+                json: true,
+            },
+        });
+
+        assert_eq!(output.code, 0);
+        let report: dam_api::HealthReport = serde_json::from_str(&output.stdout).unwrap();
+        assert_ne!(report.state, dam_api::HealthState::Unhealthy);
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "proxy_config_invalid"
+                && diagnostic.message.contains("unsupported provider")
         }));
     }
 

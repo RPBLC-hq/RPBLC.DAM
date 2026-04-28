@@ -17,6 +17,9 @@ Deferred security and product-design work is tracked in [parking-lot.md](parking
 - [dam-detect](dam-detect.md): pure rule-based sensitive value detection.
 - [dam-e2e](dam-e2e.md): process-level end-to-end tests across the local binaries.
 - [dam-policy](dam-policy.md): maps detections to `tokenize`, `redact`, `allow`, or `block`.
+- [dam-pipeline](dam-pipeline.md): shared text processing orchestration for detect, policy, consent, vault/log events, redaction, and inbound reference resolution.
+- [dam-provider-anthropic](dam-provider-anthropic.md): Anthropic upstream forwarding, `x-api-key` auth/header handling, and SSE passthrough for proxy flows.
+- [dam-provider-openai](dam-provider-openai.md): OpenAI-compatible upstream forwarding, auth/header handling, and SSE passthrough for proxy flows.
 - [dam-vault](dam-vault.md): local SQLite `VaultWriter` and `VaultReader` implementation.
 - [dam-log](dam-log.md): local SQLite `EventSink` implementation.
 - [dam-redact](dam-redact.md): pure replacement application.
@@ -68,7 +71,7 @@ dam-core also builds non-sensitive resolve log events
 ```text
 LLM request
   -> dam-proxy
-  -> built-in OpenAI-compatible request handling
+  -> dam-pipeline
   -> dam-detect
   -> dam-policy
   -> dam-consent active exact-value overrides
@@ -76,9 +79,12 @@ LLM request
   -> dam-vault only for tokenize decisions
   -> dam-redact
   -> dam-log
+  -> dam-provider-openai or dam-provider-anthropic
   -> upstream provider
 
 provider response
+  -> dam-provider-openai or dam-provider-anthropic
+  -> dam-pipeline
   -> dam-core reference parser
   -> dam-vault through VaultReader
   -> dam-core resolve plan
@@ -88,7 +94,7 @@ provider response
 
 Proxy defaults are directional: outbound requests are redacted before the provider sees them; inbound responses are not redacted. Inbound DAM reference resolution is disabled by default for non-streaming responses and can be enabled with `proxy.resolve_inbound = true` when the caller deliberately wants local restoration. `text/event-stream` responses pass through as streams without inbound reference resolution.
 
-`dam-router`, `dam-provider-openai`, and `dam-pipeline` are planned extractions from this first compact implementation.
+`dam-pipeline`, `dam-provider-openai`, and `dam-provider-anthropic` have been extracted from the first compact proxy implementation. `dam-router` remains the next proxy-boundary extraction.
 
 ## Control And Diagnostics
 

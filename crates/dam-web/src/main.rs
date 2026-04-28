@@ -1676,7 +1676,7 @@ fn proxy_component(
         ));
     }
     for target in &config.proxy.targets {
-        if target.provider != "openai-compatible" {
+        if !matches!(target.provider.as_str(), "openai-compatible" | "anthropic") {
             errors.push(format!(
                 "proxy target {} uses unsupported provider {}",
                 target.name, target.provider
@@ -2247,6 +2247,27 @@ mod tests {
         assert_eq!(report.state, dam_api::HealthState::Degraded);
         assert!(report.components.iter().any(|component| {
             component.component == "proxy" && component.state == dam_api::HealthState::Degraded
+        }));
+    }
+
+    #[test]
+    fn config_report_accepts_anthropic_provider() {
+        let mut config = dam_config::DamConfig::default();
+        config.proxy.enabled = true;
+        config.proxy.targets.push(dam_config::ProxyTargetConfig {
+            name: "anthropic".to_string(),
+            provider: "anthropic".to_string(),
+            upstream: "https://api.anthropic.com".to_string(),
+            failure_mode: None,
+            api_key_env: None,
+            api_key: None,
+        });
+
+        let report = build_config_report(&config);
+
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "proxy_config_invalid"
+                && diagnostic.message.contains("unsupported provider")
         }));
     }
 }

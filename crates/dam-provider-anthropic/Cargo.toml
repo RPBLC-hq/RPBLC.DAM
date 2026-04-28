@@ -1,0 +1,14 @@
+[package]
+name = "dam-provider-anthropic"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+axum.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
