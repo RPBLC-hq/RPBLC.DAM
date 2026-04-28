@@ -20,7 +20,7 @@ By default, the embedded proxy redacts outbound requests before they reach the p
 The launcher uses pass-through provider authentication by default.
 
 - `dam codex` without `--api` refuses to launch until DAM can protect Codex's `backend-api/codex/responses` WebSocket/HTTPS transport.
-- `dam claude` starts Claude Code with `ANTHROPIC_BASE_URL=http://127.0.0.1:7828`.
+- `dam claude` starts Claude Code with `ANTHROPIC_BASE_URL=http://127.0.0.1:7828` and uses the `anthropic` proxy provider.
 - `dam codex --api` starts Codex with a temporary custom provider named `dam_openai`, `base_url = "http://127.0.0.1:7828/v1"`, `env_key = "OPENAI_API_KEY"`, `wire_api = "responses"`, and `supports_websockets = false`.
 - Provider credentials stay with the tool. DAM forwards the caller's auth headers.
 - DAM does not require `ANTHROPIC_API_KEY` for `dam claude`. `dam codex --api` requires `OPENAI_API_KEY` because Codex API-key mode uses OpenAI Platform auth.

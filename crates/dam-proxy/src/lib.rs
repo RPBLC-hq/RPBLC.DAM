@@ -14,6 +14,7 @@ use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 
 const MAX_REQUEST_BYTES: usize = 10 * 1024 * 1024;
+const ANTHROPIC_API_KEY_HEADER: &str = "x-api-key";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
@@ -55,6 +56,36 @@ pub enum ProxyError {
 }
 
 #[derive(Clone)]
+enum ProviderAdapter {
+    OpenAi(dam_provider_openai::OpenAiProvider),
+    Anthropic(dam_provider_anthropic::AnthropicProvider),
+}
+
+impl ProviderAdapter {
+    fn for_name(name: &str) -> Result<Self, ProxyError> {
+        match name {
+            "openai-compatible" => dam_provider_openai::OpenAiProvider::new()
+                .map(Self::OpenAi)
+                .map_err(|error| ProxyError::ProviderInit(error.to_string())),
+            "anthropic" => dam_provider_anthropic::AnthropicProvider::new()
+                .map(Self::Anthropic)
+                .map_err(|error| ProxyError::ProviderInit(error.to_string())),
+            other => Err(ProxyError::UnsupportedProvider(other.to_string())),
+        }
+    }
+
+    fn caller_auth_header_present(&self, headers: &HeaderMap) -> bool {
+        match self {
+            Self::OpenAi(_) => headers.contains_key(header::AUTHORIZATION),
+            Self::Anthropic(_) => {
+                headers.contains_key(ANTHROPIC_API_KEY_HEADER)
+                    || headers.contains_key(header::AUTHORIZATION)
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct ProxyState {
     target: dam_config::ProxyTargetConfig,
     default_failure_mode: dam_config::ProxyFailureMode,
@@ -64,7 +95,7 @@ pub struct ProxyState {
     log_sink: Option<Arc<dyn EventSink>>,
     policy: dam_policy::StaticPolicy,
     replacement_options: dam_core::ReplacementPlanOptions,
-    openai_provider: dam_provider_openai::OpenAiProvider,
+    provider: ProviderAdapter,
 }
 
 trait ProxyVault: VaultWriter + VaultReader {}
@@ -116,9 +147,7 @@ pub fn build_app(config: dam_config::DamConfig) -> Result<Router, ProxyError> {
         .cloned()
         .ok_or(ProxyError::MissingTarget)?;
 
-    if target.provider != "openai-compatible" {
-        return Err(ProxyError::UnsupportedProvider(target.provider));
-    }
+    let provider = ProviderAdapter::for_name(&target.provider)?;
 
     let replacement_options = dam_core::ReplacementPlanOptions {
         deduplicate_replacements: config.policy.deduplicate_replacements,
@@ -133,7 +162,7 @@ pub fn build_app(config: dam_config::DamConfig) -> Result<Router, ProxyError> {
         log_sink: open_log_sink(&config)?,
         policy: dam_policy::StaticPolicy::from(config.policy),
         replacement_options,
-        openai_provider: openai_provider()?,
+        provider,
     };
 
     Ok(Router::new()
@@ -141,11 +170,6 @@ pub fn build_app(config: dam_config::DamConfig) -> Result<Router, ProxyError> {
         .fallback(proxy)
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(Arc::new(state)))
-}
-
-fn openai_provider() -> Result<dam_provider_openai::OpenAiProvider, ProxyError> {
-    dam_provider_openai::OpenAiProvider::new()
-        .map_err(|error| ProxyError::ProviderInit(error.to_string()))
 }
 
 fn open_vault(config: &dam_config::DamConfig) -> Result<Arc<dyn ProxyVault>, ProxyError> {
@@ -449,22 +473,40 @@ async fn forward_request(
         .api_key
         .as_ref()
         .map(|api_key| api_key.expose());
-    let request = dam_provider_openai::ForwardRequest {
-        upstream: &state.target.upstream,
-        method,
-        uri,
-        headers,
-        body,
-        target_api_key,
-    };
-
-    state
-        .openai_provider
-        .forward(request, |response_body| {
-            resolve_response_body(state, operation_id, response_body)
-        })
-        .await
-        .map_err(|error| error.to_string())
+    match &state.provider {
+        ProviderAdapter::OpenAi(provider) => {
+            let request = dam_provider_openai::ForwardRequest {
+                upstream: &state.target.upstream,
+                method,
+                uri,
+                headers,
+                body,
+                target_api_key,
+            };
+            provider
+                .forward(request, |response_body| {
+                    resolve_response_body(state, operation_id, response_body)
+                })
+                .await
+                .map_err(|error| error.to_string())
+        }
+        ProviderAdapter::Anthropic(provider) => {
+            let request = dam_provider_anthropic::ForwardRequest {
+                upstream: &state.target.upstream,
+                method,
+                uri,
+                headers,
+                body,
+                target_api_key,
+            };
+            provider
+                .forward(request, |response_body| {
+                    resolve_response_body(state, operation_id, response_body)
+                })
+                .await
+                .map_err(|error| error.to_string())
+        }
+    }
 }
 
 fn resolve_response_body(state: &ProxyState, operation_id: &str, body: Bytes) -> Bytes {
@@ -578,7 +620,7 @@ impl ProxyState {
     fn target_requires_missing_api_key(&self, headers: &HeaderMap) -> bool {
         self.target.api_key_env.is_some()
             && self.target.api_key.is_none()
-            && !headers.contains_key(header::AUTHORIZATION)
+            && !self.provider.caller_auth_header_present(headers)
     }
 }
 
@@ -587,7 +629,12 @@ mod tests {
     use super::*;
     use axum::routing::post;
     use std::sync::Mutex;
+
     fn proxy_config(upstream: String) -> dam_config::DamConfig {
+        proxy_config_with_provider(upstream, "openai-compatible")
+    }
+
+    fn proxy_config_with_provider(upstream: String, provider: &str) -> dam_config::DamConfig {
         let dir = tempfile::tempdir().unwrap().keep();
         let mut config = dam_config::DamConfig::default();
         config.vault.sqlite_path = dir.join("vault.db");
@@ -597,12 +644,18 @@ mod tests {
         config.proxy.enabled = true;
         config.proxy.targets.push(dam_config::ProxyTargetConfig {
             name: "test-openai".to_string(),
-            provider: "openai-compatible".to_string(),
+            provider: provider.to_string(),
             upstream,
             failure_mode: None,
             api_key_env: None,
             api_key: None,
         });
+        config
+    }
+
+    fn anthropic_proxy_config(upstream: String) -> dam_config::DamConfig {
+        let mut config = proxy_config_with_provider(upstream, "anthropic");
+        config.proxy.targets[0].name = "test-anthropic".to_string();
         config
     }
 
@@ -665,6 +718,41 @@ mod tests {
             Router::new()
                 .route("/v1/chat/completions", post(echo))
                 .with_state(seen_headers),
+        )
+        .await
+    }
+
+    async fn spawn_capture_anthropic_headers_upstream(
+        seen_headers: Arc<Mutex<Vec<(String, String)>>>,
+        seen_body: Arc<Mutex<Option<String>>>,
+    ) -> String {
+        async fn echo(
+            State((seen_headers, seen_body)): State<(
+                Arc<Mutex<Vec<(String, String)>>>,
+                Arc<Mutex<Option<String>>>,
+            )>,
+            headers: HeaderMap,
+            body: Bytes,
+        ) -> Response {
+            *seen_headers.lock().unwrap() = headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .to_str()
+                        .ok()
+                        .map(|value| (name.as_str().to_string(), value.to_string()))
+                })
+                .collect();
+            let body_text =
+                String::from_utf8(body.to_vec()).expect("upstream body should be utf-8");
+            *seen_body.lock().unwrap() = Some(body_text.clone());
+            (StatusCode::OK, body_text).into_response()
+        }
+
+        spawn_app(
+            Router::new()
+                .route("/v1/messages", post(echo))
+                .with_state((seen_headers, seen_body)),
         )
         .await
     }
@@ -874,6 +962,96 @@ mod tests {
             .map(|(_, value)| value.clone())
             .collect::<Vec<_>>();
         assert_eq!(authorization_values, ["Bearer upstream-secret"]);
+    }
+
+    #[tokio::test]
+    async fn anthropic_provider_forwards_caller_x_api_key_and_protects_body() {
+        let seen_headers = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let seen_body = Arc::new(Mutex::new(None::<String>));
+        let upstream =
+            spawn_capture_anthropic_headers_upstream(seen_headers.clone(), seen_body.clone()).await;
+        let proxy = spawn_app(build_app(anthropic_proxy_config(upstream)).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/messages"))
+            .header("x-api-key", "caller-secret")
+            .body(r#"{"messages":[{"content":"email alice@example.com"}]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let x_api_key_values = seen_headers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("x-api-key"))
+            .map(|(_, value)| value.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(x_api_key_values, ["caller-secret"]);
+
+        let upstream_body = seen_body.lock().unwrap().clone().unwrap();
+        assert!(!upstream_body.contains("alice@example.com"));
+        assert!(upstream_body.contains("[email:"));
+    }
+
+    #[tokio::test]
+    async fn anthropic_target_api_key_replaces_inbound_x_api_key_and_authorization() {
+        let seen_headers = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let seen_body = Arc::new(Mutex::new(None::<String>));
+        let upstream =
+            spawn_capture_anthropic_headers_upstream(seen_headers.clone(), seen_body).await;
+        let mut config = anthropic_proxy_config(upstream);
+        config.proxy.targets[0].api_key_env = Some("TEST_ANTHROPIC_KEY".to_string());
+        config.proxy.targets[0].api_key = Some(dam_config::SecretValue::new(
+            "TEST_ANTHROPIC_KEY",
+            "upstream-secret",
+        ));
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/messages"))
+            .header("x-api-key", "local-agent-secret")
+            .header(header::AUTHORIZATION, "Bearer local-authorization")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = seen_headers.lock().unwrap();
+        let x_api_key_values = headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("x-api-key"))
+            .map(|(_, value)| value.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(x_api_key_values, ["upstream-secret"]);
+        assert!(
+            !headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_missing_target_api_key_accepts_caller_x_api_key() {
+        let seen_headers = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let seen_body = Arc::new(Mutex::new(None::<String>));
+        let upstream =
+            spawn_capture_anthropic_headers_upstream(seen_headers.clone(), seen_body).await;
+        let mut config = anthropic_proxy_config(upstream);
+        config.proxy.targets[0].api_key_env = Some("MISSING_ANTHROPIC_KEY".to_string());
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/messages"))
+            .header("x-api-key", "caller-secret")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

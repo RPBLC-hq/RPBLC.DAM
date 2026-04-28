@@ -44,7 +44,7 @@ The crate does not:
 
 Those responsibilities stay with caller, provider, or router crates.
 
-OpenAI-compatible forwarding now lives in `dam-provider-openai`; routing remains in `dam-proxy` until `dam-router` is extracted.
+OpenAI-compatible forwarding now lives in `dam-provider-openai`, and Anthropic forwarding lives in `dam-provider-anthropic`. Routing remains in `dam-proxy` until `dam-router` is extracted.
 
 ## Current Consumers
 

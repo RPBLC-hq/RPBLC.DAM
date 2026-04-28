@@ -67,6 +67,8 @@ failure_mode = "bypass_on_error"
 api_key_env = "OPENAI_API_KEY"
 ```
 
+Supported first-slice provider values are `openai-compatible` and `anthropic`.
+
 ## Environment Overrides
 
 Common deployment overrides:
@@ -157,7 +159,7 @@ upstream = "https://api.openai.com"
 api_key_env = "OPENAI_API_KEY"
 ```
 
-`dam-proxy` uses the resolved key if present. If `api_key_env` is configured but missing and the request does not provide an `Authorization` header, the proxy returns `config_required`.
+`dam-proxy` uses the resolved key if present. If `api_key_env` is configured but missing and the request does not provide provider auth, the proxy returns `config_required`. For `openai-compatible`, provider auth is `Authorization`. For `anthropic`, provider auth is `x-api-key`; `Authorization` is also accepted as caller auth for compatibility but is dropped when DAM injects an Anthropic target key.
 
 ## Tests
 

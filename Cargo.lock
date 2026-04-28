@@ -318,6 +318,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dam-provider-anthropic"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "reqwest",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dam-provider-openai"
 version = "0.1.0"
 dependencies = [
@@ -340,6 +351,7 @@ dependencies = [
  "dam-log",
  "dam-pipeline",
  "dam-policy",
+ "dam-provider-anthropic",
  "dam-provider-openai",
  "dam-vault",
  "reqwest",
