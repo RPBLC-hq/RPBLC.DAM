@@ -318,6 +318,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dam-provider-openai"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "reqwest",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dam-proxy"
 version = "0.1.0"
 dependencies = [
@@ -329,8 +340,8 @@ dependencies = [
  "dam-log",
  "dam-pipeline",
  "dam-policy",
+ "dam-provider-openai",
  "dam-vault",
- "futures-util",
  "reqwest",
  "tempfile",
  "thiserror",

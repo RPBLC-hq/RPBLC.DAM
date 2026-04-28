@@ -21,8 +21,10 @@ client or harness
   -> dam-vault for tokenize decisions
   -> dam-redact
   -> dam-log
+  -> dam-provider-openai
   -> upstream provider
   -> provider response body
+  -> dam-provider-openai
   -> dam-pipeline when proxy.resolve_inbound is enabled
   -> dam-core resolve plan for existing DAM references
   -> dam-vault through VaultReader
@@ -32,13 +34,13 @@ client or harness
 
 Outbound requests are the only direction that gets detection, policy, tokenization, and redaction by default. Inbound provider responses are not scanned or redacted. When `proxy.resolve_inbound` is enabled, which is opt-in, non-streaming UTF-8 responses only resolve known `[kind:id]` references that were created by outbound tokenization. Missing or unreadable references pass through unchanged.
 
-Provider responses with `Content-Type: text/event-stream` are streamed through without inbound reference resolution. That keeps Codex Responses API HTTP streaming usable before the future provider adapter owns SSE event parsing.
+Provider responses with `Content-Type: text/event-stream` are streamed through without inbound reference resolution. That keeps Codex Responses API HTTP streaming usable before a future provider adapter slice owns SSE event parsing.
 
 Repeated equal outbound values reuse one tokenized reference by default within a single request. Disable that with `policy.deduplicate_replacements = false` or `DAM_POLICY_DEDUPLICATE_REPLACEMENTS=false` when preserving equality across repeated values is too revealing.
 
 Active consent grants let exact detected values pass through unredacted until expiry or revocation. Consent overrides `tokenize` and `redact`; it does not override `block`.
 
-The current implementation keeps routing and provider forwarding logic inside `dam-proxy`, but shared text processing orchestration now lives in `dam-pipeline`. Future work should extract `dam-router` and `dam-provider-openai` without changing proxy semantics.
+The current implementation keeps routing and failure-mode selection inside `dam-proxy`, shared text processing orchestration in `dam-pipeline`, and OpenAI-compatible forwarding in `dam-provider-openai`. Future work should extract `dam-router` without changing proxy semantics. Anthropic-specific provider work should be fixture-backed and separate from the OpenAI-compatible adapter.
 
 ## Usage
 
@@ -132,6 +134,8 @@ Covered cases:
 - block on invalid UTF-8 with `block_on_error`;
 - policy `block` returning 403 without forwarding;
 - missing API key producing `config_required`;
+- configured upstream API key replacing inbound `Authorization`;
+- hop-by-hop and `Connection`-listed header stripping;
 - upstream connection failure producing `provider_down`;
 - `dam-api` `ProxyReport` JSON for health and DAM-owned failure responses;
 - disabled proxy and unsupported provider startup failures.

@@ -42,7 +42,9 @@ The crate does not:
 - scan or transform non-UTF-8 bytes;
 - resolve streaming/SSE responses.
 
-Those responsibilities stay with caller crates until the provider/router extractions exist.
+Those responsibilities stay with caller, provider, or router crates.
+
+OpenAI-compatible forwarding now lives in `dam-provider-openai`; routing remains in `dam-proxy` until `dam-router` is extracted.
 
 ## Current Consumers
 

@@ -1,6 +1,6 @@
 use axum::{
     Router,
-    body::{Body, Bytes},
+    body::Bytes,
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
@@ -10,12 +10,9 @@ use dam_core::{
     EventSink, LogEvent, LogEventType, LogLevel, VaultReadError, VaultReader, VaultRecord,
     VaultWriter,
 };
-use futures_util::TryStreamExt;
-use reqwest::Url;
-use std::{collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 
-const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_REQUEST_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -44,8 +41,8 @@ pub enum ProxyError {
     #[error("proxy server failed: {0}")]
     Server(std::io::Error),
 
-    #[error("failed to build upstream URL: {0}")]
-    UpstreamUrl(String),
+    #[error("failed to initialize provider: {0}")]
+    ProviderInit(String),
 
     #[error("vault backend is unavailable and fail-closed is configured: {0}")]
     VaultUnavailable(String),
@@ -67,7 +64,7 @@ pub struct ProxyState {
     log_sink: Option<Arc<dyn EventSink>>,
     policy: dam_policy::StaticPolicy,
     replacement_options: dam_core::ReplacementPlanOptions,
-    client: reqwest::Client,
+    openai_provider: dam_provider_openai::OpenAiProvider,
 }
 
 trait ProxyVault: VaultWriter + VaultReader {}
@@ -136,7 +133,7 @@ pub fn build_app(config: dam_config::DamConfig) -> Result<Router, ProxyError> {
         log_sink: open_log_sink(&config)?,
         policy: dam_policy::StaticPolicy::from(config.policy),
         replacement_options,
-        client: http_client()?,
+        openai_provider: openai_provider()?,
     };
 
     Ok(Router::new()
@@ -146,12 +143,9 @@ pub fn build_app(config: dam_config::DamConfig) -> Result<Router, ProxyError> {
         .with_state(Arc::new(state)))
 }
 
-fn http_client() -> Result<reqwest::Client, ProxyError> {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(UPSTREAM_REQUEST_TIMEOUT)
-        .build()
-        .map_err(|error| ProxyError::UpstreamUrl(error.to_string()))
+fn openai_provider() -> Result<dam_provider_openai::OpenAiProvider, ProxyError> {
+    dam_provider_openai::OpenAiProvider::new()
+        .map_err(|error| ProxyError::ProviderInit(error.to_string()))
 }
 
 fn open_vault(config: &dam_config::DamConfig) -> Result<Arc<dyn ProxyVault>, ProxyError> {
@@ -450,64 +444,26 @@ async fn forward_request(
     body: Bytes,
     operation_id: &str,
 ) -> Result<Response, String> {
-    let url = upstream_url(&state.target.upstream, &uri)?;
-    let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
-        .map_err(|error| error.to_string())?;
-    let mut request = state.client.request(reqwest_method, url).body(body);
-    let request_connection_headers = connection_header_tokens(&headers);
+    let target_api_key = state
+        .target
+        .api_key
+        .as_ref()
+        .map(|api_key| api_key.expose());
+    let request = dam_provider_openai::ForwardRequest {
+        upstream: &state.target.upstream,
+        method,
+        uri,
+        headers,
+        body,
+        target_api_key,
+    };
 
-    for (name, value) in headers.iter() {
-        if should_skip_request_header(
-            name.as_str(),
-            state.target.api_key.is_some(),
-            &request_connection_headers,
-        ) {
-            continue;
-        }
-        request = request.header(name, value);
-    }
-
-    if let Some(api_key) = &state.target.api_key {
-        request = request.bearer_auth(api_key.expose());
-    }
-
-    let response = request.send().await.map_err(|error| error.to_string())?;
-    let status = response.status();
-    let response_headers = response.headers().clone();
-    let response_connection_headers = connection_header_tokens(&response_headers);
-    let streaming_response = is_streaming_response(&response_headers);
-
-    if streaming_response {
-        let mut builder = Response::builder().status(status);
-        for (name, value) in response_headers.iter() {
-            if should_skip_response_header(name.as_str(), &response_connection_headers) {
-                continue;
-            }
-            builder = builder.header(name, value);
-        }
-
-        let stream = response
-            .bytes_stream()
-            .map_err(|error| std::io::Error::other(error.to_string()));
-
-        return builder
-            .body(Body::from_stream(stream))
-            .map_err(|error| error.to_string());
-    }
-
-    let response_body = response.bytes().await.map_err(|error| error.to_string())?;
-    let response_body = resolve_response_body(state, operation_id, response_body);
-
-    let mut builder = Response::builder().status(status);
-    for (name, value) in response_headers.iter() {
-        if should_skip_response_header(name.as_str(), &response_connection_headers) {
-            continue;
-        }
-        builder = builder.header(name, value);
-    }
-
-    builder
-        .body(Body::from(response_body))
+    state
+        .openai_provider
+        .forward(request, |response_body| {
+            resolve_response_body(state, operation_id, response_body)
+        })
+        .await
         .map_err(|error| error.to_string())
 }
 
@@ -527,86 +483,6 @@ fn resolve_response_body(state: &ProxyState, operation_id: &str, body: Bytes) ->
         state.log_sink.as_deref(),
     );
     result.output.map(Bytes::from).unwrap_or(body)
-}
-
-fn upstream_url(base: &str, uri: &Uri) -> Result<String, String> {
-    let mut url = Url::parse(base).map_err(|error| error.to_string())?;
-    let base_path = url.path().trim_end_matches('/');
-    let request_path = uri.path().trim_start_matches('/');
-    let path = match (
-        base_path.is_empty() || base_path == "/",
-        request_path.is_empty(),
-    ) {
-        (true, true) => "/".to_string(),
-        (true, false) => format!("/{request_path}"),
-        (false, true) => base_path.to_string(),
-        (false, false) => format!("{base_path}/{request_path}"),
-    };
-    url.set_path(&path);
-    url.set_query(uri.query());
-    Ok(url.to_string())
-}
-
-fn should_skip_request_header(
-    name: &str,
-    target_sets_authorization: bool,
-    connection_headers: &HashSet<String>,
-) -> bool {
-    let normalized = name.to_ascii_lowercase();
-    connection_headers.contains(&normalized)
-        || matches!(
-            normalized.as_str(),
-            "host"
-                | "content-length"
-                | "connection"
-                | "transfer-encoding"
-                | "te"
-                | "trailer"
-                | "upgrade"
-                | "keep-alive"
-                | "proxy-authorization"
-                | "proxy-authenticate"
-        )
-        || (target_sets_authorization && normalized == "authorization")
-}
-
-fn should_skip_response_header(name: &str, connection_headers: &HashSet<String>) -> bool {
-    let normalized = name.to_ascii_lowercase();
-    connection_headers.contains(&normalized)
-        || matches!(
-            normalized.as_str(),
-            "content-length"
-                | "connection"
-                | "transfer-encoding"
-                | "te"
-                | "trailer"
-                | "upgrade"
-                | "keep-alive"
-                | "proxy-authenticate"
-        )
-}
-
-fn connection_header_tokens(headers: &HeaderMap) -> HashSet<String> {
-    headers
-        .get_all(header::CONNECTION)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase())
-        .collect()
-}
-
-fn is_streaming_response(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(';')
-                .any(|part| part.trim().eq_ignore_ascii_case("text/event-stream"))
-        })
 }
 
 fn request_has_unsupported_content_encoding(headers: &HeaderMap) -> bool {
@@ -816,18 +692,6 @@ mod tests {
 
     async fn proxy_report(response: reqwest::Response) -> dam_api::ProxyReport {
         response.json().await.expect("proxy report json")
-    }
-
-    #[test]
-    fn upstream_url_preserves_path_and_query() {
-        let uri = Uri::from_static("/v1/chat/completions?stream=false");
-
-        let url = upstream_url("https://api.example.test/base", &uri).unwrap();
-
-        assert_eq!(
-            url,
-            "https://api.example.test/base/v1/chat/completions?stream=false"
-        );
     }
 
     #[tokio::test]

@@ -18,6 +18,7 @@ Deferred security and product-design work is tracked in [parking-lot.md](parking
 - [dam-e2e](dam-e2e.md): process-level end-to-end tests across the local binaries.
 - [dam-policy](dam-policy.md): maps detections to `tokenize`, `redact`, `allow`, or `block`.
 - [dam-pipeline](dam-pipeline.md): shared text processing orchestration for detect, policy, consent, vault/log events, redaction, and inbound reference resolution.
+- [dam-provider-openai](dam-provider-openai.md): OpenAI-compatible upstream forwarding, auth/header handling, and SSE passthrough for proxy flows.
 - [dam-vault](dam-vault.md): local SQLite `VaultWriter` and `VaultReader` implementation.
 - [dam-log](dam-log.md): local SQLite `EventSink` implementation.
 - [dam-redact](dam-redact.md): pure replacement application.
@@ -69,7 +70,6 @@ dam-core also builds non-sensitive resolve log events
 ```text
 LLM request
   -> dam-proxy
-  -> built-in OpenAI-compatible request handling
   -> dam-pipeline
   -> dam-detect
   -> dam-policy
@@ -78,9 +78,11 @@ LLM request
   -> dam-vault only for tokenize decisions
   -> dam-redact
   -> dam-log
+  -> dam-provider-openai
   -> upstream provider
 
 provider response
+  -> dam-provider-openai
   -> dam-pipeline
   -> dam-core reference parser
   -> dam-vault through VaultReader
@@ -91,7 +93,7 @@ provider response
 
 Proxy defaults are directional: outbound requests are redacted before the provider sees them; inbound responses are not redacted. Inbound DAM reference resolution is disabled by default for non-streaming responses and can be enabled with `proxy.resolve_inbound = true` when the caller deliberately wants local restoration. `text/event-stream` responses pass through as streams without inbound reference resolution.
 
-`dam-pipeline` has been extracted from the first compact proxy implementation. `dam-router` and `dam-provider-openai` remain planned extractions.
+`dam-pipeline` and `dam-provider-openai` have been extracted from the first compact proxy implementation. `dam-router` remains the next proxy-boundary extraction. A future Anthropic provider adapter should wait for fixture-backed Anthropic request/response semantics instead of being coupled to this OpenAI-compatible split.
 
 ## Control And Diagnostics
 
