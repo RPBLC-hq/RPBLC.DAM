@@ -3,6 +3,8 @@ use std::env;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 
+const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+
 #[derive(Debug, Clone, Default)]
 struct CliArgs {
     config: dam_config::ConfigOverrides,
@@ -230,6 +232,12 @@ fn read_message<R: BufRead>(reader: &mut R) -> io::Result<Option<Value>> {
     let Some(content_length) = read_content_length(reader)? else {
         return Ok(None);
     };
+    if content_length > MAX_MESSAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("MCP message exceeds {MAX_MESSAGE_BYTES} byte limit"),
+        ));
+    }
     let mut body = vec![0; content_length];
     reader.read_exact(&mut body)?;
     serde_json::from_slice(&body)
@@ -404,5 +412,17 @@ mod tests {
         assert_eq!(responses[0]["result"]["serverInfo"]["name"], "dam-mcp");
         assert_eq!(responses[1]["id"], 2);
         assert!(responses[1].to_string().contains("dam_consent_list"));
+    }
+
+    #[test]
+    fn stdio_rejects_oversized_message_frames() {
+        let config = dam_config::DamConfig::default();
+        let input = format!("Content-Length: {}\r\n\r\n{{}}", MAX_MESSAGE_BYTES + 1);
+        let mut output = Vec::new();
+
+        let error = run_stdio(&config, input.as_bytes(), &mut output).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(output.is_empty());
     }
 }

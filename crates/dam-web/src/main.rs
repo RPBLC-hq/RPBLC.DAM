@@ -1,7 +1,9 @@
 use axum::Router;
 use axum::body::Bytes;
+use axum::extract::Request;
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use dam_log::{LogEntry, LogStore};
@@ -186,7 +188,65 @@ fn router(state: AppState) -> Router {
         .route("/consents/revoke", post(revoke_consent))
         .route("/diagnostics", get(diagnostics))
         .route("/health", get(|| async { "ok" }))
+        .route_layer(middleware::from_fn(require_local_browser_context))
         .with_state(state)
+}
+
+async fn require_local_browser_context(request: Request, next: Next) -> Response {
+    if !host_header_is_local(request.headers()) {
+        return (StatusCode::FORBIDDEN, "invalid Host header").into_response();
+    }
+
+    if request.method() == Method::POST && !post_origin_is_local(request.headers()) {
+        return (StatusCode::FORBIDDEN, "invalid request origin").into_response();
+    }
+
+    next.run(request).await
+}
+
+fn host_header_is_local(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(is_local_host_value)
+}
+
+fn post_origin_is_local(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ORIGIN)
+        .or_else(|| headers.get(header::REFERER))
+        .and_then(|value| value.to_str().ok())
+        .and_then(origin_host)
+        .is_some_and(is_loopback_host)
+}
+
+fn origin_host(value: &str) -> Option<&str> {
+    let after_scheme = value.split_once("://")?.1;
+    Some(
+        after_scheme
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or(after_scheme),
+    )
+}
+
+fn is_local_host_value(value: &str) -> bool {
+    is_loopback_host(value)
+}
+
+fn is_loopback_host(value: &str) -> bool {
+    let host = strip_host_port(value.trim()).to_ascii_lowercase();
+    matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]")
+}
+
+fn strip_host_port(value: &str) -> &str {
+    if value.starts_with('[') {
+        return value
+            .find(']')
+            .map(|index| &value[..=index])
+            .unwrap_or(value);
+    }
+    value.split_once(':').map(|(host, _)| host).unwrap_or(value)
 }
 
 async fn index(
@@ -1844,6 +1904,24 @@ fn escape_html(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_host_checks_reject_dns_rebinding_hosts() {
+        assert!(is_local_host_value("127.0.0.1:2896"));
+        assert!(is_local_host_value("localhost:2896"));
+        assert!(is_local_host_value("[::1]:2896"));
+        assert!(!is_local_host_value("attacker.example:2896"));
+    }
+
+    #[test]
+    fn post_origin_checks_reject_cross_site_origins() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ORIGIN, "http://127.0.0.1:2896".parse().unwrap());
+        assert!(post_origin_is_local(&headers));
+
+        headers.insert(header::ORIGIN, "https://attacker.example".parse().unwrap());
+        assert!(!post_origin_is_local(&headers));
+    }
 
     #[test]
     fn parse_args_uses_defaults() {

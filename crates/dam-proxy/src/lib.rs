@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::{Body, Bytes},
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -13,8 +13,11 @@ use dam_core::{
 use dam_policy::PolicyEngine;
 use futures_util::TryStreamExt;
 use reqwest::Url;
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::HashSet, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::TcpListener;
+
+const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_REQUEST_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
@@ -134,13 +137,22 @@ pub fn build_app(config: dam_config::DamConfig) -> Result<Router, ProxyError> {
         log_sink: open_log_sink(&config)?,
         policy: dam_policy::StaticPolicy::from(config.policy),
         replacement_options,
-        client: reqwest::Client::new(),
+        client: http_client()?,
     };
 
     Ok(Router::new()
         .route("/health", get(health))
         .fallback(proxy)
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(Arc::new(state)))
+}
+
+fn http_client() -> Result<reqwest::Client, ProxyError> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(UPSTREAM_REQUEST_TIMEOUT)
+        .build()
+        .map_err(|error| ProxyError::UpstreamUrl(error.to_string()))
 }
 
 fn open_vault(config: &dam_config::DamConfig) -> Result<Arc<dyn ProxyVault>, ProxyError> {
@@ -247,6 +259,24 @@ async fn proxy(
             StatusCode::SERVICE_UNAVAILABLE,
             dam_api::ProxyState::ConfigRequired,
             "proxy target API key is missing".to_string(),
+            Some(operation_id),
+            &state.target,
+        );
+    }
+
+    if request_has_unsupported_content_encoding(&headers) {
+        record_proxy_event(
+            &state,
+            &operation_id,
+            LogLevel::Error,
+            LogEventType::ProxyFailure,
+            "blocked",
+            "encoded request bodies are not supported",
+        );
+        return status_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            dam_api::ProxyState::Blocked,
+            "encoded request bodies are not supported".to_string(),
             Some(operation_id),
             &state.target,
         );
@@ -432,9 +462,14 @@ async fn forward_request(
     let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|error| error.to_string())?;
     let mut request = state.client.request(reqwest_method, url).body(body);
+    let request_connection_headers = connection_header_tokens(&headers);
 
     for (name, value) in headers.iter() {
-        if should_skip_request_header(name.as_str()) {
+        if should_skip_request_header(
+            name.as_str(),
+            state.target.api_key.is_some(),
+            &request_connection_headers,
+        ) {
             continue;
         }
         request = request.header(name, value);
@@ -447,12 +482,13 @@ async fn forward_request(
     let response = request.send().await.map_err(|error| error.to_string())?;
     let status = response.status();
     let response_headers = response.headers().clone();
+    let response_connection_headers = connection_header_tokens(&response_headers);
     let streaming_response = is_streaming_response(&response_headers);
 
     if streaming_response {
         let mut builder = Response::builder().status(status);
         for (name, value) in response_headers.iter() {
-            if should_skip_response_header(name.as_str()) {
+            if should_skip_response_header(name.as_str(), &response_connection_headers) {
                 continue;
             }
             builder = builder.header(name, value);
@@ -472,7 +508,7 @@ async fn forward_request(
 
     let mut builder = Response::builder().status(status);
     for (name, value) in response_headers.iter() {
-        if should_skip_response_header(name.as_str()) {
+        if should_skip_response_header(name.as_str(), &response_connection_headers) {
             continue;
         }
         builder = builder.header(name, value);
@@ -523,18 +559,55 @@ fn upstream_url(base: &str, uri: &Uri) -> Result<String, String> {
     Ok(url.to_string())
 }
 
-fn should_skip_request_header(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "host" | "content-length" | "connection" | "transfer-encoding"
-    )
+fn should_skip_request_header(
+    name: &str,
+    target_sets_authorization: bool,
+    connection_headers: &HashSet<String>,
+) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    connection_headers.contains(&normalized)
+        || matches!(
+            normalized.as_str(),
+            "host"
+                | "content-length"
+                | "connection"
+                | "transfer-encoding"
+                | "te"
+                | "trailer"
+                | "upgrade"
+                | "keep-alive"
+                | "proxy-authorization"
+                | "proxy-authenticate"
+        )
+        || (target_sets_authorization && normalized == "authorization")
 }
 
-fn should_skip_response_header(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        "content-length" | "connection" | "transfer-encoding"
-    )
+fn should_skip_response_header(name: &str, connection_headers: &HashSet<String>) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    connection_headers.contains(&normalized)
+        || matches!(
+            normalized.as_str(),
+            "content-length"
+                | "connection"
+                | "transfer-encoding"
+                | "te"
+                | "trailer"
+                | "upgrade"
+                | "keep-alive"
+                | "proxy-authenticate"
+        )
+}
+
+fn connection_header_tokens(headers: &HeaderMap) -> HashSet<String> {
+    headers
+        .get_all(header::CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .collect()
 }
 
 fn is_streaming_response(headers: &HeaderMap) -> bool {
@@ -545,6 +618,19 @@ fn is_streaming_response(headers: &HeaderMap) -> bool {
             value
                 .split(';')
                 .any(|part| part.trim().eq_ignore_ascii_case("text/event-stream"))
+        })
+}
+
+fn request_has_unsupported_content_encoding(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .any(|part| !part.eq_ignore_ascii_case("identity"))
         })
 }
 
@@ -746,6 +832,33 @@ mod tests {
         .await
     }
 
+    async fn spawn_capture_headers_upstream(
+        seen_headers: Arc<Mutex<Vec<(String, String)>>>,
+    ) -> String {
+        async fn echo(
+            State(seen_headers): State<Arc<Mutex<Vec<(String, String)>>>>,
+            headers: HeaderMap,
+        ) -> Response {
+            *seen_headers.lock().unwrap() = headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .to_str()
+                        .ok()
+                        .map(|value| (name.as_str().to_string(), value.to_string()))
+                })
+                .collect();
+            (StatusCode::OK, "{}").into_response()
+        }
+
+        spawn_app(
+            Router::new()
+                .route("/v1/chat/completions", post(echo))
+                .with_state(seen_headers),
+        )
+        .await
+    }
+
     async fn spawn_capture_sse_upstream(seen_body: Arc<Mutex<Option<String>>>) -> String {
         async fn sse(State(seen_body): State<Arc<Mutex<Option<String>>>>, body: Bytes) -> Response {
             let body_text =
@@ -935,6 +1048,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn target_api_key_replaces_inbound_authorization() {
+        let seen_headers = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let upstream = spawn_capture_headers_upstream(seen_headers.clone()).await;
+        let mut config = proxy_config(upstream);
+        config.proxy.targets[0].api_key_env = Some("TEST_UPSTREAM_KEY".to_string());
+        config.proxy.targets[0].api_key = Some(dam_config::SecretValue::new(
+            "TEST_UPSTREAM_KEY",
+            "upstream-secret",
+        ));
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .header(header::AUTHORIZATION, "Bearer local-agent-secret")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let authorization_values = seen_headers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+            .map(|(_, value)| value.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(authorization_values, ["Bearer upstream-secret"]);
+    }
+
+    #[tokio::test]
+    async fn hop_by_hop_and_connection_listed_headers_are_not_forwarded() {
+        let seen_headers = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let upstream = spawn_capture_headers_upstream(seen_headers.clone()).await;
+        let proxy = spawn_app(build_app(proxy_config(upstream)).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .header(header::CONNECTION, "x-drop-me, keep-alive")
+            .header("x-drop-me", "secret")
+            .header("te", "trailers")
+            .header("trailer", "x-trailer")
+            .header("upgrade", "websocket")
+            .header("proxy-authorization", "Basic local")
+            .header("x-keep-me", "ok")
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = seen_headers.lock().unwrap();
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| { name.eq_ignore_ascii_case("x-keep-me") && value == "ok" })
+        );
+        for blocked in [
+            "connection",
+            "x-drop-me",
+            "te",
+            "trailer",
+            "upgrade",
+            "proxy-authorization",
+        ] {
+            assert!(
+                !headers
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(blocked)),
+                "{blocked} should not be forwarded"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn leaves_inbound_response_references_unresolved_by_default() {
         let upstream_seen = Arc::new(Mutex::new(None::<String>));
         let upstream = spawn_capture_echo_upstream(upstream_seen.clone()).await;
@@ -1084,6 +1272,27 @@ mod tests {
         assert_eq!(report.state, dam_api::ProxyState::Blocked);
         assert_eq!(report.diagnostics[0].code, "blocked");
         assert!(report.message.contains("not utf-8"));
+    }
+
+    #[tokio::test]
+    async fn blocks_encoded_request_bodies_before_bypass_policy() {
+        let upstream = spawn_echo_upstream().await;
+        let mut config = proxy_config(upstream);
+        config.proxy.default_failure_mode = dam_config::ProxyFailureMode::BypassOnError;
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .header(header::CONTENT_ENCODING, "gzip")
+            .body("not actually gzip")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let report = proxy_report(response).await;
+        assert_eq!(report.state, dam_api::ProxyState::Blocked);
+        assert!(report.message.contains("encoded request bodies"));
     }
 
     #[tokio::test]

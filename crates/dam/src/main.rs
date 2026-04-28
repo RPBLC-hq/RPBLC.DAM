@@ -444,7 +444,12 @@ fn codex_config_override_can_bypass_dam(value: &str) -> bool {
         return false;
     };
     let key = key.trim();
-    key == "model_provider" || key == "openai_base_url" || key.starts_with("model_providers.")
+    key == "model_provider"
+        || key == "openai_base_url"
+        || key == "chatgpt_base_url"
+        || key == "preferred_auth_method"
+        || key.starts_with("model_providers.")
+        || key.starts_with("profiles.")
 }
 
 fn toml_string(value: &str) -> String {
@@ -638,6 +643,21 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("bypass DAM"));
+    }
+
+    #[test]
+    fn codex_api_rejects_chatgpt_and_profile_overrides_that_can_bypass_dam() {
+        for override_value in [
+            "chatgpt_base_url=\"https://chatgpt.com\"",
+            "preferred_auth_method=\"chatgpt\"",
+            "profiles.default.model_provider=\"openai\"",
+        ] {
+            let error =
+                validate_codex_api_tool_args(&["-c".to_string(), override_value.to_string()])
+                    .unwrap_err();
+
+            assert!(error.contains("bypass DAM"), "{override_value}");
+        }
     }
 
     #[test]
