@@ -18,7 +18,8 @@
   <a href="#consent">Consent</a> &middot;
   <a href="#web-ui">Web UI</a> &middot;
   <a href="#commands">Commands</a> &middot;
-  <a href="#v1-limits">V1 Limits</a>
+  <a href="#v1-limits">V1 Limits</a> &middot;
+  <a href="#what-to-do-next">What To Do Next</a>
 </p>
 
 ---
@@ -268,6 +269,48 @@ Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default
 - The current vault/log/consent stores are local SQLite implementations.
 - The detector does not yet cover names, addresses, organizations, private keys, JWTs, API keys, IBANs, or IP addresses.
 - The npm package is a Node entry point around native DAM binaries; release packaging must include the platform binaries under `npm/native`.
+
+## What To Do Next
+
+Recommended order for the next engineering sessions:
+
+1. Smoke test `dam claude` and `dam codex --api` against fake or real provider paths, then inspect the vault and log SQLite databases.
+2. Extract `dam-pipeline` from `dam-proxy`. Keep behavior identical; move orchestration only: detect -> policy -> consent -> vault/log -> redact -> optional inbound resolve.
+3. Extract `dam-provider-openai` from `dam-proxy`. Isolate OpenAI-compatible request/response handling behind fixtures before changing behavior.
+4. Extract `dam-router` from `dam-proxy`. Target selection, auth mode, and failure-mode selection should become reusable without changing proxy semantics.
+5. Expand `damctl` after the extractions: deeper doctor checks, bypass status, install profile inspection, and eventually daemon lifecycle.
+6. Add `dam-daemon` only after proxy/pipeline behavior is stable. Its role is lifecycle, health, and VPN-like UX, not protection logic.
+7. Add `dam-integrations` for harness profiles where tools allow low-configuration routing.
+
+Do not spend the next session on these until their prerequisite slice exists:
+
+- Codex ChatGPT-login protection, unless the work is specifically the WebSocket/`backend-api/codex/responses` transport plan or adapter.
+- TLS interception, local CA management, VPN/TUN, or arbitrary web traffic rewriting.
+- Streaming/SSE response resolution before the non-streaming provider adapter is extracted and fixture-tested.
+- Remote vault/log backends before the local pipeline contracts are cleanly extracted.
+
+Near-term modules still to build:
+
+- `dam-pipeline`: shared request processing orchestration for proxy/API-style flows.
+- `dam-provider-openai`: OpenAI-compatible adapter with fixture-first tests and no real provider calls in automated tests.
+- `dam-router`: reusable target selection, auth mode, and failure-mode selection.
+- `dam-daemon`: local service lifecycle and health/status model for VPN-like user experience.
+- `dam-integrations`: known harness profiles for minimal manual setup where tools allow it.
+
+Backend replacement modules:
+
+- `dam-vault-remote`: remote `VaultWriter` and `VaultReader` implementation using `vault.backend = "remote"`.
+- `dam-log-remote`: remote `EventSink` implementation using `log.backend = "remote"`.
+
+Parked modules:
+
+- `dam-outbox`: durable queue for failed async remote vault/log writes.
+- `dam-detect-pipeline`: orchestration for multiple detectors, including sequential, parallel, and nested detector suites.
+- `dam-auth`: auth/token handling for remote vault/log/proxy deployments.
+- `dam-net`: future VPN/TUN/network-extension layer for selected or full-device routing.
+- `dam-trust`: future TLS interception/local CA management, if validated later.
+- `dam-websocket`: future WebSocket adapter after HTTP and SSE paths are stable. Needed before `dam codex` can protect Codex's ChatGPT-login `backend-api/codex/responses` transport.
+- `dam-notify`: notification module for user-visible attention events, for example consent requests or critical errors.
 
 ## Build
 
