@@ -4,6 +4,8 @@ This folder documents the current DAM rebuild modules.
 
 The architecture rule is: modules stay replaceable, and cross-module coordination goes through spine-owned contracts in `dam-core`.
 
+Deferred security and product-design work is tracked in [parking-lot.md](parking-lot.md). Parking-lot items are not current product guarantees.
+
 ## Modules
 
 - [dam-core](dam-core.md): shared contracts, reference generation, replacement planning, policy actions, log event shape.
