@@ -96,7 +96,7 @@ When invoked from `npx`, `claude` and `codex` run in trial mode by default. Tria
 ## Current Limits
 
 - `dam connect` runs one background proxy target at a time. It does not install system proxy settings or configure harnesses yet.
-- `dam integrations apply codex-api` can edit Codex config with a backup; other profiles currently write DAM-managed environment files.
+- `dam integrations apply codex-api` edits Codex config with a backup; `dam integrations apply claude-code` edits Claude Code settings with a backup. Generic profiles write DAM-managed environment files.
 - One launcher command starts one single-target proxy.
 - Codex API-key mode is protected through the public Responses API. Codex ChatGPT-login model turns are not protected by the current launcher and are blocked.
 - Codex WebSockets are disabled in the injected provider config until DAM has a WebSocket adapter.

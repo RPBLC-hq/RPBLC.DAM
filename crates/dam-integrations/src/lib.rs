@@ -5,11 +5,13 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use toml_edit::{DocumentMut, Item, Table, value};
 
 pub const DEFAULT_PROXY_URL: &str = "http://127.0.0.1:7828";
 pub const CODEX_API_KEY_ENV: &str = "OPENAI_API_KEY";
 pub const CODEX_DAM_PROVIDER_ID: &str = "dam_openai";
+pub const CLAUDE_BASE_URL_ENV: &str = "ANTHROPIC_BASE_URL";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntegrationProfile {
@@ -187,6 +189,7 @@ pub fn default_apply_path(
 ) -> Result<PathBuf, String> {
     match profile_id {
         "codex-api" => codex_config_path(codex_home, home),
+        "claude-code" => claude_settings_path(home),
         _ if profile(profile_id, DEFAULT_PROXY_URL).is_some() => Ok(integration_state_dir
             .join("profiles")
             .join(format!("{profile_id}.env"))),
@@ -214,6 +217,7 @@ pub fn prepare_apply(
     };
     let description = match profile_id {
         "codex-api" => "update Codex config with DAM OpenAI provider".to_string(),
+        "claude-code" => "update Claude Code settings env with DAM Anthropic base URL".to_string(),
         _ => "write DAM-managed environment file for this profile".to_string(),
     };
 
@@ -510,7 +514,7 @@ fn anthropic(proxy_url: &str) -> IntegrationProfile {
         provider: "anthropic".to_string(),
         connect_args: vec!["--anthropic".to_string()],
         settings: vec![IntegrationSetting {
-            key: "ANTHROPIC_BASE_URL".to_string(),
+            key: CLAUDE_BASE_URL_ENV.to_string(),
             value: proxy_url.trim_end_matches('/').to_string(),
             description: "Anthropic-compatible base URL for clients that honor ANTHROPIC_BASE_URL"
                 .to_string(),
@@ -542,9 +546,9 @@ fn claude_code(proxy_url: &str) -> IntegrationProfile {
         provider: "anthropic".to_string(),
         connect_args: vec!["--anthropic".to_string()],
         settings: vec![IntegrationSetting {
-            key: "ANTHROPIC_BASE_URL".to_string(),
+            key: CLAUDE_BASE_URL_ENV.to_string(),
             value: proxy_url.trim_end_matches('/').to_string(),
-            description: "Claude Code base URL override".to_string(),
+            description: "Claude Code session environment setting".to_string(),
         }],
         commands: vec![
             IntegrationCommand {
@@ -567,6 +571,8 @@ fn claude_code(proxy_url: &str) -> IntegrationProfile {
         notes: vec![
             "`dam claude` remains the one-shot path when a background daemon is not needed."
                 .to_string(),
+            "`dam integrations apply claude-code` writes the env setting to Claude Code settings JSON with a rollback record.".to_string(),
+            "Use `--target-path .claude/settings.local.json` for a project-local Claude Code setting instead of the default user setting.".to_string(),
             "Claude Code keeps provider authentication; DAM only receives and forwards the request headers.".to_string(),
         ],
         automation: AutomationLevel::ConnectPreset,
@@ -692,6 +698,13 @@ fn codex_config_path(
     Ok(home.join(".codex").join("config.toml"))
 }
 
+fn claude_settings_path(home: Option<PathBuf>) -> Result<PathBuf, String> {
+    let home = home
+        .filter(|home| !home.as_os_str().is_empty())
+        .ok_or_else(|| "HOME is required to locate Claude Code settings".to_string())?;
+    Ok(home.join(".claude").join("settings.json"))
+}
+
 fn desired_integration_content(
     profile_id: &str,
     profile: &IntegrationProfile,
@@ -700,6 +713,7 @@ fn desired_integration_content(
 ) -> Result<String, String> {
     match profile_id {
         "codex-api" => codex_config_content(current_content.unwrap_or_default(), proxy_url),
+        "claude-code" => claude_settings_content(current_content.unwrap_or_default(), proxy_url),
         _ => Ok(env_profile_content(profile)),
     }
 }
@@ -730,6 +744,31 @@ fn codex_config_content(current: &str, proxy_url: &str) -> Result<String, String
     provider.insert("supports_websockets", value(false));
 
     Ok(document.to_string())
+}
+
+fn claude_settings_content(current: &str, proxy_url: &str) -> Result<String, String> {
+    let mut settings = if current.trim().is_empty() {
+        Value::Object(Map::new())
+    } else {
+        serde_json::from_str::<Value>(current)
+            .map_err(|error| format!("failed to parse Claude Code settings JSON: {error}"))?
+    };
+    let settings_object = settings
+        .as_object_mut()
+        .ok_or_else(|| "Claude Code settings JSON root must be an object".to_string())?;
+    let env = settings_object
+        .entry("env")
+        .or_insert_with(|| Value::Object(Map::new()));
+    let env_object = env
+        .as_object_mut()
+        .ok_or_else(|| "Claude Code settings env value must be an object".to_string())?;
+    env_object.insert(
+        CLAUDE_BASE_URL_ENV.to_string(),
+        Value::String(proxy_url.trim_end_matches('/').to_string()),
+    );
+    serde_json::to_string_pretty(&settings)
+        .map(|json| format!("{json}\n"))
+        .map_err(|error| format!("failed to serialize Claude Code settings JSON: {error}"))
 }
 
 fn env_profile_content(profile: &IntegrationProfile) -> String {
@@ -908,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn env_default_path_lives_under_integration_state() {
+    fn claude_default_path_uses_home_settings() {
         let path = default_apply_path(
             "claude-code",
             Path::new("/tmp/dam/integrations"),
@@ -917,9 +956,22 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(path, PathBuf::from("/tmp/home/.claude/settings.json"));
+    }
+
+    #[test]
+    fn generic_env_default_path_lives_under_integration_state() {
+        let path = default_apply_path(
+            "anthropic",
+            Path::new("/tmp/dam/integrations"),
+            None,
+            Some(PathBuf::from("/tmp/home")),
+        )
+        .unwrap();
+
         assert_eq!(
             path,
-            PathBuf::from("/tmp/dam/integrations/profiles/claude-code.env")
+            PathBuf::from("/tmp/dam/integrations/profiles/anthropic.env")
         );
     }
 
@@ -950,20 +1002,65 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_apply_writes_settings_and_rollback_restores_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let settings_path = dir.path().join("settings.json");
+        let original = r#"{"model":"claude-sonnet-4-5","env":{"FOO":"bar"}}"#;
+        fs::write(&settings_path, original).unwrap();
+
+        let prepared = prepare_apply(
+            "claude-code",
+            "http://127.0.0.1:9000/",
+            settings_path.clone(),
+        )
+        .unwrap();
+        let result = run_apply(prepared, false, &state_dir).unwrap();
+
+        assert_eq!(result.changes[0].action, FileAction::Update);
+        let applied = fs::read_to_string(&settings_path).unwrap();
+        let settings: Value = serde_json::from_str(&applied).unwrap();
+        assert_eq!(settings["model"], "claude-sonnet-4-5");
+        assert_eq!(settings["env"]["FOO"], "bar");
+        assert_eq!(
+            settings["env"][CLAUDE_BASE_URL_ENV],
+            "http://127.0.0.1:9000"
+        );
+
+        let rollback = rollback_profile("claude-code", &state_dir).unwrap();
+
+        assert_eq!(rollback.changes[0].action, FileAction::Restore);
+        assert_eq!(fs::read_to_string(&settings_path).unwrap(), original);
+    }
+
+    #[test]
+    fn claude_code_apply_rejects_non_object_env_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.json");
+        fs::write(&settings_path, r#"{"env":"invalid"}"#).unwrap();
+
+        let error =
+            prepare_apply("claude-code", "http://127.0.0.1:9000", settings_path).unwrap_err();
+
+        assert!(error.contains("env value must be an object"));
+    }
+
+    #[test]
     fn env_profile_apply_creates_file_and_rollback_deletes_it() {
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().join("state");
-        let env_path = dir.path().join("claude.env");
+        let env_path = dir.path().join("anthropic.env");
 
         let prepared =
-            prepare_apply("claude-code", "http://127.0.0.1:9000", env_path.clone()).unwrap();
+            prepare_apply("anthropic", "http://127.0.0.1:9000", env_path.clone()).unwrap();
         let result = run_apply(prepared, false, &state_dir).unwrap();
 
         assert_eq!(result.changes[0].action, FileAction::Create);
         let applied = fs::read_to_string(&env_path).unwrap();
+        assert!(applied.contains("# DAM integration profile: anthropic"));
         assert!(applied.contains("export ANTHROPIC_BASE_URL=http://127.0.0.1:9000"));
 
-        let rollback = rollback_profile("claude-code", &state_dir).unwrap();
+        let rollback = rollback_profile("anthropic", &state_dir).unwrap();
 
         assert_eq!(rollback.changes[0].action, FileAction::Delete);
         assert!(!env_path.exists());
@@ -973,10 +1070,10 @@ mod tests {
     fn inspect_apply_reports_missing_applied_and_modified_states() {
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().join("state");
-        let env_path = dir.path().join("claude.env");
+        let env_path = dir.path().join("anthropic.env");
 
         let missing = inspect_apply(
-            "claude-code",
+            "anthropic",
             "http://127.0.0.1:9000",
             env_path.clone(),
             &state_dir,
@@ -987,11 +1084,11 @@ mod tests {
         assert!(!missing.rollback_available);
 
         let prepared =
-            prepare_apply("claude-code", "http://127.0.0.1:9000", env_path.clone()).unwrap();
+            prepare_apply("anthropic", "http://127.0.0.1:9000", env_path.clone()).unwrap();
         run_apply(prepared, false, &state_dir).unwrap();
 
         let applied = inspect_apply(
-            "claude-code",
+            "anthropic",
             "http://127.0.0.1:9000",
             env_path.clone(),
             &state_dir,
@@ -1008,7 +1105,7 @@ mod tests {
         .unwrap();
 
         let modified =
-            inspect_apply("claude-code", "http://127.0.0.1:9000", env_path, &state_dir).unwrap();
+            inspect_apply("anthropic", "http://127.0.0.1:9000", env_path, &state_dir).unwrap();
         assert_eq!(modified.status, IntegrationApplyStatus::Modified);
         assert_eq!(modified.planned_action, FileAction::Update);
         assert!(modified.rollback_available);
@@ -1018,13 +1115,13 @@ mod tests {
     fn inspect_apply_reports_unreadable_rollback_record() {
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().join("state");
-        let env_path = dir.path().join("claude.env");
-        let record_path = profile_state_dir(&state_dir, "claude-code").join("latest.json");
+        let env_path = dir.path().join("anthropic.env");
+        let record_path = profile_state_dir(&state_dir, "anthropic").join("latest.json");
         fs::create_dir_all(record_path.parent().unwrap()).unwrap();
         fs::write(&record_path, "not json").unwrap();
 
         let report =
-            inspect_apply("claude-code", "http://127.0.0.1:9000", env_path, &state_dir).unwrap();
+            inspect_apply("anthropic", "http://127.0.0.1:9000", env_path, &state_dir).unwrap();
 
         assert_eq!(report.status, IntegrationApplyStatus::NeedsApply);
         assert!(!report.rollback_available);

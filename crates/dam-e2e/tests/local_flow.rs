@@ -501,10 +501,12 @@ fn dam_integrations_apply_codex_api_and_rollback_from_binary() {
 }
 
 #[test]
-fn dam_integrations_apply_env_profile_and_rollback_from_binary() {
+fn dam_integrations_apply_claude_code_settings_and_rollback_from_binary() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
-    let env_path = dir.path().join("claude-code.env");
+    let settings_path = dir.path().join("settings.json");
+    let original_settings = r#"{"env":{"FOO":"bar"}}"#;
+    std::fs::write(&settings_path, original_settings).unwrap();
 
     ensure_binaries();
     let apply = Command::new(binary("dam"))
@@ -513,7 +515,7 @@ fn dam_integrations_apply_env_profile_and_rollback_from_binary() {
             "apply",
             "claude-code",
             "--target-path",
-            env_path.to_str().unwrap(),
+            settings_path.to_str().unwrap(),
             "--proxy-url",
             "http://127.0.0.1:9000",
         ])
@@ -525,9 +527,13 @@ fn dam_integrations_apply_env_profile_and_rollback_from_binary() {
     assert!(apply.status.success(), "{}", utf8(&apply.stderr));
     assert!(utf8(&apply.stdout).contains("integration profile applied"));
 
-    let env_content = std::fs::read_to_string(&env_path).unwrap();
-    assert!(env_content.contains("# DAM integration profile: claude-code"));
-    assert!(env_content.contains("export ANTHROPIC_BASE_URL=http://127.0.0.1:9000"));
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert_eq!(settings["env"]["FOO"], "bar");
+    assert_eq!(
+        settings["env"]["ANTHROPIC_BASE_URL"],
+        "http://127.0.0.1:9000"
+    );
 
     let rollback = Command::new(binary("dam"))
         .args(["integrations", "rollback", "claude-code"])
@@ -538,7 +544,10 @@ fn dam_integrations_apply_env_profile_and_rollback_from_binary() {
 
     assert!(rollback.status.success(), "{}", utf8(&rollback.stderr));
     assert!(utf8(&rollback.stdout).contains("integration profile rolled back"));
-    assert!(!env_path.exists());
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).unwrap(),
+        original_settings
+    );
 }
 
 #[test]

@@ -20,7 +20,8 @@ dam connect --profile <profile>
 `dam integrations apply` calls the `dam-integrations` apply engine to write profile setup to a safe target with a rollback record:
 
 - `codex-api` updates the Codex TOML config with the `dam_openai` provider and selects it as `model_provider`.
-- Other current profiles write a DAM-managed environment file that can be sourced or inspected.
+- `claude-code` updates Claude Code `settings.json` by setting `env.ANTHROPIC_BASE_URL`.
+- Generic `openai-compatible`, `anthropic`, and `xai-compatible` profiles write a DAM-managed environment file that can be sourced or inspected.
 
 Use `--dry-run` before writing:
 
@@ -32,6 +33,7 @@ Override the target file for tests or non-standard installs:
 
 ```bash
 dam integrations apply codex-api --target-path ./codex-test.toml
+dam integrations apply claude-code --target-path ./.claude/settings.local.json
 ```
 
 Rollback restores the last DAM-created backup for that profile:
@@ -93,8 +95,8 @@ Profiles may contain:
 
 ## Current Limits
 
-- Only `codex-api` currently edits a known harness config file directly.
-- Non-Codex profiles write DAM-managed environment files rather than mutating shell or harness config.
+- `codex-api` and `claude-code` edit known harness config files directly with rollback records.
+- Generic profiles write DAM-managed environment files rather than mutating shell or unknown harness config.
 - No model discovery is performed.
 - No system proxy, VPN/TUN, TLS interception, or WebSocket configuration is installed.
 - One `dam connect --profile` command still starts one daemon target at a time.
