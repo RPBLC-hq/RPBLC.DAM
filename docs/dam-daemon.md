@@ -53,7 +53,7 @@ Both presets use caller-owned provider auth headers by default. DAM does not sto
 
 ## State File
 
-The daemon writes a JSON state file at:
+The daemon writes a JSON state file atomically at:
 
 ```text
 $DAM_STATE_DIR/daemon.json
@@ -90,8 +90,6 @@ dam disconnect
 Daemon options:
 
 ```text
---profile <id>       Apply integration profile daemon defaults
---apply              Apply the selected or active integration profile before connecting
 --openai             Use the OpenAI-compatible preset (default)
 --anthropic          Use the Anthropic preset
 --config <path>      Load DAM config before daemon overrides
@@ -107,6 +105,8 @@ Daemon options:
 --resolve-inbound    Restore DAM references in inbound responses
 ```
 
+`--profile` and `--apply` are `dam connect` front-end options. They are resolved before daemon startup and are not accepted by the standalone `dam-daemon run` parser.
+
 `dam status --json` emits a local status envelope containing daemon state and, when reachable, the `dam-api` `ProxyReport` returned by `/health`.
 
 `damctl daemon inspect` is the read-only support/debug view over the same state file. It reports `connected`, `stale`, or `disconnected`, state file paths, process status, selected proxy target, local database paths, and inbound resolution settings without starting or stopping the daemon.
@@ -116,4 +116,4 @@ Daemon options:
 - The daemon runs one proxy target at a time.
 - It does not install system proxy settings, mutate harness configs, or start at login. The first tray/menu-bar shell lives in `dam-tray` and hosts `dam-web /connect`; it does not change daemon lifecycle behavior.
 - It does not add VPN/TUN routing, TLS interception, or WebSocket handling.
-- `dam disconnect` terminates the daemon process by PID and removes stale state when the process is no longer running.
+- `dam disconnect` terminates the daemon process by PID, escalates if the process ignores the first termination signal, and removes stale state when the process is no longer running.

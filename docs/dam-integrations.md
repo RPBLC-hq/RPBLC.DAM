@@ -9,8 +9,8 @@ The first slice is intentionally local and reversible. It does not install syste
 ```bash
 dam integrations list
 dam integrations show <profile>
-dam integrations apply <profile> --dry-run
 dam integrations apply <profile>
+dam integrations apply <profile> --write
 dam integrations rollback <profile>
 dam profile status
 dam profile set <profile>
@@ -23,23 +23,29 @@ dam connect --apply
 
 `dam profile set <id>` writes the active local harness profile under DAM's integration state directory. `dam profile status` reports the active profile, effective proxy URL, and apply state for the profile target. `dam connect --apply` uses the active profile when `--profile` is omitted.
 
-`dam integrations apply` calls the `dam-integrations` apply engine to write profile setup to a safe target with a rollback record:
+`dam integrations apply` previews profile setup by default. Add `--write` to call the `dam-integrations` apply engine and write profile setup to a safe target with a rollback record:
 
 - `codex-api` updates the Codex TOML config with the `dam_openai` provider and selects it as `model_provider`.
 - `claude-code` updates Claude Code `settings.json` by setting `env.ANTHROPIC_BASE_URL`.
 - Generic `openai-compatible`, `anthropic`, and `xai-compatible` profiles write a DAM-managed environment file that can be sourced or inspected.
 
-Use `--dry-run` before writing:
+Preview without writing:
 
 ```bash
-dam integrations apply codex-api --dry-run
+dam integrations apply codex-api
+```
+
+Write the profile setup:
+
+```bash
+dam integrations apply codex-api --write
 ```
 
 Override the target file for tests or non-standard installs:
 
 ```bash
-dam integrations apply codex-api --target-path ./codex-test.toml
-dam integrations apply claude-code --target-path ./.claude/settings.local.json
+dam integrations apply codex-api --write --target-path ./codex-test.toml
+dam integrations apply claude-code --write --target-path ./.claude/settings.local.json
 ```
 
 Rollback restores the last DAM-created backup for that profile:
@@ -56,7 +62,7 @@ dam profile set claude-code
 dam connect --apply
 ```
 
-`dam connect --profile <id> --apply` and `dam connect --apply` with an active profile refuse to overwrite a target that DAM previously applied but that no longer matches DAM's desired content. Use `damctl integrations check <id>` to inspect that state, or `dam integrations rollback <id>` to restore the last DAM-created backup.
+All apply callers, including `dam integrations apply --write`, `dam connect --profile <id> --apply`, and `dam connect --apply` with an active profile, refuse to overwrite a target that DAM previously applied but that no longer matches DAM's desired content. Use `damctl integrations check <id>` to inspect that state, or `dam integrations rollback <id>` to restore the last DAM-created backup.
 
 Use `--json` on `list` or `show` for machine-readable profile data:
 
@@ -92,8 +98,9 @@ When `--proxy-url` is omitted, `dam` uses the connected daemon state if availabl
 - desired file content generation;
 - dry-run planning;
 - install-state inspection for `applied`, `needs_apply`, and `modified` profile targets;
-- backup creation;
-- rollback record format;
+- backup creation with unique backup directories;
+- rollback record format written before target mutation so interrupted applies remain reachable;
+- atomic target restore/write behavior using temporary files and rename where the filesystem supports it;
 - rollback restore/delete behavior.
 
 The `dam` binary owns the user command surface and supplies local environment context, including `DAM_STATE_DIR`, `HOME`, `CODEX_HOME`, and the effective proxy URL.

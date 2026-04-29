@@ -43,7 +43,7 @@ default_action = "tokenize"
 deduplicate_replacements = true
 
 [policy.kind.ssn]
-action = "redact"
+action = "tokenize"
 
 [failure]
 vault_write = "redact_only"
@@ -67,7 +67,9 @@ failure_mode = "bypass_on_error"
 api_key_env = "OPENAI_API_KEY"
 ```
 
-Supported first-slice provider values are `openai-compatible` and `anthropic`.
+Supported first-slice provider values are `openai-compatible` and `anthropic`. The current local proxy slice accepts exactly one configured target; multi-target routing is parked until target selection has a user-facing model.
+
+`web.addr` and `proxy.listen` must be loopback socket addresses in this local build, for example `127.0.0.1:2896` and `127.0.0.1:7828`.
 
 ## Environment Overrides
 
@@ -77,9 +79,11 @@ Common deployment overrides:
 export DAM_CONFIG=/etc/dam/dam.toml
 export DAM_VAULT_BACKEND=sqlite
 export DAM_VAULT_PATH=/var/lib/dam/vault.db
+export DAM_VAULT_TOKEN_ENV=DAM_VAULT_TOKEN
 export DAM_LOG_ENABLED=true
 export DAM_LOG_BACKEND=sqlite
 export DAM_LOG_PATH=/var/lib/dam/log.db
+export DAM_LOG_TOKEN_ENV=DAM_LOG_TOKEN
 export DAM_CONSENT_ENABLED=true
 export DAM_CONSENT_PATH=/var/lib/dam/consent.db
 export DAM_CONSENT_DEFAULT_TTL_SECONDS=86400
@@ -87,7 +91,9 @@ export DAM_CONSENT_MCP_WRITE_ENABLED=true
 export DAM_POLICY_DEFAULT_ACTION=tokenize
 export DAM_POLICY_DEDUPLICATE_REPLACEMENTS=true
 export DAM_POLICY_SSN_ACTION=redact
-export DAM_WEB_ADDR=0.0.0.0:2896
+export DAM_FAILURE_VAULT_WRITE=redact_only
+export DAM_FAILURE_LOG_WRITE=warn_continue
+export DAM_WEB_ADDR=127.0.0.1:2896
 export DAM_PROXY_ENABLED=true
 export DAM_PROXY_LISTEN=127.0.0.1:7828
 export DAM_PROXY_DEFAULT_FAILURE_MODE=bypass_on_error
@@ -117,6 +123,38 @@ DAM_CONSENT_PATH
 DAM_CONSENT_SQLITE_PATH
 DAM_CONSENT_DEFAULT_TTL_SECONDS
 DAM_CONSENT_MCP_WRITE_ENABLED
+```
+
+Supported vault env keys:
+
+```text
+DAM_VAULT_BACKEND
+DAM_VAULT_PATH
+DAM_VAULT_SQLITE_PATH
+DAM_VAULT_URL
+DAM_VAULT_TOKEN_ENV
+DAM_VAULT_TIMEOUT_MS
+DAM_VAULT_TOKEN
+```
+
+Supported log env keys:
+
+```text
+DAM_LOG_ENABLED
+DAM_LOG_BACKEND
+DAM_LOG_PATH
+DAM_LOG_SQLITE_PATH
+DAM_LOG_URL
+DAM_LOG_TOKEN_ENV
+DAM_LOG_TIMEOUT_MS
+DAM_LOG_TOKEN
+```
+
+Supported failure env keys:
+
+```text
+DAM_FAILURE_VAULT_WRITE
+DAM_FAILURE_LOG_WRITE
 ```
 
 Supported proxy env keys:

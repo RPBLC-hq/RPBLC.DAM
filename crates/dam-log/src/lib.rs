@@ -1,16 +1,22 @@
 use dam_core::{EventSink, LogEvent, LogWriteError};
 use rusqlite::{Connection, params};
+use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const LEGACY_OPERATION_ID: &str = "legacy";
 const LEGACY_EVENT_TYPE: &str = "legacy";
 const LEGACY_MESSAGE: &str = "legacy log event migrated without raw preview";
+const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LogStoreError {
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 pub type LogStoreResult<T> = Result<T, LogStoreError>;
@@ -34,8 +40,9 @@ pub struct LogStore {
 
 impl LogStore {
     pub fn open(path: impl AsRef<Path>) -> LogStoreResult<Self> {
+        let path = path.as_ref();
         let conn = Connection::open(path)?;
-        Self::from_connection(conn)
+        Self::from_connection_with_path(conn, Some(path))
     }
 
     pub fn open_in_memory() -> LogStoreResult<Self> {
@@ -44,6 +51,10 @@ impl LogStore {
     }
 
     fn from_connection(conn: Connection) -> LogStoreResult<Self> {
+        Self::from_connection_with_path(conn, None)
+    }
+
+    fn from_connection_with_path(conn: Connection, path: Option<&Path>) -> LogStoreResult<Self> {
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS log_events (
@@ -60,7 +71,7 @@ impl LogStore {
             ",
         )?;
 
-        migrate_log_events_schema(&conn)?;
+        migrate_log_events_schema(&conn, path)?;
 
         conn.execute_batch(
             "
@@ -148,10 +159,14 @@ impl LogStore {
     }
 }
 
-fn migrate_log_events_schema(conn: &Connection) -> rusqlite::Result<()> {
+fn migrate_log_events_schema(conn: &Connection, path: Option<&Path>) -> LogStoreResult<()> {
     let columns = table_columns(conn)?;
     if should_rebuild_legacy_schema(&columns) {
+        if let Some(path) = path {
+            backup_legacy_database(path)?;
+        }
         rebuild_legacy_log_events_schema(conn, &columns)?;
+        set_schema_version(conn)?;
         return Ok(());
     }
 
@@ -183,6 +198,7 @@ fn migrate_log_events_schema(conn: &Connection) -> rusqlite::Result<()> {
         &format!("message TEXT NOT NULL DEFAULT '{LEGACY_MESSAGE}'"),
     )?;
 
+    set_schema_version(conn)?;
     Ok(())
 }
 
@@ -212,14 +228,18 @@ fn rebuild_legacy_log_events_schema(conn: &Connection, columns: &[String]) -> ru
         format!("'{LEGACY_OPERATION_ID}'"),
         "'info'".to_string(),
         format!("'{LEGACY_EVENT_TYPE}'"),
-        "NULL".to_string(),
+        if has_column(columns, "data_type") {
+            "data_type".to_string()
+        } else {
+            "NULL".to_string()
+        },
         "NULL".to_string(),
         if has_column(columns, "action") {
             "action".to_string()
         } else {
             "NULL".to_string()
         },
-        format!("'{LEGACY_MESSAGE}'"),
+        legacy_message_expr(columns),
     ];
 
     if has_column(columns, "id") {
@@ -258,6 +278,38 @@ fn rebuild_legacy_log_events_schema(conn: &Connection, columns: &[String]) -> ru
         insert_columns = insert_columns.join(", "),
         select_values = select_values.join(", "),
     ))
+}
+
+fn legacy_message_expr(columns: &[String]) -> String {
+    let mut expr = format!("'{LEGACY_MESSAGE}'");
+    if has_column(columns, "data_type") {
+        expr.push_str(" || '; kind=' || COALESCE(data_type, '')");
+    }
+    if has_column(columns, "module_name") {
+        expr.push_str(" || '; module=' || COALESCE(module_name, '')");
+    }
+    if has_column(columns, "destination") {
+        expr.push_str(" || '; destination=' || COALESCE(destination, '')");
+    }
+    expr
+}
+
+fn backup_legacy_database(path: &Path) -> std::io::Result<()> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(std::io::Error::other)?
+        .as_secs();
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| "log.db".into());
+    let backup_path = path.with_file_name(format!("{file_name}.pre-migration-{timestamp}.bak"));
+    fs::copy(path, backup_path)?;
+    Ok(())
+}
+
+fn set_schema_version(conn: &Connection) -> rusqlite::Result<()> {
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION)
 }
 
 fn table_columns(conn: &Connection) -> rusqlite::Result<Vec<String>> {
@@ -388,8 +440,26 @@ mod tests {
         assert_eq!(entries[0].operation_id, LEGACY_OPERATION_ID);
         assert_eq!(entries[0].level, "info");
         assert_eq!(entries[0].event_type, LEGACY_EVENT_TYPE);
-        assert_eq!(entries[0].message, LEGACY_MESSAGE);
+        assert_eq!(entries[0].kind, Some("email".to_string()));
+        assert!(entries[0].message.contains(LEGACY_MESSAGE));
+        assert!(entries[0].message.contains("kind=email"));
+        assert!(entries[0].message.contains("module=dam-filter"));
+        assert!(entries[0].message.contains("destination=stdout"));
         assert!(!format!("{:?}", entries[0]).contains("banana@banana.com"));
+        assert_eq!(
+            Connection::open(&db_path)
+                .unwrap()
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        assert!(fs::read_dir(dir.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".pre-migration-")
+        }));
 
         store.record(&event()).unwrap();
         let entries = store.list().unwrap();

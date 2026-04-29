@@ -2,11 +2,14 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 pub const DEFAULT_CONFIG_PATH: &str = "dam.toml";
 const DEFAULT_REMOTE_TIMEOUT_MS: u64 = 2_000;
+const OPENAI_COMPATIBLE_PROVIDER: &str = "openai-compatible";
+const ANTHROPIC_PROVIDER: &str = "anthropic";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DamConfig {
@@ -890,17 +893,26 @@ fn validate(config: &DamConfig) -> Result<(), ConfigError> {
     if config.web.addr.trim().is_empty() {
         return Err(ConfigError::MissingRequired { field: "web.addr" });
     }
+    require_loopback_socket("web.addr", &config.web.addr)?;
 
     if config.proxy.listen.trim().is_empty() {
         return Err(ConfigError::MissingRequired {
             field: "proxy.listen",
         });
     }
+    require_loopback_socket("proxy.listen", &config.proxy.listen)?;
     if config.proxy.enabled {
         if config.proxy.targets.is_empty() {
             return Err(ConfigError::MissingRequired {
                 field: "proxy.targets",
             });
+        }
+        if config.proxy.targets.len() > 1 {
+            return Err(ConfigError::invalid_value(
+                "proxy.targets",
+                config.proxy.targets.len().to_string(),
+                "expected exactly one target in this local proxy slice",
+            ));
         }
         for target in &config.proxy.targets {
             if target.name.trim().is_empty() {
@@ -913,6 +925,16 @@ fn validate(config: &DamConfig) -> Result<(), ConfigError> {
                     field: "proxy.targets.provider",
                 });
             }
+            if !matches!(
+                target.provider.as_str(),
+                OPENAI_COMPATIBLE_PROVIDER | ANTHROPIC_PROVIDER
+            ) {
+                return Err(ConfigError::invalid_value(
+                    "proxy.targets.provider",
+                    target.provider.clone(),
+                    "expected openai-compatible or anthropic",
+                ));
+            }
             if target.upstream.trim().is_empty() {
                 return Err(ConfigError::MissingRequired {
                     field: "proxy.targets.upstream",
@@ -921,6 +943,20 @@ fn validate(config: &DamConfig) -> Result<(), ConfigError> {
         }
     }
 
+    Ok(())
+}
+
+fn require_loopback_socket(field: &'static str, value: &str) -> Result<(), ConfigError> {
+    let addr = value
+        .parse::<SocketAddr>()
+        .map_err(|_| ConfigError::invalid_value(field, value, "expected ip:port socket address"))?;
+    if !addr.ip().is_loopback() {
+        return Err(ConfigError::invalid_value(
+            field,
+            value,
+            "expected loopback address",
+        ));
+    }
     Ok(())
 }
 
@@ -1390,6 +1426,98 @@ mod tests {
             error,
             ConfigError::MissingRequired {
                 field: "proxy.targets.upstream"
+            }
+        ));
+    }
+
+    #[test]
+    fn local_web_and_proxy_addresses_must_be_loopback() {
+        let web_error = load_with_env(
+            &ConfigOverrides {
+                web_addr: Some("0.0.0.0:2896".to_string()),
+                ..ConfigOverrides::default()
+            },
+            env(&[]),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            web_error,
+            ConfigError::InvalidValue {
+                field: "web.addr",
+                ..
+            }
+        ));
+
+        let proxy_error = load_with_env(
+            &ConfigOverrides {
+                proxy_listen: Some("0.0.0.0:7828".to_string()),
+                ..ConfigOverrides::default()
+            },
+            env(&[]),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            proxy_error,
+            ConfigError::InvalidValue {
+                field: "proxy.listen",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn enabled_proxy_rejects_multiple_targets_and_unknown_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("dam.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [proxy]
+                enabled = true
+                listen = "127.0.0.1:7828"
+
+                [[proxy.targets]]
+                name = "one"
+                provider = "openai-compatible"
+                upstream = "https://one.example.test"
+
+                [[proxy.targets]]
+                name = "two"
+                provider = "anthropic"
+                upstream = "https://two.example.test"
+            "#,
+        )
+        .unwrap();
+        let error = load_with_env(
+            &ConfigOverrides {
+                config_path: Some(config_path),
+                ..ConfigOverrides::default()
+            },
+            env(&[]),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::InvalidValue {
+                field: "proxy.targets",
+                ..
+            }
+        ));
+
+        let error = load_with_env(
+            &ConfigOverrides::default(),
+            env(&[
+                ("DAM_PROXY_ENABLED", "true"),
+                ("DAM_PROXY_TARGET_PROVIDER", "openai-compatible-typo"),
+                ("DAM_PROXY_TARGET_UPSTREAM", "https://api.example.test"),
+            ]),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::InvalidValue {
+                field: "proxy.targets.provider",
+                ..
             }
         ));
     }

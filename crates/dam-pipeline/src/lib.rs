@@ -41,8 +41,8 @@ pub struct ResolveTextResult {
 pub fn protect_text(
     input: &str,
     operation_id: &str,
-    policy: &(impl PolicyEngine + ?Sized),
-    vault: &(impl VaultWriter + ?Sized),
+    policy: &dyn PolicyEngine,
+    vault: &dyn VaultWriter,
     consent_store: Option<&dam_consent::ConsentStore>,
     event_sink: Option<&dyn EventSink>,
     options: ReplacementPlanOptions,
@@ -98,7 +98,7 @@ pub fn protect_text(
 pub fn resolve_text(
     input: &str,
     operation_id: &str,
-    vault: &(impl VaultReader + ?Sized),
+    vault: &dyn VaultReader,
     event_sink: Option<&dyn EventSink>,
 ) -> ResolveTextResult {
     let plan = dam_core::build_resolve_plan(input, vault);

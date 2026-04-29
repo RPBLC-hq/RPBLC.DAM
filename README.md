@@ -196,7 +196,7 @@ cargo run -p dam-web -- --config dam.example.toml
 
 It provides:
 
-- `/connect` for a VPN-style local protection surface: select a profile, apply setup, connect, disconnect, and inspect the active endpoint.
+- `/connect` for the local protection surface: select a profile, apply setup, connect, disconnect, and inspect the active endpoint.
 - `/` for vault rows, cleartext values, and row-level grant/revoke actions.
 - `/consents` for active and historical consent records.
 - `/logs` for non-sensitive detection, redaction, consent, and resolve events.
@@ -209,14 +209,14 @@ The web UI displays vault values in clear text. Treat it as a local admin surfac
 
 ## Tray App
 
-`dam-tray` is the first native shell for the VPN-style local UX. On macOS it starts a local `dam-web` child process, opens `/connect` in a WebView, and adds a menu-bar item for opening, reloading, or quitting the shell.
+`dam-tray` is the first native shell for the local connect UX. On macOS it starts a local `dam-web` child process, keeps `/connect` in a hidden WebView, and opens a menu-bar popover only when the `[R:]` item is clicked.
 
 ```bash
 cargo build -p dam -p dam-web -p dam-tray
 cargo run -p dam-tray
 ```
 
-The tray shell uses `$DAM_STATE_DIR` or `$HOME/.dam` for persistent local state by default. Quitting the tray app stops the hosted web UI only; it does not disconnect a running DAM daemon.
+The tray shell uses `$DAM_STATE_DIR` or `$HOME/.dam` for persistent local state by default. The in-page Quit DAM action runs `dam disconnect`, stops the hosted web UI, and exits the tray shell.
 
 ## MCP
 
@@ -250,7 +250,7 @@ dam profile clear [--json]
 dam disconnect
 dam integrations list [--json]
 dam integrations show <profile> [--json]
-dam integrations apply <profile> [--dry-run]
+dam integrations apply <profile> [--write|--dry-run]
 dam integrations rollback <profile>
 ```
 
@@ -315,7 +315,7 @@ Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default
 
 - DAM is explicit base-URL routing, not transparent HTTPS interception, VPN/TUN routing, or TLS MITM.
 - `dam profile set <id>` selects the active harness profile for the local user. `dam connect --apply` uses that active profile when `--profile` is omitted.
-- `dam connect` starts a local endpoint, and `dam connect --profile <id> --apply` or `dam connect --apply` with an active profile can apply reversible harness setup before connecting. `dam integrations apply codex-api` edits Codex config with a backup, `dam integrations apply claude-code` edits Claude Code settings with a backup, and generic profiles write DAM-managed environment files.
+- `dam connect` starts a local endpoint, and `dam connect --profile <id> --apply` or `dam connect --apply` with an active profile can apply reversible harness setup before connecting. `dam integrations apply <profile>` previews by default; add `--write` to edit Codex config, Claude Code settings, or DAM-managed environment files with rollback support.
 - Codex ChatGPT-login mode is blocked because its current model transport is not protected by the base-URL launcher.
 - Inbound provider responses are not redetected. Known DAM references can be resolved locally with `--resolve-inbound`, but this is off by default.
 - The current vault/log/consent stores are local SQLite implementations.

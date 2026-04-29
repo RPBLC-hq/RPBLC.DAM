@@ -32,6 +32,9 @@ pub enum ProxyError {
         source: std::net::AddrParseError,
     },
 
+    #[error("proxy listen address must be loopback: {0}")]
+    NonLoopbackListen(SocketAddr),
+
     #[error("failed to bind proxy listener {addr}: {source}")]
     Bind {
         addr: SocketAddr,
@@ -75,7 +78,6 @@ impl ProviderAdapter {
     }
 }
 
-#[derive(Clone)]
 pub struct ProxyState {
     route: dam_router::RoutePlan,
     resolve_inbound: bool,
@@ -119,14 +121,18 @@ impl VaultReader for FailingVault {
 }
 
 pub async fn run(config: dam_config::DamConfig) -> Result<(), ProxyError> {
-    let addr = config
-        .proxy
-        .listen
-        .parse()
-        .map_err(|source| ProxyError::InvalidListen {
-            addr: config.proxy.listen.clone(),
-            source,
-        })?;
+    let addr: SocketAddr =
+        config
+            .proxy
+            .listen
+            .parse()
+            .map_err(|source| ProxyError::InvalidListen {
+                addr: config.proxy.listen.clone(),
+                source,
+            })?;
+    if !addr.ip().is_loopback() {
+        return Err(ProxyError::NonLoopbackListen(addr));
+    }
     let app = build_app(config)?;
     let listener = TcpListener::bind(addr)
         .await
@@ -298,15 +304,11 @@ async fn proxy(
         Ok(text) => text,
         Err(_) => {
             return handle_protection_failure(
-                state,
-                method,
-                uri,
-                headers,
-                body,
+                state.clone(),
+                route,
                 operation_id,
                 "request body is not utf-8",
-            )
-            .await;
+            );
         }
     };
 
@@ -322,15 +324,11 @@ async fn proxy(
         Ok(result) => result,
         Err(_) => {
             return handle_protection_failure(
-                state,
-                method,
-                uri,
-                headers,
-                body,
+                state.clone(),
+                route,
                 operation_id,
-                "consent check failed",
-            )
-            .await;
+                "request protection failed",
+            );
         }
     };
 
@@ -348,89 +346,93 @@ async fn proxy(
             dam_api::ProxyState::Blocked,
             "proxy request blocked by policy".to_string(),
             Some(operation_id),
-            state.route.target(),
+            route.target(),
         );
     }
 
-    let protected_body = protected
-        .output
-        .expect("non-blocked pipeline result should include output");
+    let Some(protected_body) = protected.output else {
+        return handle_protection_failure(
+            state.clone(),
+            route,
+            operation_id,
+            "request protection did not produce output",
+        );
+    };
     forward_or_provider_down(
-        state,
-        method,
-        uri,
-        headers,
-        Bytes::from(protected_body),
-        operation_id,
-        "protected",
+        state.clone(),
+        route,
+        ForwardAttempt {
+            method,
+            uri,
+            headers,
+            body: Bytes::from(protected_body),
+            operation_id,
+            action: "protected",
+        },
     )
     .await
 }
 
-async fn handle_protection_failure(
+fn handle_protection_failure(
     state: Arc<ProxyState>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
+    route: dam_router::RouteDecision<'_>,
     operation_id: String,
     message: &'static str,
 ) -> Response {
-    match state.failure_mode() {
-        dam_config::ProxyFailureMode::BypassOnError => {
-            record_proxy_event(
-                &state,
-                &operation_id,
-                LogLevel::Warn,
-                LogEventType::ProxyBypass,
-                "bypass_on_error",
-                message,
-            );
-            forward_or_provider_down(state, method, uri, headers, body, operation_id, "bypassing")
-                .await
-        }
-        dam_config::ProxyFailureMode::RedactOnly | dam_config::ProxyFailureMode::BlockOnError => {
-            record_proxy_event(
-                &state,
-                &operation_id,
-                LogLevel::Error,
-                LogEventType::ProxyFailure,
-                "blocked",
-                message,
-            );
-            status_response(
-                StatusCode::BAD_GATEWAY,
-                dam_api::ProxyState::Blocked,
-                message.to_string(),
-                Some(operation_id),
-                state.route.target(),
-            )
-        }
-    }
+    record_proxy_event(
+        &state,
+        &operation_id,
+        LogLevel::Error,
+        LogEventType::ProxyFailure,
+        "blocked",
+        message,
+    );
+    status_response(
+        StatusCode::BAD_GATEWAY,
+        dam_api::ProxyState::Blocked,
+        message.to_string(),
+        Some(operation_id),
+        route.target(),
+    )
 }
 
-async fn forward_or_provider_down(
-    state: Arc<ProxyState>,
+struct ForwardAttempt {
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
     operation_id: String,
     action: &'static str,
+}
+
+async fn forward_or_provider_down(
+    state: Arc<ProxyState>,
+    route: dam_router::RouteDecision<'_>,
+    attempt: ForwardAttempt,
 ) -> Response {
-    match forward_request(&state, method, uri, headers, body, &operation_id).await {
+    match forward_request(
+        &state,
+        route,
+        attempt.method,
+        attempt.uri,
+        attempt.headers,
+        attempt.body,
+        &attempt.operation_id,
+    )
+    .await
+    {
         Ok(response) => {
-            let event_type = if action == "bypassing" {
+            let event_type = if attempt.action == "bypassing" {
                 LogEventType::ProxyBypass
             } else {
                 LogEventType::ProxyForward
             };
             record_proxy_event(
                 &state,
-                &operation_id,
+                &attempt.operation_id,
                 LogLevel::Info,
                 event_type,
-                action,
+                attempt.action,
                 "proxy request forwarded",
             );
             response
@@ -438,7 +440,7 @@ async fn forward_or_provider_down(
         Err(error) => {
             record_proxy_event(
                 &state,
-                &operation_id,
+                &attempt.operation_id,
                 LogLevel::Error,
                 LogEventType::ProxyFailure,
                 "provider_down",
@@ -448,8 +450,8 @@ async fn forward_or_provider_down(
                 StatusCode::BAD_GATEWAY,
                 dam_api::ProxyState::ProviderDown,
                 error,
-                Some(operation_id),
-                state.route.target(),
+                Some(attempt.operation_id),
+                route.target(),
             )
         }
     }
@@ -457,13 +459,13 @@ async fn forward_or_provider_down(
 
 async fn forward_request(
     state: &ProxyState,
+    route: dam_router::RouteDecision<'_>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
     operation_id: &str,
 ) -> Result<Response, String> {
-    let route = state.route.decide(&headers);
     let target_api_key = route.target_api_key();
     match &state.provider {
         ProviderAdapter::OpenAi(provider) => {
@@ -600,12 +602,6 @@ fn proxy_diagnostics(state: dam_api::ProxyState, message: &str) -> Vec<dam_api::
             "dam_down",
             message,
         )],
-    }
-}
-
-impl ProxyState {
-    fn failure_mode(&self) -> dam_config::ProxyFailureMode {
-        self.route.failure_mode()
     }
 }
 
@@ -1197,7 +1193,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bypasses_invalid_utf8_when_configured() {
+    async fn blocks_invalid_utf8_even_when_bypass_is_configured() {
         let upstream = spawn_echo_upstream().await;
         let mut config = proxy_config(upstream);
         config.proxy.default_failure_mode = dam_config::ProxyFailureMode::BypassOnError;
@@ -1210,8 +1206,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.bytes().await.unwrap().as_ref(), &[0xff, b'a']);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let report = proxy_report(response).await;
+        assert_eq!(report.state, dam_api::ProxyState::Blocked);
+        assert_eq!(report.diagnostics[0].code, "blocked");
+        assert!(report.message.contains("not utf-8"));
     }
 
     #[tokio::test]
@@ -1233,6 +1232,34 @@ mod tests {
         assert_eq!(report.state, dam_api::ProxyState::Blocked);
         assert_eq!(report.diagnostics[0].code, "blocked");
         assert!(report.message.contains("not utf-8"));
+    }
+
+    #[tokio::test]
+    async fn blocks_consent_errors_even_when_bypass_is_configured() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_capture_echo_upstream(upstream_seen.clone()).await;
+        let mut config = proxy_config(upstream);
+        config.proxy.default_failure_mode = dam_config::ProxyFailureMode::BypassOnError;
+        let consent_path = config.consent.sqlite_path.clone();
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+        {
+            let conn = rusqlite::Connection::open(consent_path).unwrap();
+            conn.execute_batch("DROP TABLE consents;").unwrap();
+        }
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body(r#"{"input":"email alice@example.com"}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let report = proxy_report(response).await;
+        assert_eq!(report.state, dam_api::ProxyState::Blocked);
+        assert_eq!(report.diagnostics[0].code, "blocked");
+        assert!(report.message.contains("request protection failed"));
+        assert!(upstream_seen.lock().unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1312,6 +1339,7 @@ mod tests {
         let report = proxy_report(response).await;
         assert_eq!(report.state, dam_api::ProxyState::ProviderDown);
         assert_eq!(report.diagnostics[0].code, "provider_down");
+        assert!(!report.message.contains("127.0.0.1:1"));
     }
 
     #[test]

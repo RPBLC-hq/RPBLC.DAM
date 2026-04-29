@@ -795,14 +795,23 @@ fn parse_integrations_show(args: &[String]) -> Result<Cli, String> {
 
 fn parse_integrations_apply(args: &[String]) -> Result<Cli, String> {
     let mut profile_id = None;
-    let mut dry_run = false;
+    let mut dry_run = true;
+    let mut dry_run_explicit = false;
+    let mut write = false;
     let mut json = false;
     let mut proxy_url = None;
     let mut target_path = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--dry-run" => dry_run = true,
+            "--dry-run" => {
+                dry_run = true;
+                dry_run_explicit = true;
+            }
+            "--write" => {
+                write = true;
+                dry_run = false;
+            }
             "--json" => json = true,
             "--proxy-url" => {
                 i += 1;
@@ -822,6 +831,9 @@ fn parse_integrations_apply(args: &[String]) -> Result<Cli, String> {
         i += 1;
     }
 
+    if dry_run_explicit && write {
+        return Err("integrations apply cannot combine --dry-run and --write".to_string());
+    }
     let profile_id =
         profile_id.ok_or_else(|| "integrations apply requires a profile id".to_string())?;
     Ok(Cli {
@@ -1026,9 +1038,13 @@ fn proxy_config(args: &LaunchArgs) -> Result<dam_config::DamConfig, String> {
 }
 
 fn parse_listen_addr(listen: &str) -> Result<SocketAddr, String> {
-    listen
+    let addr = listen
         .parse::<SocketAddr>()
-        .map_err(|error| format!("invalid --listen address {listen}: {error}"))
+        .map_err(|error| format!("invalid --listen address {listen}: {error}"))?;
+    if !addr.ip().is_loopback() {
+        return Err(format!("--listen address must be loopback: {listen}"));
+    }
+    Ok(addr)
 }
 
 fn local_base_url(addr: SocketAddr) -> String {
@@ -1698,7 +1714,7 @@ fn usage_integrations_show() -> &'static str {
 }
 
 fn usage_integrations_apply() -> &'static str {
-    "Usage: dam integrations apply <profile> [--dry-run] [--proxy-url http://127.0.0.1:7828] [--target-path PATH] [--json]\n\nApplies a harness integration profile. DAM creates a rollback record before changing files. Use --dry-run to preview changes."
+    "Usage: dam integrations apply <profile> [--write|--dry-run] [--proxy-url http://127.0.0.1:7828] [--target-path PATH] [--json]\n\nPreviews a harness integration profile by default. Use --write to change files; DAM creates a rollback record before changing files."
 }
 
 fn usage_integrations_rollback() -> &'static str {
@@ -1996,6 +2012,60 @@ mod tests {
                 target_path: Some(PathBuf::from("/tmp/codex.toml")),
             })
         );
+    }
+
+    #[test]
+    fn integrations_apply_defaults_to_dry_run_and_requires_write_for_mutation() {
+        let preview = parse_cli([
+            "integrations".to_string(),
+            "apply".to_string(),
+            "codex-api".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            preview.command,
+            CommandKind::Integrations(IntegrationArgs::Apply {
+                profile_id: "codex-api".to_string(),
+                dry_run: true,
+                json: false,
+                proxy_url: None,
+                target_path: None,
+            })
+        );
+
+        let write = parse_cli([
+            "integrations".to_string(),
+            "apply".to_string(),
+            "codex-api".to_string(),
+            "--write".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            write.command,
+            CommandKind::Integrations(IntegrationArgs::Apply {
+                profile_id: "codex-api".to_string(),
+                dry_run: false,
+                json: false,
+                proxy_url: None,
+                target_path: None,
+            })
+        );
+    }
+
+    #[test]
+    fn integrations_apply_rejects_dry_run_with_write() {
+        let error = parse_cli([
+            "integrations".to_string(),
+            "apply".to_string(),
+            "codex-api".to_string(),
+            "--dry-run".to_string(),
+            "--write".to_string(),
+        ])
+        .unwrap_err();
+
+        assert!(error.contains("cannot combine"));
     }
 
     #[test]

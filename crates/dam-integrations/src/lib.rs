@@ -1,7 +1,8 @@
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -232,7 +233,7 @@ pub fn set_active_profile(
     })?;
     let state = ActiveProfileState {
         profile_id: profile_id.to_string(),
-        selected_at_unix: unix_timestamp(),
+        selected_at_unix: unix_timestamp()?,
     };
     write_json_file(&active_profile_path(integration_state_dir), &state)?;
     Ok(state)
@@ -314,7 +315,7 @@ pub fn run_apply(
         action: prepared.action,
         description: prepared.description.clone(),
     }];
-    if dry_run || prepared.action == FileAction::Unchanged {
+    if dry_run {
         let plan = IntegrationApplyPlan {
             profile_id: prepared.profile_id.clone(),
             profile_name: prepared.profile_name,
@@ -333,23 +334,60 @@ pub fn run_apply(
         });
     }
 
-    let applied_at_unix = unix_timestamp();
     let profile_dir = profile_state_dir(state_dir, &prepared.profile_id);
-    let backup_dir = profile_dir
-        .join("backups")
-        .join(applied_at_unix.to_string());
-    fs::create_dir_all(&backup_dir).map_err(|error| {
+    let record_path = profile_dir.join("latest.json");
+    let (rollback_available, record_error) =
+        rollback_record_state(&prepared.profile_id, &record_path);
+    if let Some(error) = record_error {
+        return Err(format!(
+            "refusing to apply {} because its rollback record needs attention: {error}",
+            prepared.profile_id
+        ));
+    }
+    if rollback_available {
+        if prepared.action == FileAction::Unchanged {
+            return Ok(IntegrationApplyResult {
+                profile_id: prepared.profile_id,
+                dry_run: false,
+                proxy_url: prepared.proxy_url,
+                changes,
+                record_path: Some(record_path),
+                message: "integration profile already applied".to_string(),
+            });
+        }
+        return Err(format!(
+            "refusing to apply {} because DAM already has a rollback record and the target changed; run `dam integrations rollback {}` before applying again",
+            prepared.profile_id, prepared.profile_id
+        ));
+    }
+    if prepared.action == FileAction::Unchanged {
+        return Ok(IntegrationApplyResult {
+            profile_id: prepared.profile_id,
+            dry_run: false,
+            proxy_url: prepared.proxy_url,
+            changes,
+            record_path: None,
+            message:
+                "integration profile content is already present; no rollback record was written"
+                    .to_string(),
+        });
+    }
+
+    fs::create_dir_all(&profile_dir).map_err(|error| {
         format!(
-            "failed to create backup directory {}: {error}",
-            backup_dir.display()
+            "failed to create integration state directory {}: {error}",
+            profile_dir.display()
         )
     })?;
+    let applied_at_unix = unix_timestamp()?;
+    let backup_dir = create_backup_dir(&profile_dir, applied_at_unix)?;
 
     let backup_path = if prepared.existed {
         let backup_path = backup_dir.join("target.backup");
-        fs::write(&backup_path, prepared.current_content.unwrap_or_default()).map_err(|error| {
-            format!("failed to write backup {}: {error}", backup_path.display())
-        })?;
+        atomic_write(
+            &backup_path,
+            prepared.current_content.unwrap_or_default().as_bytes(),
+        )?;
         Some(backup_path)
     } else {
         None
@@ -365,20 +403,6 @@ pub fn run_apply(
             )
         })?;
     }
-    fs::write(&prepared.target_path, &prepared.desired_content).map_err(|error| {
-        format!(
-            "failed to write integration target {}: {error}",
-            prepared.target_path.display()
-        )
-    })?;
-
-    fs::create_dir_all(&profile_dir).map_err(|error| {
-        format!(
-            "failed to create integration state directory {}: {error}",
-            profile_dir.display()
-        )
-    })?;
-    let record_path = profile_dir.join("latest.json");
     let record = IntegrationApplyRecord {
         profile_id: prepared.profile_id.clone(),
         applied_at_unix,
@@ -389,6 +413,7 @@ pub fn run_apply(
         }],
     };
     write_json_file(&record_path, &record)?;
+    atomic_write(&prepared.target_path, prepared.desired_content.as_bytes())?;
 
     Ok(IntegrationApplyResult {
         profile_id: prepared.profile_id,
@@ -495,13 +520,7 @@ pub fn rollback_profile(
                     )
                 })?;
             }
-            fs::copy(backup_path, &file.path).map_err(|error| {
-                format!(
-                    "failed to restore {} from {}: {error}",
-                    file.path.display(),
-                    backup_path.display()
-                )
-            })?;
+            atomic_copy(backup_path, &file.path)?;
             changes.push(IntegrationFileChange {
                 path: file.path.clone(),
                 action: FileAction::Restore,
@@ -867,8 +886,69 @@ fn read_optional_file(path: &Path) -> Result<(bool, Option<String>), String> {
 fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let raw = serde_json::to_string_pretty(value)
         .map_err(|error| format!("failed to serialize {}: {error}", path.display()))?;
-    fs::write(path, format!("{raw}\n"))
-        .map_err(|error| format!("failed to write {}: {error}", path.display()))
+    atomic_write(path, format!("{raw}\n").as_bytes())
+}
+
+fn create_backup_dir(profile_dir: &Path, applied_at_unix: u64) -> Result<PathBuf, String> {
+    let backups_dir = profile_dir.join("backups");
+    fs::create_dir_all(&backups_dir).map_err(|error| {
+        format!(
+            "failed to create backup directory {}: {error}",
+            backups_dir.display()
+        )
+    })?;
+    tempfile::Builder::new()
+        .prefix(&format!("{applied_at_unix}-"))
+        .tempdir_in(&backups_dir)
+        .map(|dir| dir.keep())
+        .map_err(|error| {
+            format!(
+                "failed to create backup directory in {}: {error}",
+                backups_dir.display()
+            )
+        })
+}
+
+fn atomic_copy(source: &Path, target: &Path) -> Result<(), String> {
+    let content = fs::read(source)
+        .map_err(|error| format!("failed to read backup {}: {error}", source.display()))?;
+    atomic_write(target, &content)
+}
+
+fn atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    let temp_dir = parent.unwrap_or_else(|| Path::new("."));
+    if let Some(parent) = parent {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create directory {}: {error}", parent.display()))?;
+    }
+    let mut temp = tempfile::NamedTempFile::new_in(temp_dir).map_err(|error| {
+        format!(
+            "failed to create temporary file for {}: {error}",
+            path.display()
+        )
+    })?;
+    temp.write_all(content).map_err(|error| {
+        format!(
+            "failed to write temporary file for {}: {error}",
+            path.display()
+        )
+    })?;
+    temp.as_file_mut().sync_all().map_err(|error| {
+        format!(
+            "failed to sync temporary file for {}: {error}",
+            path.display()
+        )
+    })?;
+    temp.persist(path).map(|_| ()).map_err(|error| {
+        format!(
+            "failed to replace {} atomically: {}",
+            path.display(),
+            error.error
+        )
+    })
 }
 
 fn rollback_record_state(profile_id: &str, record_path: &Path) -> (bool, Option<String>) {
@@ -915,11 +995,11 @@ fn render_apply_plan_message(plan: &IntegrationApplyPlan) -> String {
     }
 }
 
-fn unix_timestamp() -> u64 {
+fn unix_timestamp() -> Result<u64, String> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_secs()
+        .map(|duration| duration.as_secs())
+        .map_err(|_| "system clock is before unix epoch".to_string())
 }
 
 fn shell_quote(value: &str) -> String {
@@ -1202,6 +1282,46 @@ mod tests {
         assert_eq!(modified.status, IntegrationApplyStatus::Modified);
         assert_eq!(modified.planned_action, FileAction::Update);
         assert!(modified.rollback_available);
+    }
+
+    #[test]
+    fn run_apply_refuses_modified_target_with_existing_rollback_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let env_path = dir.path().join("anthropic.env");
+
+        let prepared =
+            prepare_apply("anthropic", "http://127.0.0.1:9000", env_path.clone()).unwrap();
+        run_apply(prepared, false, &state_dir).unwrap();
+        fs::write(
+            &env_path,
+            "export ANTHROPIC_BASE_URL=http://example.invalid\n",
+        )
+        .unwrap();
+
+        let prepared = prepare_apply("anthropic", "http://127.0.0.1:9000", env_path).unwrap();
+        let error = run_apply(prepared, false, &state_dir).unwrap_err();
+
+        assert!(error.contains("already has a rollback record"));
+    }
+
+    #[test]
+    fn run_apply_does_not_rebackup_already_applied_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let env_path = dir.path().join("anthropic.env");
+
+        let prepared =
+            prepare_apply("anthropic", "http://127.0.0.1:9000", env_path.clone()).unwrap();
+        run_apply(prepared, false, &state_dir).unwrap();
+        let backups_dir = profile_state_dir(&state_dir, "anthropic").join("backups");
+        let backup_count = fs::read_dir(&backups_dir).unwrap().count();
+
+        let prepared = prepare_apply("anthropic", "http://127.0.0.1:9000", env_path).unwrap();
+        let result = run_apply(prepared, false, &state_dir).unwrap();
+
+        assert_eq!(result.changes[0].action, FileAction::Unchanged);
+        assert_eq!(fs::read_dir(backups_dir).unwrap().count(), backup_count);
     }
 
     #[test]

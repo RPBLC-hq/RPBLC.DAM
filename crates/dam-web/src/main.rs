@@ -467,9 +467,10 @@ async fn diagnostics(State(state): State<AppState>) -> Response {
 }
 
 async fn doctor(State(state): State<AppState>) -> Response {
-    let report =
+    let mut report =
         dam_diagnostics::doctor_report(&state.config, &dam_diagnostics::DoctorOptions::default())
             .await;
+    redact_local_paths(&mut report, &state.config);
     Html(render_doctor(&report)).into_response()
 }
 
@@ -563,9 +564,13 @@ fn open_consent_store(
 }
 
 fn parse_addr(value: &str) -> Result<SocketAddr, String> {
-    value
+    let addr: SocketAddr = value
         .parse()
-        .map_err(|_| format!("invalid web address: {value}"))
+        .map_err(|_| format!("invalid web address: {value}"))?;
+    if !addr.ip().is_loopback() {
+        return Err(format!("web address must be loopback: {value}"));
+    }
+    Ok(addr)
 }
 
 fn usage() -> &'static str {
@@ -2524,7 +2529,7 @@ fn render_shell_with_mode(
       </a>
       <div class="brand-actions">
         {tray_quit}
-        <a class="brand-out" href="{brand_url}" target="_blank" rel="noopener noreferrer">RPBLC.com</a>
+        <a class="brand-out" href="{brand_url}" target="_blank" rel="noopener noreferrer"{brand_tray_attrs}>RPBLC.com</a>
       </div>
     </div>
     <nav>
@@ -2801,6 +2806,29 @@ fn build_config_report(config: &dam_config::DamConfig) -> dam_api::HealthReport 
     }
 }
 
+fn redact_local_paths(report: &mut dam_api::HealthReport, config: &dam_config::DamConfig) {
+    let paths = [
+        config.vault.sqlite_path.display().to_string(),
+        config.log.sqlite_path.display().to_string(),
+        config.consent.sqlite_path.display().to_string(),
+    ];
+    for component in &mut report.components {
+        component.message = redact_strings(&component.message, &paths);
+    }
+    for diagnostic in &mut report.diagnostics {
+        diagnostic.message = redact_strings(&diagnostic.message, &paths);
+    }
+}
+
+fn redact_strings(value: &str, needles: &[String]) -> String {
+    needles
+        .iter()
+        .filter(|needle| !needle.is_empty())
+        .fold(value.to_string(), |redacted, needle| {
+            redacted.replace(needle, "[local sqlite path]")
+        })
+}
+
 fn vault_component(
     config: &dam_config::DamConfig,
     diagnostics: &mut Vec<dam_api::Diagnostic>,
@@ -2809,7 +2837,7 @@ fn vault_component(
         dam_config::VaultBackend::Sqlite => dam_api::ComponentHealth {
             component: "vault".to_string(),
             state: dam_api::HealthState::Healthy,
-            message: format!("sqlite vault path {}", config.vault.sqlite_path.display()),
+            message: "sqlite vault configured".to_string(),
         },
         dam_config::VaultBackend::Remote => {
             diagnostics.push(dam_api::Diagnostic::new(
@@ -2842,7 +2870,7 @@ fn log_component(
         dam_config::LogBackend::Sqlite => dam_api::ComponentHealth {
             component: "log".to_string(),
             state: dam_api::HealthState::Healthy,
-            message: format!("sqlite log path {}", config.log.sqlite_path.display()),
+            message: "sqlite log configured".to_string(),
         },
         dam_config::LogBackend::Remote => {
             diagnostics.push(dam_api::Diagnostic::new(
@@ -3490,7 +3518,34 @@ mod tests {
     }
 
     #[test]
-    fn render_connect_dashboard_shows_vpn_style_controls() {
+    fn redacts_local_sqlite_paths_from_web_health_reports() {
+        let mut config = dam_config::DamConfig::default();
+        config.vault.sqlite_path = PathBuf::from("/Users/example/.dam/vault.db");
+        config.log.sqlite_path = PathBuf::from("/Users/example/.dam/log.db");
+        config.consent.sqlite_path = PathBuf::from("/Users/example/.dam/consent.db");
+        let mut report = dam_api::HealthReport {
+            state: dam_api::HealthState::Healthy,
+            components: vec![dam_api::ComponentHealth {
+                component: "vault_runtime".to_string(),
+                state: dam_api::HealthState::Healthy,
+                message: "sqlite vault opens at /Users/example/.dam/vault.db".to_string(),
+            }],
+            diagnostics: vec![dam_api::Diagnostic::new(
+                dam_api::DiagnosticSeverity::Error,
+                "log_sqlite_unavailable",
+                "sqlite log unavailable at /Users/example/.dam/log.db",
+            )],
+        };
+
+        redact_local_paths(&mut report, &config);
+
+        let rendered = format!("{report:?}");
+        assert!(!rendered.contains("/Users/example/.dam"));
+        assert!(rendered.contains("[local sqlite path]"));
+    }
+
+    #[test]
+    fn render_connect_dashboard_shows_local_protection_controls() {
         let view = test_connect_dashboard(
             DashboardState::NeedsSetup,
             Some("claude-code"),

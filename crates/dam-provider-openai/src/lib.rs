@@ -4,7 +4,7 @@ use axum::{
 };
 use futures_util::TryStreamExt;
 use reqwest::Url;
-use std::{collections::HashSet, time::Duration};
+use std::time::Duration;
 
 const UPSTREAM_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -80,7 +80,7 @@ impl OpenAiProvider {
         let response = upstream_request
             .send()
             .await
-            .map_err(|error| OpenAiProviderError::Request(error.to_string()))?;
+            .map_err(|error| OpenAiProviderError::Request(error.without_url().to_string()))?;
         let status = response.status();
         let response_headers = response.headers().clone();
         let response_connection_headers = connection_header_tokens(&response_headers);
@@ -97,7 +97,7 @@ impl OpenAiProvider {
 
             let stream = response
                 .bytes_stream()
-                .map_err(|error| std::io::Error::other(error.to_string()));
+                .map_err(|error| std::io::Error::other(error.without_url().to_string()));
 
             return builder
                 .body(Body::from_stream(stream))
@@ -107,7 +107,7 @@ impl OpenAiProvider {
         let response_body = response
             .bytes()
             .await
-            .map_err(|error| OpenAiProviderError::Response(error.to_string()))?;
+            .map_err(|error| OpenAiProviderError::Response(error.without_url().to_string()))?;
         let response_body = transform_non_streaming_body(response_body);
 
         let mut builder = Response::builder().status(status);
@@ -146,10 +146,12 @@ fn upstream_url(base: &str, uri: &Uri) -> Result<String, OpenAiProviderError> {
 fn should_skip_request_header(
     name: &str,
     target_sets_authorization: bool,
-    connection_headers: &HashSet<String>,
+    connection_headers: &[String],
 ) -> bool {
     let normalized = name.to_ascii_lowercase();
-    connection_headers.contains(&normalized)
+    connection_headers
+        .iter()
+        .any(|header| header == &normalized)
         || matches!(
             normalized.as_str(),
             "host"
@@ -166,9 +168,11 @@ fn should_skip_request_header(
         || (target_sets_authorization && normalized == "authorization")
 }
 
-fn should_skip_response_header(name: &str, connection_headers: &HashSet<String>) -> bool {
+fn should_skip_response_header(name: &str, connection_headers: &[String]) -> bool {
     let normalized = name.to_ascii_lowercase();
-    connection_headers.contains(&normalized)
+    connection_headers
+        .iter()
+        .any(|header| header == &normalized)
         || matches!(
             normalized.as_str(),
             "content-length"
@@ -182,7 +186,7 @@ fn should_skip_response_header(name: &str, connection_headers: &HashSet<String>)
         )
 }
 
-fn connection_header_tokens(headers: &HeaderMap) -> HashSet<String> {
+fn connection_header_tokens(headers: &HeaderMap) -> Vec<String> {
     headers
         .get_all(header::CONNECTION)
         .iter()

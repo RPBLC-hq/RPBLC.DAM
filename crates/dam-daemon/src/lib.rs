@@ -1,9 +1,10 @@
 use std::{
     fs,
+    io::Write,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -138,6 +139,9 @@ pub enum DaemonError {
         listen: String,
         source: std::net::AddrParseError,
     },
+
+    #[error("proxy listen address must be loopback: {0}")]
+    NonLoopbackListen(SocketAddr),
 
     #[error("failed to bind proxy listener {addr}: {source}")]
     Bind {
@@ -301,6 +305,9 @@ pub async fn serve(
             listen: config.proxy.listen.clone(),
             source,
         })?;
+    if !addr.ip().is_loopback() {
+        return Err(DaemonError::NonLoopbackListen(addr));
+    }
     let app = dam_proxy::build_app(config.clone()).map_err(DaemonError::BuildProxy)?;
     let listener = TcpListener::bind(addr)
         .await
@@ -308,7 +315,7 @@ pub async fn serve(
     let local_addr = listener
         .local_addr()
         .map_err(|source| DaemonError::Bind { addr, source })?;
-    let state = state_from_config(&config, config_path, local_addr);
+    let state = state_from_config(&config, config_path, local_addr)?;
 
     write_state(&state)?;
 
@@ -326,7 +333,7 @@ pub fn daemon_status() -> Result<DaemonStatus, DaemonError> {
         return Ok(DaemonStatus::Disconnected);
     };
 
-    if process_is_running(state.pid) {
+    if process_matches_state(&state) {
         Ok(DaemonStatus::Connected(state))
     } else {
         Ok(DaemonStatus::Stale(state))
@@ -393,7 +400,7 @@ pub fn write_state(state: &DaemonState) -> Result<(), DaemonError> {
 
 pub fn write_state_to(path: &Path, state: &DaemonState) -> Result<(), DaemonError> {
     let raw = serde_json::to_string_pretty(state).map_err(DaemonError::SerializeState)?;
-    fs::write(path, format!("{raw}\n")).map_err(|source| DaemonError::WriteState {
+    atomic_write(path, format!("{raw}\n").as_bytes()).map_err(|source| DaemonError::WriteState {
         path: path.to_path_buf(),
         source,
     })
@@ -459,6 +466,51 @@ pub fn process_is_running(pid: u32) -> bool {
     }
 }
 
+fn process_matches_state(state: &DaemonState) -> bool {
+    if !process_is_running(state.pid) {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        let Ok(elapsed) = process_elapsed_seconds(state.pid) else {
+            return true;
+        };
+        let Ok(now) = unix_timestamp() else {
+            return true;
+        };
+        let recorded_age = now.saturating_sub(state.started_at_unix);
+        elapsed.saturating_add(5) >= recorded_age
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+#[cfg(unix)]
+fn process_elapsed_seconds(pid: u32) -> Result<u64, DaemonError> {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "etimes="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|source| DaemonError::Signal { pid, source })?;
+    if !output.status.success() {
+        return Err(DaemonError::Message(format!(
+            "failed to inspect daemon pid {pid}: command exited with {}",
+            output.status
+        )));
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u64>()
+        .map_err(|error| {
+            DaemonError::Message(format!("failed to parse daemon pid {pid} age: {error}"))
+        })
+}
+
 pub fn terminate_process(pid: u32) -> Result<(), DaemonError> {
     #[cfg(unix)]
     let status = Command::new("kill")
@@ -479,12 +531,52 @@ pub fn terminate_process(pid: u32) -> Result<(), DaemonError> {
         .status()
         .map_err(|source| DaemonError::Signal { pid, source })?;
 
-    if status.success() {
-        Ok(())
-    } else {
-        Err(DaemonError::Message(format!(
+    if !status.success() {
+        return Err(DaemonError::Message(format!(
             "failed to signal daemon pid {pid}: command exited with {status}"
-        )))
+        )));
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(750));
+    if !process_is_running(pid) {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        let kill_status = Command::new("kill")
+            .arg("-KILL")
+            .arg(pid.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|source| DaemonError::Signal { pid, source })?;
+        if kill_status.success() {
+            Ok(())
+        } else {
+            Err(DaemonError::Message(format!(
+                "failed to kill daemon pid {pid}: command exited with {kill_status}"
+            )))
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let kill_status = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|source| DaemonError::Signal { pid, source })?;
+        if kill_status.success() {
+            Ok(())
+        } else {
+            Err(DaemonError::Message(format!(
+                "failed to force-stop daemon pid {pid}: command exited with {kill_status}"
+            )))
+        }
     }
 }
 
@@ -509,9 +601,9 @@ fn state_from_config(
     config: &dam_config::DamConfig,
     config_path: Option<PathBuf>,
     local_addr: SocketAddr,
-) -> DaemonState {
+) -> Result<DaemonState, DaemonError> {
     let target = config.proxy.targets.first();
-    DaemonState {
+    Ok(DaemonState {
         version: STATE_VERSION,
         pid: std::process::id(),
         listen: local_addr.to_string(),
@@ -532,11 +624,29 @@ fn state_from_config(
         target_name: target.map(|target| target.name.clone()),
         target_provider: target.map(|target| target.provider.clone()),
         upstream: target.map(|target| target.upstream.clone()),
-        started_at_unix: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_secs(),
+        started_at_unix: unix_timestamp()?,
+    })
+}
+
+fn unix_timestamp() -> Result<u64, DaemonError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| DaemonError::Message("system clock is before unix epoch".to_string()))
+}
+
+fn atomic_write(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    let temp_dir = parent.unwrap_or_else(|| Path::new("."));
+    if let Some(parent) = parent {
+        fs::create_dir_all(parent)?;
     }
+    let mut temp = tempfile::NamedTempFile::new_in(temp_dir)?;
+    temp.write_all(content)?;
+    temp.as_file_mut().sync_all()?;
+    temp.persist(path).map(|_| ()).map_err(|error| error.error)
 }
 
 async fn shutdown_signal() {

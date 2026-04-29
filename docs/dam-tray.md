@@ -6,7 +6,7 @@ The first slice is macOS-focused. It starts a local `dam-web` child process, pre
 
 The macOS menu-bar item is text-only and renders `[R:]` as its native title. It does not attach a native tray menu; clicking the item opens the hosted Connect surface. `tray-icon` does not expose custom font styling for that title, so the menu-bar item uses the platform's default menu-bar font and color rather than a custom image.
 
-Inside the tray-hosted page, clicking the `[R:]` brand mark opens `https://rpblc.com` in the user's default browser through the native shell instead of navigating inside the WebView.
+Inside the tray-hosted page, clicking the `[R:]` brand mark opens `https://rpblc.com` in the user's default browser through the native shell instead of navigating inside the WebView. The WebView navigation and IPC handlers are pinned to the hosted loopback origin, and new-window requests are denied inside the embedded view.
 
 It does not implement protection logic. Connect, disconnect, profile selection, setup apply/rollback, vault/log viewing, consent, and diagnostics continue to live in `dam`, `dam-daemon`, `dam-integrations`, and `dam-web`.
 

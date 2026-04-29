@@ -95,13 +95,16 @@ cargo run -p damctl -- status
 
 ## Failure Behavior
 
-- `bypass_on_error`: default local behavior for proxy/protection failures such as non-UTF-8 request bodies. The original request is forwarded and a `proxy_bypass` event is logged.
+- Protection precondition failures fail closed before provider egress. This includes unsupported content encodings, non-UTF-8 request bodies in the current text pipeline, consent backend errors, and invariant failures where the pipeline does not produce protected output.
+- `bypass_on_error`: retained as a visible failure-mode state for reduced-protection configurations, but it is not allowed to forward request bytes that DAM failed to inspect/protect.
 - `redact_only`: supported for vault failures. If a tokenized vault write fails, the value becomes `[kind]`.
 - `block_on_error`: strict proxy/protection failure behavior. The proxy returns a clear `blocked` response instead of forwarding unprotected traffic.
 - `config_required`: returned when a target requires an API key env var, the env var is missing, and the incoming request has no provider-compatible auth header.
 - `provider_down`: returned when DAM is reachable but the upstream provider cannot be reached.
 
 Bypass is not silent when logging is enabled. The persisted event type is `proxy_bypass`.
+
+Provider connection errors are reported as `provider_down` without echoing upstream URLs in user-visible messages.
 
 DAM-owned status responses include `state`, `message`, `operation_id`, `target`, `upstream`, and non-sensitive `diagnostics` through `dam-api::ProxyReport`.
 

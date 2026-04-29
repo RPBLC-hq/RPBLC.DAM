@@ -238,7 +238,7 @@ mod macos {
         window::{Window, WindowBuilder},
     };
     use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-    use wry::WebViewBuilder;
+    use wry::{NewWindowResponse, WebViewBuilder};
 
     const POPOVER_WIDTH: f64 = 430.0;
     const POPOVER_HEIGHT: f64 = 720.0;
@@ -292,6 +292,8 @@ mod macos {
             let _ = proxy.send_event(UserEvent::TrayIcon(event));
         }));
         let ipc_proxy = event_loop.create_proxy();
+        let navigation_authority = addr.clone();
+        let ipc_authority = addr.clone();
 
         let window = WindowBuilder::new()
             .with_title("DAM")
@@ -313,14 +315,23 @@ mod macos {
 
         let _webview = WebViewBuilder::new()
             .with_url(&url)
-            .with_ipc_handler(move |request| match request.body().trim() {
-                TRAY_OPEN_RPBLC_MESSAGE => {
-                    let _ = ipc_proxy.send_event(UserEvent::OpenRpblc);
+            .with_navigation_handler(move |target| {
+                url_has_local_origin(&target, &navigation_authority)
+            })
+            .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
+            .with_ipc_handler(move |request| {
+                if !url_has_local_origin(&request.uri().to_string(), &ipc_authority) {
+                    return;
                 }
-                TRAY_QUIT_MESSAGE => {
-                    let _ = ipc_proxy.send_event(UserEvent::QuitRequested);
+                match request.body().trim() {
+                    TRAY_OPEN_RPBLC_MESSAGE => {
+                        let _ = ipc_proxy.send_event(UserEvent::OpenRpblc);
+                    }
+                    TRAY_QUIT_MESSAGE => {
+                        let _ = ipc_proxy.send_event(UserEvent::QuitRequested);
+                    }
+                    _ => {}
                 }
-                _ => {}
             })
             .build(&window)
             .map_err(|error| format!("failed to create DAM webview: {error}"))?;
@@ -491,6 +502,17 @@ mod macos {
         }
     }
 
+    fn url_has_local_origin(candidate: &str, allowed_authority: &str) -> bool {
+        let Some(rest) = candidate.strip_prefix("http://") else {
+            return false;
+        };
+        let authority = rest
+            .split(['/', '?', '#'])
+            .next()
+            .filter(|authority| !authority.is_empty());
+        authority == Some(allowed_authority)
+    }
+
     fn disconnect_dam(dam_bin: &PathBuf, state_dir: &PathBuf) -> Result<(), String> {
         let status = Command::new(dam_bin)
             .arg("disconnect")
@@ -605,6 +627,19 @@ mod macos {
 
             assert_eq!(origin.x, 1002);
             assert_eq!(origin.y, 24);
+        }
+
+        #[test]
+        fn webview_origin_check_allows_only_local_http_authority() {
+            assert!(url_has_local_origin(
+                "http://127.0.0.1:2896/connect",
+                "127.0.0.1:2896"
+            ));
+            assert!(!url_has_local_origin(
+                "http://127.0.0.1:28960/connect",
+                "127.0.0.1:2896"
+            ));
+            assert!(!url_has_local_origin("https://rpblc.com", "127.0.0.1:2896"));
         }
     }
 }

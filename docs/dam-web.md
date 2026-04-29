@@ -7,7 +7,7 @@ It is for development inspection of local SQLite vault, consent, and log databas
 ## Routes
 
 ```text
-/connect   VPN-style local protection surface for profile select, setup, connect, and disconnect
+/connect   local protection surface for profile select, setup, connect, and disconnect
 /          vault entries and row-level consent grant/revoke actions
 /consents  consent entries and revoke actions
 /logs      operational log events
@@ -52,6 +52,8 @@ Default address:
 127.0.0.1:2896
 ```
 
+`--addr` must be loopback in the current local build.
+
 ## Config Requirements
 
 `dam-web` currently requires:
@@ -64,7 +66,7 @@ Remote vault/consent/log views are not implemented yet.
 
 ## Diagnostics
 
-`/doctor` shows the shared `dam-diagnostics` readiness report used by `damctl doctor`.
+`/doctor` shows the shared `dam-diagnostics` readiness report used by `damctl doctor`, with local SQLite paths redacted for the web surface.
 
 `/diagnostics` shows:
 

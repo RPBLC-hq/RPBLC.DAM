@@ -2,6 +2,7 @@ use http::{HeaderMap, header};
 
 pub const OPENAI_COMPATIBLE_PROVIDER: &str = "openai-compatible";
 pub const ANTHROPIC_PROVIDER: &str = "anthropic";
+pub const OPENAI_AUTHORIZATION_HEADER: &str = "authorization";
 pub const ANTHROPIC_API_KEY_HEADER: &str = "x-api-key";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +29,7 @@ impl ProviderKind {
 
     pub fn caller_auth_header_present(self, headers: &HeaderMap) -> bool {
         match self {
-            Self::OpenAiCompatible => headers.contains_key(header::AUTHORIZATION),
+            Self::OpenAiCompatible => headers.contains_key(OPENAI_AUTHORIZATION_HEADER),
             Self::Anthropic => {
                 headers.contains_key(ANTHROPIC_API_KEY_HEADER)
                     || headers.contains_key(header::AUTHORIZATION)
