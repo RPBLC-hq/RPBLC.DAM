@@ -1,8 +1,8 @@
 # dam-integrations
 
-`dam-integrations` defines known local harness profiles for the background DAM endpoint.
+`dam-integrations` defines known local harness profiles for the background DAM endpoint and owns the deterministic apply/rollback engine behind those profiles.
 
-The first slice is intentionally descriptive and deterministic. It does not mutate harness config files, install system proxy settings, or write secrets. It tells `dam` and future installer/tray surfaces how a harness should point at the connected daemon.
+The first slice is intentionally local and reversible. It does not install system proxy settings or write secrets. It tells `dam` and future installer/tray surfaces how a harness should point at the connected daemon, and it prepares safe file mutations with backup records when a profile has a known write path.
 
 ## User Commands
 
@@ -17,7 +17,7 @@ dam connect --profile <profile>
 
 `dam integrations list` shows known profiles. `dam integrations show` renders the base URL settings and command snippets for one profile. `dam connect --profile` applies the daemon-side defaults for profiles that need a specific provider/upstream.
 
-`dam integrations apply` writes profile setup to a safe target with a rollback record:
+`dam integrations apply` calls the `dam-integrations` apply engine to write profile setup to a safe target with a rollback record:
 
 - `codex-api` updates the Codex TOML config with the `dam_openai` provider and selects it as `model_provider`.
 - Other current profiles write a DAM-managed environment file that can be sourced or inspected.
@@ -64,6 +64,19 @@ When `--proxy-url` is omitted, `dam` uses the connected daemon state if availabl
 | `claude-code` | Claude Code against a background DAM daemon. | Anthropic default upstream. |
 | `codex-api` | Codex API-key mode against a background DAM daemon. | OpenAI-compatible default upstream. |
 | `xai-compatible` | xAI as an OpenAI-compatible upstream. | `https://api.x.ai` through the OpenAI-compatible provider adapter. |
+
+## Apply Contract
+
+`dam-integrations` owns:
+
+- default target path selection for known profiles;
+- desired file content generation;
+- dry-run planning;
+- backup creation;
+- rollback record format;
+- rollback restore/delete behavior.
+
+The `dam` binary owns the user command surface and supplies local environment context, including `DAM_STATE_DIR`, `HOME`, `CODEX_HOME`, and the effective proxy URL.
 
 ## Privacy Rules
 

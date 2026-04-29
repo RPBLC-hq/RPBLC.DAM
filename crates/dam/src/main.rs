@@ -1,15 +1,13 @@
 use std::{
     ffi::OsString,
-    fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command as StdCommand, Stdio},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::{net::TcpListener, process::Command as TokioCommand, sync::oneshot};
-use toml_edit::{DocumentMut, Item, Table, value};
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:7828";
 const DEFAULT_VAULT_PATH: &str = "vault.db";
@@ -18,8 +16,8 @@ const CODEX_CHATGPT_UPSTREAM: &str = "https://chatgpt.com";
 const OPENAI_API_UPSTREAM: &str = "https://api.openai.com";
 const ANTHROPIC_UPSTREAM: &str = "https://api.anthropic.com";
 const CODEX_UNSUPPORTED_MESSAGE: &str = "dam codex ChatGPT-login mode is disabled because Codex v0.125 sends model turns to wss://chatgpt.com/backend-api/codex/responses, which is not controlled by chatgpt_base_url. DAM would not protect the prompt. Use dam codex --api with OPENAI_API_KEY for the current Codex protected path, or use dam claude.";
-const CODEX_API_KEY_ENV: &str = "OPENAI_API_KEY";
-const CODEX_DAM_PROVIDER_ID: &str = "dam_openai";
+const CODEX_API_KEY_ENV: &str = dam_integrations::CODEX_API_KEY_ENV;
+const CODEX_DAM_PROVIDER_ID: &str = dam_integrations::CODEX_DAM_PROVIDER_ID;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -87,78 +85,6 @@ struct StatusView {
     message: String,
     daemon: Option<dam_daemon::DaemonState>,
     proxy: Option<dam_api::ProxyReport>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct IntegrationApplyPlan {
-    profile_id: String,
-    profile_name: String,
-    dry_run: bool,
-    proxy_url: String,
-    changes: Vec<IntegrationFileChange>,
-    notes: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct IntegrationFileChange {
-    path: PathBuf,
-    action: FileAction,
-    description: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum FileAction {
-    Create,
-    Update,
-    Unchanged,
-    Delete,
-    Restore,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PreparedIntegrationApply {
-    profile_id: String,
-    profile_name: String,
-    proxy_url: String,
-    target_path: PathBuf,
-    desired_content: String,
-    existed: bool,
-    current_content: Option<String>,
-    action: FileAction,
-    description: String,
-    notes: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct IntegrationApplyResult {
-    profile_id: String,
-    dry_run: bool,
-    proxy_url: String,
-    changes: Vec<IntegrationFileChange>,
-    record_path: Option<PathBuf>,
-    message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct IntegrationRollbackResult {
-    profile_id: String,
-    changes: Vec<IntegrationFileChange>,
-    message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct IntegrationApplyRecord {
-    profile_id: String,
-    applied_at_unix: u64,
-    files: Vec<IntegrationBackupFile>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct IntegrationBackupFile {
-    path: PathBuf,
-    existed: bool,
-    backup_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,9 +333,18 @@ async fn integrations(args: IntegrationArgs) -> Result<i32, String> {
             target_path,
         } => {
             let proxy_url = integration_proxy_url(proxy_url);
-            let prepared = prepare_integration_apply(&profile_id, &proxy_url, target_path)?;
             let state_dir = integration_state_dir()?;
-            let result = run_integration_apply(prepared, dry_run, &state_dir)?;
+            let target_path = match target_path {
+                Some(path) => path,
+                None => dam_integrations::default_apply_path(
+                    &profile_id,
+                    &state_dir,
+                    std::env::var_os("CODEX_HOME").map(PathBuf::from),
+                    std::env::var_os("HOME").map(PathBuf::from),
+                )?,
+            };
+            let prepared = dam_integrations::prepare_apply(&profile_id, &proxy_url, target_path)?;
+            let result = dam_integrations::run_apply(prepared, dry_run, &state_dir)?;
             if json {
                 println!(
                     "{}",
@@ -423,7 +358,7 @@ async fn integrations(args: IntegrationArgs) -> Result<i32, String> {
         }
         IntegrationArgs::Rollback { profile_id, json } => {
             let state_dir = integration_state_dir()?;
-            let result = rollback_integration_profile(&profile_id, &state_dir)?;
+            let result = dam_integrations::rollback_profile(&profile_id, &state_dir)?;
             if json {
                 println!(
                     "{}",
@@ -1099,351 +1034,13 @@ fn render_integration_profile(
     output
 }
 
-fn prepare_integration_apply(
-    profile_id: &str,
-    proxy_url: &str,
-    target_path: Option<PathBuf>,
-) -> Result<PreparedIntegrationApply, String> {
-    let profile = dam_integrations::profile(profile_id, proxy_url).ok_or_else(|| {
-        format!(
-            "unknown integration profile: {profile_id}\nknown profiles: {}",
-            dam_integrations::profile_ids().join(", ")
-        )
-    })?;
-    let target_path = target_path
-        .map(Ok)
-        .unwrap_or_else(|| default_integration_apply_path(profile_id))?;
-    let (existed, current_content) = read_optional_file(&target_path)?;
-    let desired_content =
-        desired_integration_content(profile_id, &profile, proxy_url, current_content.as_deref())?;
-    let action = match (
-        existed,
-        current_content.as_deref() == Some(desired_content.as_str()),
-    ) {
-        (_, true) => FileAction::Unchanged,
-        (true, false) => FileAction::Update,
-        (false, false) => FileAction::Create,
-    };
-    let description = match profile_id {
-        "codex-api" => "update Codex config with DAM OpenAI provider".to_string(),
-        _ => "write DAM-managed environment file for this profile".to_string(),
-    };
-
-    Ok(PreparedIntegrationApply {
-        profile_id: profile.id,
-        profile_name: profile.name,
-        proxy_url: proxy_url.to_string(),
-        target_path,
-        desired_content,
-        existed,
-        current_content,
-        action,
-        description,
-        notes: profile.notes,
-    })
-}
-
-fn run_integration_apply(
-    prepared: PreparedIntegrationApply,
-    dry_run: bool,
-    state_dir: &Path,
-) -> Result<IntegrationApplyResult, String> {
-    let changes = vec![IntegrationFileChange {
-        path: prepared.target_path.clone(),
-        action: prepared.action,
-        description: prepared.description.clone(),
-    }];
-    if dry_run || prepared.action == FileAction::Unchanged {
-        let plan = IntegrationApplyPlan {
-            profile_id: prepared.profile_id.clone(),
-            profile_name: prepared.profile_name,
-            dry_run,
-            proxy_url: prepared.proxy_url.clone(),
-            changes: changes.clone(),
-            notes: prepared.notes,
-        };
-        return Ok(IntegrationApplyResult {
-            profile_id: prepared.profile_id,
-            dry_run,
-            proxy_url: prepared.proxy_url,
-            changes,
-            record_path: None,
-            message: render_apply_plan_message(&plan),
-        });
-    }
-
-    let applied_at_unix = unix_timestamp();
-    let profile_dir = integration_profile_state_dir(state_dir, &prepared.profile_id);
-    let backup_dir = profile_dir
-        .join("backups")
-        .join(applied_at_unix.to_string());
-    fs::create_dir_all(&backup_dir).map_err(|error| {
-        format!(
-            "failed to create backup directory {}: {error}",
-            backup_dir.display()
-        )
-    })?;
-
-    let backup_path = if prepared.existed {
-        let backup_path = backup_dir.join("target.backup");
-        fs::write(&backup_path, prepared.current_content.unwrap_or_default()).map_err(|error| {
-            format!("failed to write backup {}: {error}", backup_path.display())
-        })?;
-        Some(backup_path)
-    } else {
-        None
-    };
-
-    if let Some(parent) = prepared.target_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "failed to create target directory {}: {error}",
-                parent.display()
-            )
-        })?;
-    }
-    fs::write(&prepared.target_path, &prepared.desired_content).map_err(|error| {
-        format!(
-            "failed to write integration target {}: {error}",
-            prepared.target_path.display()
-        )
-    })?;
-
-    fs::create_dir_all(&profile_dir).map_err(|error| {
-        format!(
-            "failed to create integration state directory {}: {error}",
-            profile_dir.display()
-        )
-    })?;
-    let record_path = profile_dir.join("latest.json");
-    let record = IntegrationApplyRecord {
-        profile_id: prepared.profile_id.clone(),
-        applied_at_unix,
-        files: vec![IntegrationBackupFile {
-            path: prepared.target_path.clone(),
-            existed: prepared.existed,
-            backup_path,
-        }],
-    };
-    write_json_file(&record_path, &record)?;
-
-    Ok(IntegrationApplyResult {
-        profile_id: prepared.profile_id,
-        dry_run: false,
-        proxy_url: prepared.proxy_url,
-        changes,
-        record_path: Some(record_path),
-        message: "integration profile applied".to_string(),
-    })
-}
-
-fn rollback_integration_profile(
-    profile_id: &str,
-    state_dir: &Path,
-) -> Result<IntegrationRollbackResult, String> {
-    let record_path = integration_profile_state_dir(state_dir, profile_id).join("latest.json");
-    let raw = fs::read_to_string(&record_path).map_err(|error| {
-        format!(
-            "failed to read rollback record for {profile_id} at {}: {error}",
-            record_path.display()
-        )
-    })?;
-    let record = serde_json::from_str::<IntegrationApplyRecord>(&raw).map_err(|error| {
-        format!(
-            "failed to parse rollback record {}: {error}",
-            record_path.display()
-        )
-    })?;
-    let mut changes = Vec::new();
-    for file in &record.files {
-        if file.existed {
-            let backup_path = file.backup_path.as_ref().ok_or_else(|| {
-                format!(
-                    "rollback record for {} is missing backup path",
-                    file.path.display()
-                )
-            })?;
-            if let Some(parent) = file.path.parent()
-                && !parent.as_os_str().is_empty()
-            {
-                fs::create_dir_all(parent).map_err(|error| {
-                    format!(
-                        "failed to create restore directory {}: {error}",
-                        parent.display()
-                    )
-                })?;
-            }
-            fs::copy(backup_path, &file.path).map_err(|error| {
-                format!(
-                    "failed to restore {} from {}: {error}",
-                    file.path.display(),
-                    backup_path.display()
-                )
-            })?;
-            changes.push(IntegrationFileChange {
-                path: file.path.clone(),
-                action: FileAction::Restore,
-                description: "restore backup".to_string(),
-            });
-        } else {
-            match fs::remove_file(&file.path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(format!(
-                        "failed to remove created file {}: {error}",
-                        file.path.display()
-                    ));
-                }
-            }
-            changes.push(IntegrationFileChange {
-                path: file.path.clone(),
-                action: FileAction::Delete,
-                description: "remove file created by DAM".to_string(),
-            });
-        }
-    }
-    fs::remove_file(&record_path).map_err(|error| {
-        format!(
-            "failed to remove rollback record {}: {error}",
-            record_path.display()
-        )
-    })?;
-
-    Ok(IntegrationRollbackResult {
-        profile_id: record.profile_id,
-        changes,
-        message: "integration profile rolled back".to_string(),
-    })
-}
-
-fn default_integration_apply_path(profile_id: &str) -> Result<PathBuf, String> {
-    match profile_id {
-        "codex-api" => codex_config_path(),
-        _ if dam_integrations::profile(profile_id, dam_integrations::DEFAULT_PROXY_URL)
-            .is_some() =>
-        {
-            Ok(integration_state_dir()?
-                .join("profiles")
-                .join(format!("{profile_id}.env")))
-        }
-        _ => Err(format!(
-            "unknown integration profile: {profile_id}\nknown profiles: {}",
-            dam_integrations::profile_ids().join(", ")
-        )),
-    }
-}
-
-fn codex_config_path() -> Result<PathBuf, String> {
-    if let Some(home) = std::env::var_os("CODEX_HOME")
-        && !home.is_empty()
-    {
-        return Ok(PathBuf::from(home).join("config.toml"));
-    }
-    let home = std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .ok_or_else(|| "HOME or CODEX_HOME is required to locate Codex config".to_string())?;
-    Ok(PathBuf::from(home).join(".codex").join("config.toml"))
-}
-
 fn integration_state_dir() -> Result<PathBuf, String> {
     dam_daemon::state_paths()
         .map(|paths| paths.state_dir.join("integrations"))
         .map_err(|error| error.to_string())
 }
 
-fn integration_profile_state_dir(state_dir: &Path, profile_id: &str) -> PathBuf {
-    state_dir.join("profiles").join(profile_id)
-}
-
-fn desired_integration_content(
-    profile_id: &str,
-    profile: &dam_integrations::IntegrationProfile,
-    proxy_url: &str,
-    current_content: Option<&str>,
-) -> Result<String, String> {
-    match profile_id {
-        "codex-api" => codex_config_content(current_content.unwrap_or_default(), proxy_url),
-        _ => Ok(env_profile_content(profile)),
-    }
-}
-
-fn codex_config_content(current: &str, proxy_url: &str) -> Result<String, String> {
-    let mut document = current
-        .parse::<DocumentMut>()
-        .map_err(|error| format!("failed to parse Codex config TOML: {error}"))?;
-    let base_url = dam_integrations::openai_base_url(proxy_url);
-
-    document["model_provider"] = value(CODEX_DAM_PROVIDER_ID);
-    if !matches!(document.get("model_providers"), Some(Item::Table(_))) {
-        document["model_providers"] = Item::Table(Table::new());
-    }
-    let providers = document["model_providers"]
-        .as_table_mut()
-        .ok_or_else(|| "failed to prepare Codex model_providers table in config".to_string())?;
-    if !matches!(providers.get(CODEX_DAM_PROVIDER_ID), Some(Item::Table(_))) {
-        providers.insert(CODEX_DAM_PROVIDER_ID, Item::Table(Table::new()));
-    }
-    let provider = providers[CODEX_DAM_PROVIDER_ID]
-        .as_table_mut()
-        .ok_or_else(|| "failed to prepare Codex dam_openai provider table in config".to_string())?;
-    provider.insert("name", value("OpenAI through DAM"));
-    provider.insert("base_url", value(base_url));
-    provider.insert("env_key", value(CODEX_API_KEY_ENV));
-    provider.insert("wire_api", value("responses"));
-    provider.insert("supports_websockets", value(false));
-
-    Ok(document.to_string())
-}
-
-fn env_profile_content(profile: &dam_integrations::IntegrationProfile) -> String {
-    let mut output = String::new();
-    output.push_str(&format!("# DAM integration profile: {}\n", profile.id));
-    output.push_str("# Generated by `dam integrations apply`.\n");
-    output
-        .push_str("# Provider credentials stay with the harness; this file contains no secrets.\n");
-    for setting in &profile.settings {
-        output.push_str(&format!(
-            "export {}={}\n",
-            setting.key,
-            shell_quote(&setting.value)
-        ));
-    }
-    output
-}
-
-fn read_optional_file(path: &Path) -> Result<(bool, Option<String>), String> {
-    match fs::read_to_string(path) {
-        Ok(content) => Ok((true, Some(content))),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((false, None)),
-        Err(error) => Err(format!("failed to read {}: {error}", path.display())),
-    }
-}
-
-fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    let raw = serde_json::to_string_pretty(value)
-        .map_err(|error| format!("failed to serialize {}: {error}", path.display()))?;
-    fs::write(path, format!("{raw}\n"))
-        .map_err(|error| format!("failed to write {}: {error}", path.display()))
-}
-
-fn render_apply_plan_message(plan: &IntegrationApplyPlan) -> String {
-    if plan
-        .changes
-        .iter()
-        .all(|change| change.action == FileAction::Unchanged)
-    {
-        "integration profile already applied".to_string()
-    } else if plan.dry_run {
-        "dry run complete; no files changed".to_string()
-    } else {
-        "integration profile prepared".to_string()
-    }
-}
-
-fn render_integration_apply_result(result: &IntegrationApplyResult) -> String {
+fn render_integration_apply_result(result: &dam_integrations::IntegrationApplyResult) -> String {
     let mut output = String::new();
     output.push_str(&format!("profile: {}\n", result.profile_id));
     output.push_str(&format!("state: {}\n", result.message));
@@ -1454,7 +1051,7 @@ fn render_integration_apply_result(result: &IntegrationApplyResult) -> String {
     for change in &result.changes {
         output.push_str(&format!(
             "{}: {} - {}\n",
-            file_action_tag(change.action),
+            change.action.tag(),
             change.path.display(),
             change.description
         ));
@@ -1462,36 +1059,21 @@ fn render_integration_apply_result(result: &IntegrationApplyResult) -> String {
     output
 }
 
-fn render_integration_rollback_result(result: &IntegrationRollbackResult) -> String {
+fn render_integration_rollback_result(
+    result: &dam_integrations::IntegrationRollbackResult,
+) -> String {
     let mut output = String::new();
     output.push_str(&format!("profile: {}\n", result.profile_id));
     output.push_str(&format!("state: {}\n", result.message));
     for change in &result.changes {
         output.push_str(&format!(
             "{}: {} - {}\n",
-            file_action_tag(change.action),
+            change.action.tag(),
             change.path.display(),
             change.description
         ));
     }
     output
-}
-
-fn file_action_tag(action: FileAction) -> &'static str {
-    match action {
-        FileAction::Create => "create",
-        FileAction::Update => "update",
-        FileAction::Unchanged => "unchanged",
-        FileAction::Delete => "delete",
-        FileAction::Restore => "restore",
-    }
-}
-
-fn unix_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_secs()
 }
 
 fn shell_command(command: &[String]) -> String {
@@ -1928,60 +1510,6 @@ mod tests {
 
         assert!(rendered.contains("'model_providers.dam_openai.name=\"OpenAI through DAM\"'"));
         assert!(rendered.contains("model_providers.dam_openai.supports_websockets=false"));
-    }
-
-    #[test]
-    fn codex_apply_writes_config_and_rollback_restores_backup() {
-        let dir = tempfile::tempdir().unwrap();
-        let state_dir = dir.path().join("state");
-        let config_path = dir.path().join("config.toml");
-        let original = "approval_policy = \"never\"\n";
-        fs::write(&config_path, original).unwrap();
-
-        let prepared = prepare_integration_apply(
-            "codex-api",
-            "http://127.0.0.1:9000",
-            Some(config_path.clone()),
-        )
-        .unwrap();
-        let result = run_integration_apply(prepared, false, &state_dir).unwrap();
-
-        assert!(!result.dry_run);
-        assert_eq!(result.changes[0].action, FileAction::Update);
-        let applied = fs::read_to_string(&config_path).unwrap();
-        assert!(applied.contains("approval_policy = \"never\""));
-        assert!(applied.contains("model_provider = \"dam_openai\""));
-        assert!(applied.contains("base_url = \"http://127.0.0.1:9000/v1\""));
-        assert!(applied.contains("supports_websockets = false"));
-
-        let rollback = rollback_integration_profile("codex-api", &state_dir).unwrap();
-
-        assert_eq!(rollback.changes[0].action, FileAction::Restore);
-        assert_eq!(fs::read_to_string(&config_path).unwrap(), original);
-    }
-
-    #[test]
-    fn env_profile_apply_creates_file_and_rollback_deletes_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let state_dir = dir.path().join("state");
-        let env_path = dir.path().join("claude.env");
-
-        let prepared = prepare_integration_apply(
-            "claude-code",
-            "http://127.0.0.1:9000",
-            Some(env_path.clone()),
-        )
-        .unwrap();
-        let result = run_integration_apply(prepared, false, &state_dir).unwrap();
-
-        assert_eq!(result.changes[0].action, FileAction::Create);
-        let applied = fs::read_to_string(&env_path).unwrap();
-        assert!(applied.contains("export ANTHROPIC_BASE_URL=http://127.0.0.1:9000"));
-
-        let rollback = rollback_integration_profile("claude-code", &state_dir).unwrap();
-
-        assert_eq!(rollback.changes[0].action, FileAction::Delete);
-        assert!(!env_path.exists());
     }
 
     #[test]
