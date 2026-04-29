@@ -232,16 +232,14 @@ mod macos {
         dpi::LogicalSize,
         event::{Event, StartCause, WindowEvent},
         event_loop::{ControlFlow, EventLoopBuilder},
-        window::{Icon as WindowIcon, WindowBuilder},
+        window::WindowBuilder,
     };
     use tray_icon::{
-        Icon as TrayIcon, TrayIconBuilder, TrayIconEvent,
+        TrayIconBuilder, TrayIconEvent,
         menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
     };
     use wry::WebViewBuilder;
 
-    const RPBLC_FAVICON_SVG: &[u8] = include_bytes!("../../dam-web/assets/favicon.svg");
-    const APP_ICON_SIZE: u32 = 64;
     const SHOW_ITEM_ID: &str = "show";
     const RELOAD_ITEM_ID: &str = "reload";
     const BROWSER_ITEM_ID: &str = "browser";
@@ -285,13 +283,11 @@ mod macos {
             let _ = proxy.send_event(UserEvent::Menu(event));
         }));
 
-        let app_icon = favicon_window_icon()?;
         let window = WindowBuilder::new()
             .with_title("DAM")
             .with_inner_size(LogicalSize::new(430.0, 760.0))
             .with_min_inner_size(LogicalSize::new(380.0, 620.0))
             .with_resizable(true)
-            .with_window_icon(Some(app_icon))
             .build(&event_loop)
             .map_err(|error| format!("failed to create DAM window: {error}"))?;
 
@@ -364,11 +360,9 @@ mod macos {
 
         TrayIconBuilder::new()
             .with_tooltip("DAM")
-            .with_title("DAM")
+            .with_title("[R:]")
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(true)
-            .with_icon(favicon_tray_icon()?)
-            .with_icon_as_template(false)
             .build()
             .map_err(|error| format!("failed to create tray icon: {error}"))
     }
@@ -393,47 +387,6 @@ mod macos {
                 "failed to open browser: command exited with {status}"
             ))
         }
-    }
-
-    fn favicon_tray_icon() -> Result<TrayIcon, String> {
-        let icon = render_favicon_rgba(APP_ICON_SIZE)?;
-        TrayIcon::from_rgba(icon.rgba, icon.width, icon.height)
-            .map_err(|error| format!("failed to create tray icon: {error}"))
-    }
-
-    fn favicon_window_icon() -> Result<WindowIcon, String> {
-        let icon = render_favicon_rgba(APP_ICON_SIZE)?;
-        WindowIcon::from_rgba(icon.rgba, icon.width, icon.height)
-            .map_err(|error| format!("failed to create app icon: {error}"))
-    }
-
-    fn render_favicon_rgba(size: u32) -> Result<FaviconPixels, String> {
-        let mut options = resvg::usvg::Options::default();
-        options.fontdb_mut().load_system_fonts();
-        let tree = resvg::usvg::Tree::from_data(RPBLC_FAVICON_SVG, &options)
-            .map_err(|error| format!("failed to parse RPBLC favicon SVG: {error}"))?;
-        let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)
-            .ok_or_else(|| format!("failed to allocate {size}x{size} icon pixmap"))?;
-        let source_size = tree.size();
-        let sx = size as f32 / source_size.width();
-        let sy = size as f32 / source_size.height();
-        resvg::render(
-            &tree,
-            resvg::tiny_skia::Transform::from_scale(sx, sy),
-            &mut pixmap.as_mut(),
-        );
-
-        Ok(FaviconPixels {
-            rgba: pixmap.take(),
-            width: size,
-            height: size,
-        })
-    }
-
-    struct FaviconPixels {
-        rgba: Vec<u8>,
-        width: u32,
-        height: u32,
     }
 
     struct WebChild {
@@ -486,33 +439,6 @@ mod macos {
     impl Drop for WebChild {
         fn drop(&mut self) {
             self.stop();
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn renders_tray_icons_from_vendored_favicon() {
-            let pixels = render_favicon_rgba(APP_ICON_SIZE).unwrap();
-
-            assert_eq!(pixels.width, APP_ICON_SIZE);
-            assert_eq!(pixels.height, APP_ICON_SIZE);
-            assert_eq!(
-                pixels.rgba.len(),
-                (APP_ICON_SIZE * APP_ICON_SIZE * 4) as usize
-            );
-            assert!(pixels.rgba.chunks_exact(4).any(|pixel| pixel[3] > 0));
-            assert!(pixels.rgba.chunks_exact(4).any(|pixel| {
-                pixel[0] > 140
-                    && pixel[0] < 220
-                    && pixel[1] > 110
-                    && pixel[1] < 190
-                    && pixel[2] > 40
-                    && pixel[2] < 140
-                    && pixel[3] > 0
-            }));
         }
     }
 }
