@@ -20,12 +20,13 @@ Deferred security and product-design work is tracked in [parking-lot.md](parking
 - [dam-pipeline](dam-pipeline.md): shared text processing orchestration for detect, policy, consent, vault/log events, redaction, and inbound reference resolution.
 - [dam-provider-anthropic](dam-provider-anthropic.md): Anthropic upstream forwarding, `x-api-key` auth/header handling, and SSE passthrough for proxy flows.
 - [dam-provider-openai](dam-provider-openai.md): OpenAI-compatible upstream forwarding, auth/header handling, and SSE passthrough for proxy flows.
+- [dam-router](dam-router.md): proxy target selection, provider classification, auth mode, and failure-mode decisions.
 - [dam-vault](dam-vault.md): local SQLite `VaultWriter` and `VaultReader` implementation.
 - [dam-log](dam-log.md): local SQLite `EventSink` implementation.
 - [dam-redact](dam-redact.md): pure replacement application.
 - [dam-filter](dam-filter.md): CLI pipeline wiring detection, policy, vault, logs, and redaction.
 - [dam-resolve](dam-resolve.md): CLI pipeline for resolving `[kind:id]` references through `VaultReader`.
-- [dam-proxy](dam-proxy.md): first app-layer LLM proxy slice with OpenAI-compatible reverse proxy behavior.
+- [dam-proxy](dam-proxy.md): first app-layer LLM proxy slice with OpenAI-compatible and Anthropic reverse proxy behavior.
 - [dam-web](dam-web.md): local web UI for vault entries, consent grants, log events, and diagnostics.
 - [dam-mcp](dam-mcp.md): MCP tools for agent-managed consent operations.
 
@@ -71,6 +72,7 @@ dam-core also builds non-sensitive resolve log events
 ```text
 LLM request
   -> dam-proxy
+  -> dam-router
   -> dam-pipeline
   -> dam-detect
   -> dam-policy
@@ -94,7 +96,7 @@ provider response
 
 Proxy defaults are directional: outbound requests are redacted before the provider sees them; inbound responses are not redacted. Inbound DAM reference resolution is disabled by default for non-streaming responses and can be enabled with `proxy.resolve_inbound = true` when the caller deliberately wants local restoration. `text/event-stream` responses pass through as streams without inbound reference resolution.
 
-`dam-pipeline`, `dam-provider-openai`, and `dam-provider-anthropic` have been extracted from the first compact proxy implementation. `dam-router` remains the next proxy-boundary extraction.
+`dam-pipeline`, `dam-provider-openai`, `dam-provider-anthropic`, and `dam-router` have been extracted from the first compact proxy implementation.
 
 ## Control And Diagnostics
 

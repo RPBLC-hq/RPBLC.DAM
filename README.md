@@ -275,25 +275,26 @@ Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default
 Recommended order for the next engineering sessions:
 
 1. Smoke test `dam claude` and `dam codex --api` against fake or real provider paths, then inspect the vault and log SQLite databases.
-2. Extract `dam-pipeline` from `dam-proxy`. Keep behavior identical; move orchestration only: detect -> policy -> consent -> vault/log -> redact -> optional inbound resolve.
-3. Extract `dam-provider-openai` from `dam-proxy`. Isolate OpenAI-compatible request/response handling behind fixtures before changing behavior.
-4. Extract `dam-router` from `dam-proxy`. Target selection, auth mode, and failure-mode selection should become reusable without changing proxy semantics.
-5. Expand `damctl` after the extractions: deeper doctor checks, bypass status, install profile inspection, and eventually daemon lifecycle.
-6. Add `dam-daemon` only after proxy/pipeline behavior is stable. Its role is lifecycle, health, and VPN-like UX, not protection logic.
-7. Add `dam-integrations` for harness profiles where tools allow low-configuration routing.
+2. Expand `damctl`: deeper doctor checks, bypass status, install profile inspection, and eventually daemon lifecycle.
+3. Add `dam-daemon` only after proxy/router behavior is stable. Its role is lifecycle, health, and VPN-like UX, not protection logic.
+4. Add `dam-integrations` for harness profiles where tools allow low-configuration routing.
 
 Do not spend the next session on these until their prerequisite slice exists:
 
 - Codex ChatGPT-login protection, unless the work is specifically the WebSocket/`backend-api/codex/responses` transport plan or adapter.
 - TLS interception, local CA management, VPN/TUN, or arbitrary web traffic rewriting.
-- Streaming/SSE response resolution before the non-streaming provider adapter is extracted and fixture-tested.
-- Remote vault/log backends before the local pipeline contracts are cleanly extracted.
+- Streaming/SSE response resolution before provider streaming semantics are designed and fixture-tested.
+- Remote vault/log backends before the local router and pipeline contracts prove stable.
 
-Near-term modules still to build:
+Implemented extraction modules:
 
 - `dam-pipeline`: shared request processing orchestration for proxy/API-style flows.
 - `dam-provider-openai`: OpenAI-compatible adapter with fixture-first tests and no real provider calls in automated tests.
-- `dam-router`: reusable target selection, auth mode, and failure-mode selection.
+- `dam-provider-anthropic`: Anthropic-compatible adapter with fixture-first tests and no real provider calls in automated tests.
+- `dam-router`: reusable first-target selection, provider classification, auth mode, and failure-mode decisions.
+
+Near-term modules still to build:
+
 - `dam-daemon`: local service lifecycle and health/status model for VPN-like user experience.
 - `dam-integrations`: known harness profiles for minimal manual setup where tools allow it.
 

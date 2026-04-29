@@ -11,6 +11,7 @@ Current first slice:
 ```text
 client or harness
   -> dam-proxy
+  -> dam-router
   -> first configured proxy target
   -> provider HTTP request body
   -> dam-pipeline
@@ -40,7 +41,7 @@ Repeated equal outbound values reuse one tokenized reference by default within a
 
 Active consent grants let exact detected values pass through unredacted until expiry or revocation. Consent overrides `tokenize` and `redact`; it does not override `block`.
 
-The current implementation keeps routing and failure-mode selection inside `dam-proxy`, shared text processing orchestration in `dam-pipeline`, OpenAI-compatible forwarding in `dam-provider-openai`, and Anthropic forwarding in `dam-provider-anthropic`. Future work should extract `dam-router` without changing proxy semantics.
+The current implementation keeps HTTP serving, backend opening, provider adapter dispatch, and DAM-owned status responses inside `dam-proxy`. Shared text processing orchestration lives in `dam-pipeline`, OpenAI-compatible forwarding lives in `dam-provider-openai`, Anthropic forwarding lives in `dam-provider-anthropic`, and first-slice route decisions live in `dam-router`.
 
 Supported provider IDs are:
 

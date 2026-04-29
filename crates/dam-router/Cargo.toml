@@ -1,0 +1,10 @@
+[package]
+name = "dam-router"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+dam-config.workspace = true
+http.workspace = true
+thiserror.workspace = true

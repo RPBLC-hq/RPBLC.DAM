@@ -14,7 +14,6 @@ use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 
 const MAX_REQUEST_BYTES: usize = 10 * 1024 * 1024;
-const ANTHROPIC_API_KEY_HEADER: &str = "x-api-key";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
@@ -62,33 +61,23 @@ enum ProviderAdapter {
 }
 
 impl ProviderAdapter {
-    fn for_name(name: &str) -> Result<Self, ProxyError> {
-        match name {
-            "openai-compatible" => dam_provider_openai::OpenAiProvider::new()
-                .map(Self::OpenAi)
-                .map_err(|error| ProxyError::ProviderInit(error.to_string())),
-            "anthropic" => dam_provider_anthropic::AnthropicProvider::new()
+    fn for_kind(kind: dam_router::ProviderKind) -> Result<Self, ProxyError> {
+        match kind {
+            dam_router::ProviderKind::OpenAiCompatible => {
+                dam_provider_openai::OpenAiProvider::new()
+                    .map(Self::OpenAi)
+                    .map_err(|error| ProxyError::ProviderInit(error.to_string()))
+            }
+            dam_router::ProviderKind::Anthropic => dam_provider_anthropic::AnthropicProvider::new()
                 .map(Self::Anthropic)
                 .map_err(|error| ProxyError::ProviderInit(error.to_string())),
-            other => Err(ProxyError::UnsupportedProvider(other.to_string())),
-        }
-    }
-
-    fn caller_auth_header_present(&self, headers: &HeaderMap) -> bool {
-        match self {
-            Self::OpenAi(_) => headers.contains_key(header::AUTHORIZATION),
-            Self::Anthropic(_) => {
-                headers.contains_key(ANTHROPIC_API_KEY_HEADER)
-                    || headers.contains_key(header::AUTHORIZATION)
-            }
         }
     }
 }
 
 #[derive(Clone)]
 pub struct ProxyState {
-    target: dam_config::ProxyTargetConfig,
-    default_failure_mode: dam_config::ProxyFailureMode,
+    route: dam_router::RoutePlan,
     resolve_inbound: bool,
     vault: Arc<dyn ProxyVault>,
     consent_store: Option<Arc<dam_consent::ConsentStore>>,
@@ -96,6 +85,17 @@ pub struct ProxyState {
     policy: dam_policy::StaticPolicy,
     replacement_options: dam_core::ReplacementPlanOptions,
     provider: ProviderAdapter,
+}
+
+impl From<dam_router::RouteError> for ProxyError {
+    fn from(error: dam_router::RouteError) -> Self {
+        match error {
+            dam_router::RouteError::MissingTarget => Self::MissingTarget,
+            dam_router::RouteError::UnsupportedProvider(provider) => {
+                Self::UnsupportedProvider(provider)
+            }
+        }
+    }
 }
 
 trait ProxyVault: VaultWriter + VaultReader {}
@@ -140,22 +140,15 @@ pub fn build_app(config: dam_config::DamConfig) -> Result<Router, ProxyError> {
         return Err(ProxyError::Disabled);
     }
 
-    let target = config
-        .proxy
-        .targets
-        .first()
-        .cloned()
-        .ok_or(ProxyError::MissingTarget)?;
-
-    let provider = ProviderAdapter::for_name(&target.provider)?;
+    let route = dam_router::RoutePlan::from_proxy_config(&config.proxy)?;
+    let provider = ProviderAdapter::for_kind(route.provider_kind())?;
 
     let replacement_options = dam_core::ReplacementPlanOptions {
         deduplicate_replacements: config.policy.deduplicate_replacements,
     };
 
     let state = ProxyState {
-        target,
-        default_failure_mode: config.proxy.default_failure_mode,
+        route,
         resolve_inbound: config.proxy.resolve_inbound,
         vault: open_vault(&config)?,
         consent_store: open_consent_store(&config)?,
@@ -242,7 +235,8 @@ fn open_log_sink(config: &dam_config::DamConfig) -> Result<Option<Arc<dyn EventS
 }
 
 async fn health(State(state): State<Arc<ProxyState>>) -> Response {
-    let (proxy_state, message) = if state.target_requires_missing_api_key(&HeaderMap::new()) {
+    let route = state.route.decide(&HeaderMap::new());
+    let (proxy_state, message) = if route.config_required() {
         (
             dam_api::ProxyState::ConfigRequired,
             "target API key is missing".to_string(),
@@ -251,7 +245,7 @@ async fn health(State(state): State<Arc<ProxyState>>) -> Response {
         (dam_api::ProxyState::Protected, "proxy is ready".to_string())
     };
 
-    status_response(StatusCode::OK, proxy_state, message, None, &state.target)
+    status_response(StatusCode::OK, proxy_state, message, None, route.target())
 }
 
 async fn proxy(
@@ -262,8 +256,9 @@ async fn proxy(
     body: Bytes,
 ) -> Response {
     let operation_id = dam_core::generate_operation_id();
+    let route = state.route.decide(&headers);
 
-    if state.target_requires_missing_api_key(&headers) {
+    if route.config_required() {
         record_proxy_event(
             &state,
             &operation_id,
@@ -277,7 +272,7 @@ async fn proxy(
             dam_api::ProxyState::ConfigRequired,
             "proxy target API key is missing".to_string(),
             Some(operation_id),
-            &state.target,
+            route.target(),
         );
     }
 
@@ -295,7 +290,7 @@ async fn proxy(
             dam_api::ProxyState::Blocked,
             "encoded request bodies are not supported".to_string(),
             Some(operation_id),
-            &state.target,
+            route.target(),
         );
     }
 
@@ -353,7 +348,7 @@ async fn proxy(
             dam_api::ProxyState::Blocked,
             "proxy request blocked by policy".to_string(),
             Some(operation_id),
-            &state.target,
+            state.route.target(),
         );
     }
 
@@ -408,7 +403,7 @@ async fn handle_protection_failure(
                 dam_api::ProxyState::Blocked,
                 message.to_string(),
                 Some(operation_id),
-                &state.target,
+                state.route.target(),
             )
         }
     }
@@ -454,7 +449,7 @@ async fn forward_or_provider_down(
                 dam_api::ProxyState::ProviderDown,
                 error,
                 Some(operation_id),
-                &state.target,
+                state.route.target(),
             )
         }
     }
@@ -468,15 +463,12 @@ async fn forward_request(
     body: Bytes,
     operation_id: &str,
 ) -> Result<Response, String> {
-    let target_api_key = state
-        .target
-        .api_key
-        .as_ref()
-        .map(|api_key| api_key.expose());
+    let route = state.route.decide(&headers);
+    let target_api_key = route.target_api_key();
     match &state.provider {
         ProviderAdapter::OpenAi(provider) => {
             let request = dam_provider_openai::ForwardRequest {
-                upstream: &state.target.upstream,
+                upstream: &route.target().upstream,
                 method,
                 uri,
                 headers,
@@ -492,7 +484,7 @@ async fn forward_request(
         }
         ProviderAdapter::Anthropic(provider) => {
             let request = dam_provider_anthropic::ForwardRequest {
-                upstream: &state.target.upstream,
+                upstream: &route.target().upstream,
                 method,
                 uri,
                 headers,
@@ -613,14 +605,7 @@ fn proxy_diagnostics(state: dam_api::ProxyState, message: &str) -> Vec<dam_api::
 
 impl ProxyState {
     fn failure_mode(&self) -> dam_config::ProxyFailureMode {
-        self.target
-            .effective_failure_mode(self.default_failure_mode)
-    }
-
-    fn target_requires_missing_api_key(&self, headers: &HeaderMap) -> bool {
-        self.target.api_key_env.is_some()
-            && self.target.api_key.is_none()
-            && !self.provider.caller_auth_header_present(headers)
+        self.route.failure_mode()
     }
 }
 

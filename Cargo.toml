@@ -16,6 +16,7 @@ members = [
     "crates/dam-provider-anthropic",
     "crates/dam-provider-openai",
     "crates/dam-proxy",
+    "crates/dam-router",
     "crates/dam-resolve",
     "crates/dam-redact",
     "crates/dam-vault",
@@ -44,9 +45,11 @@ dam-policy = { path = "crates/dam-policy" }
 dam-pipeline = { path = "crates/dam-pipeline" }
 dam-provider-anthropic = { path = "crates/dam-provider-anthropic" }
 dam-provider-openai = { path = "crates/dam-provider-openai" }
+dam-router = { path = "crates/dam-router" }
 dam-resolve = { path = "crates/dam-resolve" }
 dam-redact = { path = "crates/dam-redact" }
 dam-vault = { path = "crates/dam-vault" }
+http = "1"
 once_cell = "1"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

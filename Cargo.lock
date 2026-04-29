@@ -353,6 +353,7 @@ dependencies = [
  "dam-policy",
  "dam-provider-anthropic",
  "dam-provider-openai",
+ "dam-router",
  "dam-vault",
  "reqwest",
  "tempfile",
@@ -378,6 +379,15 @@ dependencies = [
  "dam-vault",
  "serde_json",
  "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "dam-router"
+version = "0.1.0"
+dependencies = [
+ "dam-config",
+ "http",
  "thiserror",
 ]
 

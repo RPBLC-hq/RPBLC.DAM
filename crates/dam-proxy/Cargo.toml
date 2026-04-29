@@ -15,6 +15,7 @@ dam-pipeline.workspace = true
 dam-policy.workspace = true
 dam-provider-anthropic.workspace = true
 dam-provider-openai.workspace = true
+dam-router.workspace = true
 dam-vault.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
