@@ -224,7 +224,7 @@ Background local endpoint:
 
 ```bash
 dam connect [--openai|--anthropic] [DAM_OPTIONS]
-dam connect --profile <profile> [DAM_OPTIONS]
+dam connect --profile <profile> [--apply] [DAM_OPTIONS]
 dam status [--json]
 dam disconnect
 dam integrations list [--json]
@@ -244,6 +244,7 @@ DAM options:
 
 ```text
 --profile <id>        Apply integration profile daemon defaults
+--apply               Apply the selected integration profile before connecting
 --openai              Use the OpenAI-compatible daemon preset
 --anthropic           Use the Anthropic daemon preset
 --api                 Use Codex API-key mode through DAM
@@ -292,7 +293,7 @@ Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default
 ## V1 Limits
 
 - DAM is explicit base-URL routing, not transparent HTTPS interception, VPN/TUN routing, or TLS MITM.
-- `dam connect` starts a local endpoint, and `dam integrations` shows harness setup profiles. `dam integrations apply codex-api` edits Codex config with a backup, `dam integrations apply claude-code` edits Claude Code settings with a backup, and generic profiles write DAM-managed environment files.
+- `dam connect` starts a local endpoint, and `dam connect --profile <id> --apply` can apply reversible harness setup before connecting. `dam integrations apply codex-api` edits Codex config with a backup, `dam integrations apply claude-code` edits Claude Code settings with a backup, and generic profiles write DAM-managed environment files.
 - Codex ChatGPT-login mode is blocked because its current model transport is not protected by the base-URL launcher.
 - Inbound provider responses are not redetected. Known DAM references can be resolved locally with `--resolve-inbound`, but this is off by default.
 - The current vault/log/consent stores are local SQLite implementations.

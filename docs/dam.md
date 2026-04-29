@@ -37,6 +37,7 @@ Proxy-managed API key injection still exists in `dam-proxy` for gateway-style de
 
 ```bash
 dam connect [--openai|--anthropic] [DAM_OPTIONS]
+dam connect --profile <profile> [--apply] [DAM_OPTIONS]
 dam status [--json]
 dam disconnect
 dam integrations list [--json]
@@ -51,6 +52,7 @@ DAM options:
 
 ```text
 --profile <id>       Apply integration profile daemon defaults (connect only)
+--apply              Apply the selected integration profile before connecting
 --openai             Use the OpenAI-compatible daemon preset (default for connect)
 --anthropic          Use the Anthropic daemon preset (connect only)
 --api                Use Codex API-key mode through DAM (Codex only)
@@ -72,6 +74,7 @@ Examples:
 ```bash
 dam connect
 dam connect --profile xai-compatible
+dam connect --profile claude-code --apply
 dam connect --anthropic
 dam status
 dam integrations show codex-api
@@ -95,7 +98,7 @@ When invoked from `npx`, `claude` and `codex` run in trial mode by default. Tria
 
 ## Current Limits
 
-- `dam connect` runs one background proxy target at a time. It does not install system proxy settings or configure harnesses yet.
+- `dam connect` runs one background proxy target at a time. `--profile <id> --apply` can configure known harness profiles with rollback records, but DAM does not install system proxy settings yet.
 - `dam integrations apply codex-api` edits Codex config with a backup; `dam integrations apply claude-code` edits Claude Code settings with a backup. Generic profiles write DAM-managed environment files.
 - One launcher command starts one single-target proxy.
 - Codex API-key mode is protected through the public Responses API. Codex ChatGPT-login model turns are not protected by the current launcher and are blocked.

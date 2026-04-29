@@ -6,6 +6,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 use serde::Serialize;
 use tokio::{net::TcpListener, process::Command as TokioCommand, sync::oneshot};
 
@@ -42,7 +45,7 @@ struct Cli {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CommandKind {
     Launch(LaunchArgs),
-    Connect(dam_daemon::ProxyOptions),
+    Connect(ConnectArgs),
     Disconnect,
     Status(StatusArgs),
     Integrations(IntegrationArgs),
@@ -53,6 +56,12 @@ enum CommandKind {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct StatusArgs {
     json: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConnectArgs {
+    proxy: dam_daemon::ProxyOptions,
+    apply_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +139,19 @@ struct ToolCommand {
     env: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConnectProfileExpansion {
+    args: Vec<String>,
+    profile_id: Option<String>,
+    apply: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConnectApplyOutcome {
+    result: dam_integrations::IntegrationApplyResult,
+    rollback_available: bool,
+}
+
 #[tokio::main]
 async fn main() {
     let code = match run().await {
@@ -175,11 +197,15 @@ async fn run() -> Result<i32, String> {
     }
 }
 
-async fn connect(args: dam_daemon::ProxyOptions) -> Result<i32, String> {
-    dam_daemon::proxy_config(&args)?;
+async fn connect(args: ConnectArgs) -> Result<i32, String> {
+    dam_daemon::proxy_config(&args.proxy)?;
 
     match dam_daemon::daemon_status().map_err(|error| error.to_string())? {
         dam_daemon::DaemonStatus::Connected(state) => {
+            if let Some(profile_id) = args.apply_profile_id.as_deref() {
+                let outcome = apply_connect_profile(profile_id, &state.proxy_url)?;
+                print!("{}", render_connect_apply_outcome(&outcome));
+            }
             println!("DAM already connected at {}", state.proxy_url);
             return Ok(0);
         }
@@ -189,15 +215,23 @@ async fn connect(args: dam_daemon::ProxyOptions) -> Result<i32, String> {
         dam_daemon::DaemonStatus::Disconnected => {}
     }
 
+    if let Some(profile_id) = args.apply_profile_id.as_deref() {
+        let proxy_url = proxy_url_for_connect_apply(&args.proxy)?;
+        let outcome = apply_connect_profile(profile_id, &proxy_url)?;
+        print!("{}", render_connect_apply_outcome(&outcome));
+    }
+
     let exe = std::env::current_exe()
         .map_err(|error| format!("failed to locate current dam executable: {error}"))?;
     let mut child = StdCommand::new(exe);
     child
         .arg("daemon-run")
-        .args(dam_daemon::proxy_options_to_args(&args))
+        .args(dam_daemon::proxy_options_to_args(&args.proxy))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    #[cfg(unix)]
+    child.process_group(0);
     child
         .spawn()
         .map_err(|error| format!("failed to start DAM daemon: {error}"))?;
@@ -336,12 +370,7 @@ async fn integrations(args: IntegrationArgs) -> Result<i32, String> {
             let state_dir = integration_state_dir()?;
             let target_path = match target_path {
                 Some(path) => path,
-                None => dam_integrations::default_apply_path(
-                    &profile_id,
-                    &state_dir,
-                    std::env::var_os("CODEX_HOME").map(PathBuf::from),
-                    std::env::var_os("HOME").map(PathBuf::from),
-                )?,
+                None => default_integration_target_path(&profile_id, &state_dir)?,
             };
             let prepared = dam_integrations::prepare_apply(&profile_id, &proxy_url, target_path)?;
             let result = dam_integrations::run_apply(prepared, dry_run, &state_dir)?;
@@ -495,9 +524,22 @@ fn parse_connect_command(args: &[String]) -> Result<Cli, String> {
         std::process::exit(0);
     }
 
-    let args = expand_connect_profile_args(args)?;
+    let expanded = expand_connect_profile_args(args)?;
+    let apply_profile_id = if expanded.apply {
+        Some(
+            expanded
+                .profile_id
+                .clone()
+                .ok_or_else(|| "--apply requires --profile <id>".to_string())?,
+        )
+    } else {
+        None
+    };
     Ok(Cli {
-        command: CommandKind::Connect(dam_daemon::parse_proxy_options(args)?),
+        command: CommandKind::Connect(ConnectArgs {
+            proxy: dam_daemon::parse_proxy_options(expanded.args)?,
+            apply_profile_id,
+        }),
     })
 }
 
@@ -680,10 +722,11 @@ fn parse_integrations_rollback(args: &[String]) -> Result<Cli, String> {
     })
 }
 
-fn expand_connect_profile_args(args: &[String]) -> Result<Vec<String>, String> {
+fn expand_connect_profile_args(args: &[String]) -> Result<ConnectProfileExpansion, String> {
     let mut expanded = Vec::new();
     let mut remaining = Vec::new();
     let mut profile_id = None;
+    let mut apply = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -702,13 +745,18 @@ fn expand_connect_profile_args(args: &[String]) -> Result<Vec<String>, String> {
                     })?;
                 expanded.extend(profile.connect_args);
             }
+            "--apply" => apply = true,
             arg => remaining.push(arg.to_string()),
         }
         i += 1;
     }
 
     expanded.extend(remaining);
-    Ok(expanded)
+    Ok(ConnectProfileExpansion {
+        args: expanded,
+        profile_id,
+        apply,
+    })
 }
 
 fn parse_tool_command(tool: Tool, args: &[String]) -> Result<Cli, String> {
@@ -1040,6 +1088,63 @@ fn integration_state_dir() -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
+fn default_integration_target_path(
+    profile_id: &str,
+    state_dir: &std::path::Path,
+) -> Result<PathBuf, String> {
+    dam_integrations::default_apply_path(
+        profile_id,
+        state_dir,
+        std::env::var_os("CODEX_HOME").map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+    )
+}
+
+fn apply_connect_profile(profile_id: &str, proxy_url: &str) -> Result<ConnectApplyOutcome, String> {
+    let state_dir = integration_state_dir()?;
+    let target_path = default_integration_target_path(profile_id, &state_dir)?;
+    let inspection =
+        dam_integrations::inspect_apply(profile_id, proxy_url, target_path.clone(), &state_dir)?;
+
+    if let Some(error) = &inspection.record_error {
+        return Err(format!(
+            "integration profile {profile_id} cannot be applied safely: {}\nrollback record issue: {error}\nRun `damctl integrations check {profile_id}` for details or `dam integrations rollback {profile_id}` to restore the last DAM change.",
+            inspection.message
+        ));
+    }
+
+    if inspection.status == dam_integrations::IntegrationApplyStatus::Modified {
+        return Err(format!(
+            "integration profile {profile_id} was previously applied, but the target no longer matches DAM's desired content: {}\nrefusing to overwrite during `dam connect --apply`; run `damctl integrations check {profile_id}` for details or `dam integrations rollback {profile_id}` to restore the last DAM change.",
+            inspection.target_path.display()
+        ));
+    }
+
+    let rollback_available_before_apply = inspection.rollback_available;
+    let prepared = dam_integrations::prepare_apply(profile_id, proxy_url, target_path)?;
+    let result = dam_integrations::run_apply(prepared, false, &state_dir)?;
+    let rollback_available = rollback_available_before_apply || result.record_path.is_some();
+
+    Ok(ConnectApplyOutcome {
+        result,
+        rollback_available,
+    })
+}
+
+fn proxy_url_for_connect_apply(options: &dam_daemon::ProxyOptions) -> Result<String, String> {
+    let addr = options
+        .listen
+        .parse::<SocketAddr>()
+        .map_err(|error| format!("invalid --listen address {}: {error}", options.listen))?;
+    if addr.port() == 0 {
+        return Err(
+            "dam connect --apply requires a fixed --listen port; port 0 cannot be written into a harness profile"
+                .to_string(),
+        );
+    }
+    Ok(dam_daemon::local_base_url(addr))
+}
+
 fn render_integration_apply_result(result: &dam_integrations::IntegrationApplyResult) -> String {
     let mut output = String::new();
     output.push_str(&format!("profile: {}\n", result.profile_id));
@@ -1054,6 +1159,17 @@ fn render_integration_apply_result(result: &dam_integrations::IntegrationApplyRe
             change.action.tag(),
             change.path.display(),
             change.description
+        ));
+    }
+    output
+}
+
+fn render_connect_apply_outcome(outcome: &ConnectApplyOutcome) -> String {
+    let mut output = render_integration_apply_result(&outcome.result);
+    if outcome.rollback_available {
+        output.push_str(&format!(
+            "rollback: dam integrations rollback {}\n",
+            outcome.result.profile_id
         ));
     }
     output
@@ -1239,7 +1355,7 @@ fn usage() -> &'static str {
 }
 
 fn usage_connect() -> &'static str {
-    "Usage: dam connect [--profile PROFILE|--openai|--anthropic] [DAM_OPTIONS]\n\nStarts a background DAM proxy daemon. By default this exposes an OpenAI-compatible local endpoint at http://127.0.0.1:7828/v1 and forwards caller-owned provider auth headers.\n\nDAM options:\n  --profile <id>          Apply integration profile daemon defaults\n  --openai                Use the OpenAI-compatible preset (default)\n  --anthropic             Use the Anthropic preset\n  --config <path>         Load DAM config file before daemon overrides\n  --listen <addr>         Local proxy listen address (default: 127.0.0.1:7828)\n  --target-name <name>    Proxy target name (default: openai)\n  --provider <provider>   Provider adapter: openai-compatible or anthropic\n  --upstream <url>        Provider upstream URL\n  --db <path>             Vault SQLite path (default: vault.db)\n  --log <path>            Log SQLite path (default: log.db)\n  --consent-db <path>     Consent SQLite path (default: consent.db)\n  --no-log                Disable DAM log writes\n  --no-resolve-inbound    Leave DAM references unresolved in inbound responses (default)\n  --resolve-inbound       Restore DAM references in inbound responses\n\nKnown profiles: openai-compatible, anthropic, claude-code, codex-api, xai-compatible"
+    "Usage: dam connect [--profile PROFILE [--apply]|--openai|--anthropic] [DAM_OPTIONS]\n\nStarts a background DAM proxy daemon. By default this exposes an OpenAI-compatible local endpoint at http://127.0.0.1:7828/v1 and forwards caller-owned provider auth headers.\n\nDAM options:\n  --profile <id>          Apply integration profile daemon defaults\n  --apply                 Apply the selected profile before connecting, with rollback support\n  --openai                Use the OpenAI-compatible preset (default)\n  --anthropic             Use the Anthropic preset\n  --config <path>         Load DAM config file before daemon overrides\n  --listen <addr>         Local proxy listen address (default: 127.0.0.1:7828)\n  --target-name <name>    Proxy target name (default: openai)\n  --provider <provider>   Provider adapter: openai-compatible or anthropic\n  --upstream <url>        Provider upstream URL\n  --db <path>             Vault SQLite path (default: vault.db)\n  --log <path>            Log SQLite path (default: log.db)\n  --consent-db <path>     Consent SQLite path (default: consent.db)\n  --no-log                Disable DAM log writes\n  --no-resolve-inbound    Leave DAM references unresolved in inbound responses (default)\n  --resolve-inbound       Restore DAM references in inbound responses\n\nKnown profiles: openai-compatible, anthropic, claude-code, codex-api, xai-compatible"
 }
 
 fn usage_status() -> &'static str {
@@ -1395,10 +1511,11 @@ mod tests {
         let CommandKind::Connect(args) = cli.command else {
             panic!("expected connect");
         };
-        assert_eq!(args.listen, "127.0.0.1:9000");
-        assert_eq!(args.target_name, "anthropic");
-        assert_eq!(args.provider, "anthropic");
-        assert_eq!(args.upstream, ANTHROPIC_UPSTREAM);
+        assert_eq!(args.apply_profile_id, None);
+        assert_eq!(args.proxy.listen, "127.0.0.1:9000");
+        assert_eq!(args.proxy.target_name, "anthropic");
+        assert_eq!(args.proxy.provider, "anthropic");
+        assert_eq!(args.proxy.upstream, ANTHROPIC_UPSTREAM);
     }
 
     #[test]
@@ -1415,10 +1532,52 @@ mod tests {
         let CommandKind::Connect(args) = cli.command else {
             panic!("expected connect");
         };
-        assert_eq!(args.listen, "127.0.0.1:9000");
-        assert_eq!(args.target_name, "xai");
-        assert_eq!(args.provider, "openai-compatible");
-        assert_eq!(args.upstream, "https://api.x.ai");
+        assert_eq!(args.apply_profile_id, None);
+        assert_eq!(args.proxy.listen, "127.0.0.1:9000");
+        assert_eq!(args.proxy.target_name, "xai");
+        assert_eq!(args.proxy.provider, "openai-compatible");
+        assert_eq!(args.proxy.upstream, "https://api.x.ai");
+    }
+
+    #[test]
+    fn parses_connect_profile_apply() {
+        let cli = parse_cli([
+            "connect".to_string(),
+            "--profile".to_string(),
+            "claude-code".to_string(),
+            "--apply".to_string(),
+            "--listen".to_string(),
+            "127.0.0.1:9000".to_string(),
+        ])
+        .unwrap();
+
+        let CommandKind::Connect(args) = cli.command else {
+            panic!("expected connect");
+        };
+        assert_eq!(args.apply_profile_id, Some("claude-code".to_string()));
+        assert_eq!(args.proxy.listen, "127.0.0.1:9000");
+        assert_eq!(args.proxy.target_name, "anthropic");
+        assert_eq!(args.proxy.provider, "anthropic");
+        assert_eq!(args.proxy.upstream, ANTHROPIC_UPSTREAM);
+    }
+
+    #[test]
+    fn connect_apply_requires_profile() {
+        let error = parse_cli(["connect".to_string(), "--apply".to_string()]).unwrap_err();
+
+        assert!(error.contains("--apply requires --profile"));
+    }
+
+    #[test]
+    fn connect_apply_rejects_dynamic_port() {
+        let options = dam_daemon::ProxyOptions {
+            listen: "127.0.0.1:0".to_string(),
+            ..dam_daemon::ProxyOptions::default()
+        };
+
+        let error = proxy_url_for_connect_apply(&options).unwrap_err();
+
+        assert!(error.contains("fixed --listen port"));
     }
 
     #[test]

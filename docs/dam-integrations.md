@@ -12,10 +12,10 @@ dam integrations show <profile>
 dam integrations apply <profile> --dry-run
 dam integrations apply <profile>
 dam integrations rollback <profile>
-dam connect --profile <profile>
+dam connect --profile <profile> --apply
 ```
 
-`dam integrations list` shows known profiles. `dam integrations show` renders the base URL settings and command snippets for one profile. `dam connect --profile` applies the daemon-side defaults for profiles that need a specific provider/upstream.
+`dam integrations list` shows known profiles. `dam integrations show` renders the base URL settings and command snippets for one profile. `dam connect --profile` applies the daemon-side defaults for profiles that need a specific provider/upstream. Add `--apply` to apply the profile target before connecting.
 
 `dam integrations apply` calls the `dam-integrations` apply engine to write profile setup to a safe target with a rollback record:
 
@@ -41,6 +41,14 @@ Rollback restores the last DAM-created backup for that profile:
 ```bash
 dam integrations rollback codex-api
 ```
+
+One-command setup and connect:
+
+```bash
+dam connect --profile claude-code --apply
+```
+
+`dam connect --profile <id> --apply` refuses to overwrite a target that DAM previously applied but that no longer matches DAM's desired content. Use `damctl integrations check <id>` to inspect that state, or `dam integrations rollback <id>` to restore the last DAM-created backup.
 
 Use `--json` on `list` or `show` for machine-readable profile data:
 
