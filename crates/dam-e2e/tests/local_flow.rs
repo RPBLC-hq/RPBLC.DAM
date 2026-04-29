@@ -119,6 +119,37 @@ impl Drop for ChildGuard {
     }
 }
 
+struct DamDaemonGuard {
+    state_dir: PathBuf,
+    current_dir: PathBuf,
+}
+
+impl DamDaemonGuard {
+    fn new(state_dir: PathBuf, current_dir: PathBuf) -> Self {
+        Self {
+            state_dir,
+            current_dir,
+        }
+    }
+
+    fn disconnect(&self) -> Output {
+        ensure_binaries();
+
+        Command::new(binary("dam"))
+            .arg("disconnect")
+            .current_dir(&self.current_dir)
+            .env("DAM_STATE_DIR", &self.state_dir)
+            .output()
+            .expect("run dam disconnect")
+    }
+}
+
+impl Drop for DamDaemonGuard {
+    fn drop(&mut self) {
+        let _ = self.disconnect();
+    }
+}
+
 async fn wait_for_ok(url: &str) {
     let client = reqwest::Client::new();
     for _ in 0..60 {
@@ -296,6 +327,218 @@ fn dam_claude_launcher_passes_anthropic_base_url_to_claude() {
     let claude_args = std::fs::read_to_string(args_path).unwrap();
     assert!(claude_args.contains("--model\n"));
     assert!(claude_args.contains("sonnet\n"));
+}
+
+#[test]
+fn dam_connect_status_disconnect_tracks_profile_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let vault_path = dir.path().join("vault.db");
+    let log_path = dir.path().join("log.db");
+    let consent_path = dir.path().join("consent.db");
+    let daemon = DamDaemonGuard::new(state_dir.clone(), dir.path().to_path_buf());
+
+    ensure_binaries();
+    let connect_output = Command::new(binary("dam"))
+        .args([
+            "connect",
+            "--profile",
+            "xai-compatible",
+            "--listen",
+            "127.0.0.1:0",
+            "--db",
+            vault_path.to_str().unwrap(),
+            "--log",
+            log_path.to_str().unwrap(),
+            "--consent-db",
+            consent_path.to_str().unwrap(),
+        ])
+        .current_dir(dir.path())
+        .env("DAM_STATE_DIR", &state_dir)
+        .output()
+        .expect("run dam connect");
+
+    assert!(
+        connect_output.status.success(),
+        "{}",
+        utf8(&connect_output.stderr)
+    );
+    let connect_stdout = utf8(&connect_output.stdout);
+    assert!(connect_stdout.contains("DAM connected at http://127.0.0.1:"));
+    assert!(connect_stdout.contains("target: xai"));
+    assert!(connect_stdout.contains("upstream: https://api.x.ai"));
+
+    let status_output = Command::new(binary("dam"))
+        .arg("status")
+        .current_dir(dir.path())
+        .env("DAM_STATE_DIR", &state_dir)
+        .output()
+        .expect("run dam status");
+
+    assert!(
+        status_output.status.success(),
+        "{}",
+        utf8(&status_output.stderr)
+    );
+    let status_stdout = utf8(&status_output.stdout);
+    assert!(status_stdout.contains("state: connected"));
+    assert!(status_stdout.contains("target: xai"));
+    assert!(status_stdout.contains("provider: openai-compatible"));
+    assert!(status_stdout.contains("upstream: https://api.x.ai"));
+    assert!(status_stdout.contains("protection: protected"));
+
+    let json_status_output = Command::new(binary("dam"))
+        .args(["status", "--json"])
+        .current_dir(dir.path())
+        .env("DAM_STATE_DIR", &state_dir)
+        .output()
+        .expect("run dam status --json");
+
+    assert!(
+        json_status_output.status.success(),
+        "{}",
+        utf8(&json_status_output.stderr)
+    );
+    let status_json: serde_json::Value =
+        serde_json::from_slice(&json_status_output.stdout).expect("status json");
+    assert_eq!(status_json["state"], "connected");
+    assert_eq!(status_json["daemon"]["target_name"], "xai");
+    assert_eq!(
+        status_json["daemon"]["target_provider"],
+        "openai-compatible"
+    );
+    assert_eq!(status_json["daemon"]["upstream"], "https://api.x.ai");
+
+    let disconnect_output = daemon.disconnect();
+    assert!(
+        disconnect_output.status.success(),
+        "{}",
+        utf8(&disconnect_output.stderr)
+    );
+    assert!(utf8(&disconnect_output.stdout).contains("DAM disconnected"));
+
+    let disconnected_status = Command::new(binary("dam"))
+        .arg("status")
+        .current_dir(dir.path())
+        .env("DAM_STATE_DIR", &state_dir)
+        .output()
+        .expect("run dam status after disconnect");
+
+    assert!(!disconnected_status.status.success());
+    assert!(utf8(&disconnected_status.stdout).contains("state: disconnected"));
+}
+
+#[test]
+fn dam_integrations_apply_codex_api_and_rollback_from_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let config_path = dir.path().join("codex.toml");
+    let original_config = "approval_policy = \"never\"\n";
+    std::fs::write(&config_path, original_config).unwrap();
+
+    ensure_binaries();
+    let dry_run = Command::new(binary("dam"))
+        .args([
+            "integrations",
+            "apply",
+            "codex-api",
+            "--dry-run",
+            "--target-path",
+            config_path.to_str().unwrap(),
+            "--proxy-url",
+            "http://127.0.0.1:9000",
+        ])
+        .current_dir(dir.path())
+        .env("DAM_STATE_DIR", &state_dir)
+        .output()
+        .expect("run dam integrations apply dry-run");
+
+    assert!(dry_run.status.success(), "{}", utf8(&dry_run.stderr));
+    assert!(utf8(&dry_run.stdout).contains("dry run complete; no files changed"));
+    assert_eq!(
+        std::fs::read_to_string(&config_path).unwrap(),
+        original_config
+    );
+
+    let apply = Command::new(binary("dam"))
+        .args([
+            "integrations",
+            "apply",
+            "codex-api",
+            "--target-path",
+            config_path.to_str().unwrap(),
+            "--proxy-url",
+            "http://127.0.0.1:9000",
+        ])
+        .current_dir(dir.path())
+        .env("DAM_STATE_DIR", &state_dir)
+        .output()
+        .expect("run dam integrations apply");
+
+    assert!(apply.status.success(), "{}", utf8(&apply.stderr));
+    assert!(utf8(&apply.stdout).contains("integration profile applied"));
+
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    assert!(config.contains("approval_policy = \"never\""));
+    assert!(config.contains("model_provider = \"dam_openai\""));
+    assert!(config.contains("[model_providers.dam_openai]"));
+    assert!(config.contains("base_url = \"http://127.0.0.1:9000/v1\""));
+    assert!(config.contains("supports_websockets = false"));
+
+    let rollback = Command::new(binary("dam"))
+        .args(["integrations", "rollback", "codex-api"])
+        .current_dir(dir.path())
+        .env("DAM_STATE_DIR", &state_dir)
+        .output()
+        .expect("run dam integrations rollback");
+
+    assert!(rollback.status.success(), "{}", utf8(&rollback.stderr));
+    assert!(utf8(&rollback.stdout).contains("integration profile rolled back"));
+    assert_eq!(
+        std::fs::read_to_string(&config_path).unwrap(),
+        original_config
+    );
+}
+
+#[test]
+fn dam_integrations_apply_env_profile_and_rollback_from_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    let env_path = dir.path().join("claude-code.env");
+
+    ensure_binaries();
+    let apply = Command::new(binary("dam"))
+        .args([
+            "integrations",
+            "apply",
+            "claude-code",
+            "--target-path",
+            env_path.to_str().unwrap(),
+            "--proxy-url",
+            "http://127.0.0.1:9000",
+        ])
+        .current_dir(dir.path())
+        .env("DAM_STATE_DIR", &state_dir)
+        .output()
+        .expect("run dam integrations apply");
+
+    assert!(apply.status.success(), "{}", utf8(&apply.stderr));
+    assert!(utf8(&apply.stdout).contains("integration profile applied"));
+
+    let env_content = std::fs::read_to_string(&env_path).unwrap();
+    assert!(env_content.contains("# DAM integration profile: claude-code"));
+    assert!(env_content.contains("export ANTHROPIC_BASE_URL=http://127.0.0.1:9000"));
+
+    let rollback = Command::new(binary("dam"))
+        .args(["integrations", "rollback", "claude-code"])
+        .current_dir(dir.path())
+        .env("DAM_STATE_DIR", &state_dir)
+        .output()
+        .expect("run dam integrations rollback");
+
+    assert!(rollback.status.success(), "{}", utf8(&rollback.stderr));
+    assert!(utf8(&rollback.stdout).contains("integration profile rolled back"));
+    assert!(!env_path.exists());
 }
 
 #[test]

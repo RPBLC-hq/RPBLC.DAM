@@ -292,6 +292,7 @@ dependencies = [
  "dam-log",
  "dam-vault",
  "reqwest",
+ "serde_json",
  "tempfile",
  "tokio",
 ]
