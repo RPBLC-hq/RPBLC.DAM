@@ -6,6 +6,7 @@ The current slice does not start or stop services. It answers these questions:
 
 - is the local proxy protecting traffic?
 - is this local install ready for the protected agent UX?
+- are known integration profiles applied, unapplied, or modified?
 - is the local config valid for the current implementation?
 - what MCP config should an agent use for DAM?
 
@@ -14,6 +15,7 @@ The current slice does not start or stop services. It answers these questions:
 ```bash
 cargo run -p damctl -- status
 cargo run -p damctl -- doctor
+cargo run -p damctl -- integrations check
 cargo run -p damctl -- config check
 cargo run -p damctl -- mcp config
 ```
@@ -31,6 +33,7 @@ With an explicit proxy URL:
 
 ```bash
 cargo run -p damctl -- status --proxy-url http://127.0.0.1:7828
+cargo run -p damctl -- integrations check codex-api --proxy-url http://127.0.0.1:7828
 ```
 
 JSON output:
@@ -38,6 +41,7 @@ JSON output:
 ```bash
 cargo run -p damctl -- status --json
 cargo run -p damctl -- doctor --json
+cargo run -p damctl -- integrations check --json
 cargo run -p damctl -- config check --json
 ```
 
@@ -69,6 +73,7 @@ It checks:
 - vault/log/consent compatibility and local SQLite openability;
 - router target selection, provider support, auth mode, and failure mode;
 - proxy runtime `/health` when proxy is enabled;
+- integration profile apply state summary;
 - launcher readiness for `dam claude`, `dam codex --api`, and fail-closed Codex ChatGPT-login mode.
 
 Exit codes:
@@ -78,6 +83,30 @@ Exit codes:
 - `2`: command arguments or config loading failed.
 
 Use `--proxy-url` to check a specific running proxy endpoint instead of the configured `proxy.listen`.
+
+## `integrations check`
+
+`integrations check` inspects known profile apply state without changing files.
+
+```bash
+cargo run -p damctl -- integrations check
+cargo run -p damctl -- integrations check codex-api
+cargo run -p damctl -- integrations check codex-api --target-path ./codex-test.toml
+```
+
+It reports each profile as:
+
+- `applied`: desired content is present.
+- `needs_apply`: the profile target is missing or does not yet contain DAM's desired content and no rollback record exists.
+- `modified`: DAM has a rollback record, but the target no longer matches DAM's desired content.
+
+Exit codes:
+
+- `0`: no checked profile is modified and rollback records are readable. For all-profile inventory, unapplied profiles are allowed.
+- `1`: a specific checked profile needs apply, or any checked profile is modified or has an unreadable rollback record.
+- `2`: command arguments or profile inspection failed.
+
+`--target-path` is only valid when checking one profile.
 
 ## `config check`
 
@@ -111,7 +140,6 @@ This is the bridge until the installer layer can write agent-specific MCP config
 ## Current Limits
 
 - No daemon lifecycle management yet.
-- No automatic install/integration profile writes yet.
 - No bypass toggle command yet.
 - No real-provider credential validation beyond checking whether configured env vars are present.
 

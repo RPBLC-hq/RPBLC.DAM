@@ -140,7 +140,11 @@ damctl status
 
 damctl doctor
   -> dam-diagnostics
+  -> dam-integrations apply-state summary
   -> dam-api HealthReport
+
+damctl integrations check
+  -> dam-integrations apply-state inspection
 
 damctl config check
   -> dam-diagnostics

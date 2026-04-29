@@ -7,7 +7,9 @@ license.workspace = true
 [dependencies]
 dam-api.workspace = true
 dam-config.workspace = true
+dam-daemon.workspace = true
 dam-diagnostics.workspace = true
+dam-integrations.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

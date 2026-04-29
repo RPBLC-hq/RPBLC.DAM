@@ -29,6 +29,8 @@ The crate does not:
 
 Those concerns stay in `damctl`, `dam-web`, `dam-proxy`, and future daemon/integration modules.
 
+`damctl doctor` may add CLI-local integration profile summaries after consuming `doctor_report`. Those summaries use `dam-integrations` inspection data and are not currently part of the shared web `/doctor` report.
+
 ## Current Consumers
 
 - `damctl config check`
