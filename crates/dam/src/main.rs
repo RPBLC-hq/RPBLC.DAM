@@ -48,6 +48,7 @@ enum CommandKind {
     Connect(ConnectArgs),
     Disconnect,
     Status(StatusArgs),
+    Profile(ProfileArgs),
     Integrations(IntegrationArgs),
     DaemonRun(dam_daemon::ProxyOptions),
     Help(Option<Tool>),
@@ -62,6 +63,13 @@ struct StatusArgs {
 struct ConnectArgs {
     proxy: dam_daemon::ProxyOptions,
     apply_profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProfileArgs {
+    Status { json: bool },
+    Set { profile_id: String, json: bool },
+    Clear { json: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +102,16 @@ struct StatusView {
     message: String,
     daemon: Option<dam_daemon::DaemonState>,
     proxy: Option<dam_api::ProxyReport>,
+    active_profile: Option<dam_integrations::ActiveProfileState>,
+    active_profile_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProfileStatusView {
+    active_profile: Option<dam_integrations::ActiveProfileState>,
+    proxy_url: String,
+    apply: Option<dam_integrations::IntegrationApplyInspection>,
+    inspection_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,7 +184,9 @@ async fn main() {
 }
 
 async fn run() -> Result<i32, String> {
-    match parse_cli(std::env::args().skip(1))? {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let active_connect_profile = active_profile_for_connect_parse(&args)?;
+    match parse_cli_with_active_profile(args, active_connect_profile)? {
         Cli {
             command: CommandKind::Help(tool),
         } => {
@@ -188,6 +208,9 @@ async fn run() -> Result<i32, String> {
         Cli {
             command: CommandKind::Status(args),
         } => status(args).await,
+        Cli {
+            command: CommandKind::Profile(args),
+        } => profile_command(args),
         Cli {
             command: CommandKind::Integrations(args),
         } => integrations(args).await,
@@ -270,18 +293,23 @@ async fn disconnect() -> Result<i32, String> {
 }
 
 async fn status(args: StatusArgs) -> Result<i32, String> {
+    let (active_profile, active_profile_error) = active_profile_for_status();
     let view = match dam_daemon::daemon_status().map_err(|error| error.to_string())? {
         dam_daemon::DaemonStatus::Disconnected => StatusView {
             state: "disconnected",
             message: "DAM is not connected".to_string(),
             daemon: None,
             proxy: None,
+            active_profile,
+            active_profile_error,
         },
         dam_daemon::DaemonStatus::Stale(state) => StatusView {
             state: "stale",
             message: format!("daemon state points at stopped pid {}", state.pid),
             daemon: Some(state),
             proxy: None,
+            active_profile,
+            active_profile_error,
         },
         dam_daemon::DaemonStatus::Connected(state) => {
             let proxy = fetch_proxy_report(&state.proxy_url).await;
@@ -295,12 +323,16 @@ async fn status(args: StatusArgs) -> Result<i32, String> {
                     message: report.message.clone(),
                     daemon: Some(state),
                     proxy: Some(report),
+                    active_profile,
+                    active_profile_error,
                 },
                 Err(error) => StatusView {
                     state: "degraded",
                     message: error,
                     daemon: Some(state),
                     proxy: None,
+                    active_profile,
+                    active_profile_error,
                 },
             }
         }
@@ -318,6 +350,27 @@ async fn status(args: StatusArgs) -> Result<i32, String> {
     }
 
     Ok(code)
+}
+
+fn profile_command(args: ProfileArgs) -> Result<i32, String> {
+    let state_dir = integration_state_dir()?;
+    match args {
+        ProfileArgs::Status { json } => {
+            let view = profile_status_view(&state_dir)?;
+            print_profile_status_view(&view, json)?;
+        }
+        ProfileArgs::Set { profile_id, json } => {
+            dam_integrations::set_active_profile(&profile_id, &state_dir)?;
+            let view = profile_status_view(&state_dir)?;
+            print_profile_status_view(&view, json)?;
+        }
+        ProfileArgs::Clear { json } => {
+            dam_integrations::clear_active_profile(&state_dir)?;
+            let view = profile_status_view(&state_dir)?;
+            print_profile_status_view(&view, json)?;
+        }
+    }
+    Ok(0)
 }
 
 async fn integrations(args: IntegrationArgs) -> Result<i32, String> {
@@ -495,7 +548,15 @@ fn ensure_codex_api_key_available() -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
 fn parse_cli(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
+    parse_cli_with_active_profile(args, None)
+}
+
+fn parse_cli_with_active_profile(
+    args: impl IntoIterator<Item = String>,
+    active_profile_id: Option<String>,
+) -> Result<Cli, String> {
     let args = args.into_iter().collect::<Vec<_>>();
     let Some(command) = args.first() else {
         return Ok(Cli {
@@ -507,9 +568,10 @@ fn parse_cli(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
         "-h" | "--help" | "help" => Ok(Cli {
             command: CommandKind::Help(None),
         }),
-        "connect" => parse_connect_command(&args[1..]),
+        "connect" => parse_connect_command(&args[1..], active_profile_id.as_deref()),
         "disconnect" => parse_disconnect_command(&args[1..]),
         "status" => parse_status_command(&args[1..]),
+        "profile" => parse_profile_command(&args[1..]),
         "integrations" => parse_integrations_command(&args[1..]),
         "daemon-run" => parse_daemon_run_command(&args[1..]),
         "codex" => parse_tool_command(Tool::Codex, &args[1..]),
@@ -518,26 +580,28 @@ fn parse_cli(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
     }
 }
 
-fn parse_connect_command(args: &[String]) -> Result<Cli, String> {
+fn parse_connect_command(args: &[String], active_profile_id: Option<&str>) -> Result<Cli, String> {
     if matches!(args.first().map(String::as_str), Some("-h" | "--help")) {
         println!("{}", usage_connect());
         std::process::exit(0);
     }
 
-    let expanded = expand_connect_profile_args(args)?;
+    let expanded = expand_connect_profile_args(args, active_profile_id)?;
     let apply_profile_id = if expanded.apply {
-        Some(
-            expanded
-                .profile_id
-                .clone()
-                .ok_or_else(|| "--apply requires --profile <id>".to_string())?,
-        )
+        Some(expanded.profile_id.clone().ok_or_else(|| {
+            "--apply requires --profile <id> or an active profile set by `dam profile set <id>`"
+                .to_string()
+        })?)
     } else {
         None
     };
+    let proxy = dam_daemon::parse_proxy_options(expanded.args)?;
+    if let Some(profile_id) = apply_profile_id.as_deref() {
+        validate_connect_apply_profile_matches_proxy(profile_id, &proxy)?;
+    }
     Ok(Cli {
         command: CommandKind::Connect(ConnectArgs {
-            proxy: dam_daemon::parse_proxy_options(expanded.args)?,
+            proxy,
             apply_profile_id,
         }),
     })
@@ -580,6 +644,79 @@ fn parse_status_command(args: &[String]) -> Result<Cli, String> {
 
     Ok(Cli {
         command: CommandKind::Status(parsed),
+    })
+}
+
+fn parse_profile_command(args: &[String]) -> Result<Cli, String> {
+    if args.is_empty() || matches!(args.first().map(String::as_str), Some("-h" | "--help")) {
+        println!("{}", usage_profile());
+        std::process::exit(0);
+    }
+
+    match args[0].as_str() {
+        "status" => parse_profile_status(&args[1..]),
+        "set" => parse_profile_set(&args[1..]),
+        "clear" => parse_profile_clear(&args[1..]),
+        command => Err(format!("unknown profile command: {command}")),
+    }
+}
+
+fn parse_profile_status(args: &[String]) -> Result<Cli, String> {
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "-h" | "--help" => {
+                println!("{}", usage_profile_status());
+                std::process::exit(0);
+            }
+            arg => return Err(format!("unknown profile status argument: {arg}")),
+        }
+    }
+
+    Ok(Cli {
+        command: CommandKind::Profile(ProfileArgs::Status { json }),
+    })
+}
+
+fn parse_profile_set(args: &[String]) -> Result<Cli, String> {
+    let mut profile_id = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => json = true,
+            "-h" | "--help" => {
+                println!("{}", usage_profile_set());
+                std::process::exit(0);
+            }
+            arg if profile_id.is_none() => profile_id = Some(arg.to_string()),
+            arg => return Err(format!("unexpected profile set argument: {arg}")),
+        }
+        i += 1;
+    }
+
+    let profile_id = profile_id.ok_or_else(|| "profile set requires a profile id".to_string())?;
+    Ok(Cli {
+        command: CommandKind::Profile(ProfileArgs::Set { profile_id, json }),
+    })
+}
+
+fn parse_profile_clear(args: &[String]) -> Result<Cli, String> {
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "-h" | "--help" => {
+                println!("{}", usage_profile_clear());
+                std::process::exit(0);
+            }
+            arg => return Err(format!("unknown profile clear argument: {arg}")),
+        }
+    }
+
+    Ok(Cli {
+        command: CommandKind::Profile(ProfileArgs::Clear { json }),
     })
 }
 
@@ -722,7 +859,10 @@ fn parse_integrations_rollback(args: &[String]) -> Result<Cli, String> {
     })
 }
 
-fn expand_connect_profile_args(args: &[String]) -> Result<ConnectProfileExpansion, String> {
+fn expand_connect_profile_args(
+    args: &[String],
+    active_profile_id: Option<&str>,
+) -> Result<ConnectProfileExpansion, String> {
     let mut expanded = Vec::new();
     let mut remaining = Vec::new();
     let mut profile_id = None;
@@ -749,6 +889,22 @@ fn expand_connect_profile_args(args: &[String]) -> Result<ConnectProfileExpansio
             arg => remaining.push(arg.to_string()),
         }
         i += 1;
+    }
+
+    if apply && profile_id.is_none() {
+        let id = active_profile_id.ok_or_else(|| {
+            "--apply requires --profile <id> or an active profile set by `dam profile set <id>`"
+                .to_string()
+        })?;
+        let profile = dam_integrations::profile(id, dam_integrations::DEFAULT_PROXY_URL)
+            .ok_or_else(|| {
+                format!(
+                    "unknown active integration profile: {id}\nknown profiles: {}",
+                    dam_integrations::profile_ids().join(", ")
+                )
+            })?;
+        profile_id = Some(id.to_string());
+        expanded.extend(profile.connect_args);
     }
 
     expanded.extend(remaining);
@@ -978,6 +1134,13 @@ fn render_status_view(view: &StatusView) -> String {
     let mut output = String::new();
     output.push_str(&format!("state: {}\n", view.state));
     output.push_str(&format!("message: {}\n", view.message));
+    match &view.active_profile {
+        Some(profile) => output.push_str(&format!("active_profile: {}\n", profile.profile_id)),
+        None => output.push_str("active_profile: none\n"),
+    }
+    if let Some(error) = &view.active_profile_error {
+        output.push_str(&format!("warning active_profile: {error}\n"));
+    }
     if let Some(state) = &view.daemon {
         output.push_str(&format!("pid: {}\n", state.pid));
         output.push_str(&format!("proxy: {}\n", state.proxy_url));
@@ -1003,6 +1166,118 @@ fn render_status_view(view: &StatusView) -> String {
         }
     }
     output
+}
+
+fn print_profile_status_view(view: &ProfileStatusView, json: bool) -> Result<(), String> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(view)
+                .map_err(|error| format!("failed to serialize profile status: {error}"))?
+        );
+    } else {
+        print!("{}", render_profile_status_view(view));
+    }
+    Ok(())
+}
+
+fn render_profile_status_view(view: &ProfileStatusView) -> String {
+    let mut output = String::new();
+    match &view.active_profile {
+        Some(profile) => {
+            output.push_str(&format!("active_profile: {}\n", profile.profile_id));
+            output.push_str(&format!("selected_at_unix: {}\n", profile.selected_at_unix));
+        }
+        None => output.push_str("active_profile: none\n"),
+    }
+    output.push_str(&format!("proxy_url: {}\n", view.proxy_url));
+    if let Some(apply) = &view.apply {
+        output.push_str(&format!(
+            "apply_state: {}\n",
+            integration_apply_status_tag(apply.status)
+        ));
+        output.push_str(&format!("target: {}\n", apply.target_path.display()));
+        output.push_str(&format!(
+            "rollback: {}\n",
+            if apply.rollback_available {
+                "available"
+            } else {
+                "not_available"
+            }
+        ));
+        output.push_str(&format!("message: {}\n", apply.message));
+    }
+    if let Some(error) = &view.inspection_error {
+        output.push_str(&format!("warning inspection: {error}\n"));
+    }
+    output
+}
+
+fn profile_status_view(state_dir: &std::path::Path) -> Result<ProfileStatusView, String> {
+    let active_profile = dam_integrations::read_active_profile(state_dir)?;
+    let proxy_url = integration_proxy_url(None);
+    let mut apply = None;
+    let mut inspection_error = None;
+    if let Some(profile) = &active_profile {
+        match default_integration_target_path(&profile.profile_id, state_dir).and_then(
+            |target_path| {
+                dam_integrations::inspect_apply(
+                    &profile.profile_id,
+                    &proxy_url,
+                    target_path,
+                    state_dir,
+                )
+            },
+        ) {
+            Ok(inspection) => apply = Some(inspection),
+            Err(error) => inspection_error = Some(error),
+        }
+    }
+
+    Ok(ProfileStatusView {
+        active_profile,
+        proxy_url,
+        apply,
+        inspection_error,
+    })
+}
+
+fn active_profile_for_status() -> (Option<dam_integrations::ActiveProfileState>, Option<String>) {
+    let state_dir = match integration_state_dir() {
+        Ok(path) => path,
+        Err(error) => return (None, Some(error)),
+    };
+    match dam_integrations::read_active_profile(&state_dir) {
+        Ok(profile) => (profile, None),
+        Err(error) => (None, Some(error)),
+    }
+}
+
+fn active_profile_for_connect_parse(args: &[String]) -> Result<Option<String>, String> {
+    if !matches!(args.first().map(String::as_str), Some("connect")) {
+        return Ok(None);
+    }
+    let connect_args = &args[1..];
+    if matches!(
+        connect_args.first().map(String::as_str),
+        Some("-h" | "--help")
+    ) {
+        return Ok(None);
+    }
+    if !connect_args.iter().any(|arg| arg == "--apply")
+        || connect_args.iter().any(|arg| arg == "--profile")
+    {
+        return Ok(None);
+    }
+
+    let state_dir = integration_state_dir()?;
+    match dam_integrations::read_active_profile(&state_dir)? {
+        Some(state) => Ok(Some(state.profile_id)),
+        None => Err(
+            "--apply requires --profile <id> or an active profile set by `dam profile set <id>`"
+                .to_string(),
+        ),
+    }
 }
 
 fn integration_proxy_url(proxy_url: Option<String>) -> String {
@@ -1131,6 +1406,26 @@ fn apply_connect_profile(profile_id: &str, proxy_url: &str) -> Result<ConnectApp
     })
 }
 
+fn validate_connect_apply_profile_matches_proxy(
+    profile_id: &str,
+    proxy: &dam_daemon::ProxyOptions,
+) -> Result<(), String> {
+    let profile = dam_integrations::profile(profile_id, dam_integrations::DEFAULT_PROXY_URL)
+        .ok_or_else(|| {
+            format!(
+                "unknown integration profile: {profile_id}\nknown profiles: {}",
+                dam_integrations::profile_ids().join(", ")
+            )
+        })?;
+    if profile.provider != proxy.provider {
+        return Err(format!(
+            "profile {profile_id} uses provider {}, but connect is configured for provider {}",
+            profile.provider, proxy.provider
+        ));
+    }
+    Ok(())
+}
+
 fn proxy_url_for_connect_apply(options: &dam_daemon::ProxyOptions) -> Result<String, String> {
     let addr = options
         .listen
@@ -1220,6 +1515,14 @@ fn proxy_state_tag(state: dam_api::ProxyState) -> &'static str {
         dam_api::ProxyState::ProviderDown => "provider_down",
         dam_api::ProxyState::ConfigRequired => "config_required",
         dam_api::ProxyState::DamDown => "dam_down",
+    }
+}
+
+fn integration_apply_status_tag(status: dam_integrations::IntegrationApplyStatus) -> &'static str {
+    match status {
+        dam_integrations::IntegrationApplyStatus::Applied => "applied",
+        dam_integrations::IntegrationApplyStatus::NeedsApply => "needs_apply",
+        dam_integrations::IntegrationApplyStatus::Modified => "modified",
     }
 }
 
@@ -1351,11 +1654,11 @@ fn spawn_tool(command: &ToolCommand) -> Result<tokio::process::Child, String> {
 }
 
 fn usage() -> &'static str {
-    "Usage: dam <command>\n\nCommands:\n  connect       Start the background DAM proxy daemon\n  status        Show background DAM protection status\n  disconnect    Stop the background DAM proxy daemon\n  integrations  List and inspect known harness integration profiles\n  codex         Start Codex through DAM in explicit API-key mode, or fail closed for ChatGPT-login mode\n  claude        Start a local DAM proxy and launch Claude Code through it\n\nRun `dam connect --help`, `dam integrations --help`, `dam codex --help`, or `dam claude --help` for command options."
+    "Usage: dam <command>\n\nCommands:\n  connect       Start the background DAM proxy daemon\n  status        Show background DAM protection status\n  profile       Select and inspect the active harness profile\n  disconnect    Stop the background DAM proxy daemon\n  integrations  List and inspect known harness integration profiles\n  codex         Start Codex through DAM in explicit API-key mode, or fail closed for ChatGPT-login mode\n  claude        Start a local DAM proxy and launch Claude Code through it\n\nRun `dam connect --help`, `dam profile --help`, `dam integrations --help`, `dam codex --help`, or `dam claude --help` for command options."
 }
 
 fn usage_connect() -> &'static str {
-    "Usage: dam connect [--profile PROFILE [--apply]|--openai|--anthropic] [DAM_OPTIONS]\n\nStarts a background DAM proxy daemon. By default this exposes an OpenAI-compatible local endpoint at http://127.0.0.1:7828/v1 and forwards caller-owned provider auth headers.\n\nDAM options:\n  --profile <id>          Apply integration profile daemon defaults\n  --apply                 Apply the selected profile before connecting, with rollback support\n  --openai                Use the OpenAI-compatible preset (default)\n  --anthropic             Use the Anthropic preset\n  --config <path>         Load DAM config file before daemon overrides\n  --listen <addr>         Local proxy listen address (default: 127.0.0.1:7828)\n  --target-name <name>    Proxy target name (default: openai)\n  --provider <provider>   Provider adapter: openai-compatible or anthropic\n  --upstream <url>        Provider upstream URL\n  --db <path>             Vault SQLite path (default: vault.db)\n  --log <path>            Log SQLite path (default: log.db)\n  --consent-db <path>     Consent SQLite path (default: consent.db)\n  --no-log                Disable DAM log writes\n  --no-resolve-inbound    Leave DAM references unresolved in inbound responses (default)\n  --resolve-inbound       Restore DAM references in inbound responses\n\nKnown profiles: openai-compatible, anthropic, claude-code, codex-api, xai-compatible"
+    "Usage: dam connect [--profile PROFILE [--apply]|--apply|--openai|--anthropic] [DAM_OPTIONS]\n\nStarts a background DAM proxy daemon. By default this exposes an OpenAI-compatible local endpoint at http://127.0.0.1:7828/v1 and forwards caller-owned provider auth headers. If --apply is used without --profile, DAM uses the active profile selected by `dam profile set <id>`.\n\nDAM options:\n  --profile <id>          Apply integration profile daemon defaults\n  --apply                 Apply the selected or active profile before connecting, with rollback support\n  --openai                Use the OpenAI-compatible preset (default)\n  --anthropic             Use the Anthropic preset\n  --config <path>         Load DAM config file before daemon overrides\n  --listen <addr>         Local proxy listen address (default: 127.0.0.1:7828)\n  --target-name <name>    Proxy target name (default: openai)\n  --provider <provider>   Provider adapter: openai-compatible or anthropic\n  --upstream <url>        Provider upstream URL\n  --db <path>             Vault SQLite path (default: vault.db)\n  --log <path>            Log SQLite path (default: log.db)\n  --consent-db <path>     Consent SQLite path (default: consent.db)\n  --no-log                Disable DAM log writes\n  --no-resolve-inbound    Leave DAM references unresolved in inbound responses (default)\n  --resolve-inbound       Restore DAM references in inbound responses\n\nKnown profiles: openai-compatible, anthropic, claude-code, codex-api, xai-compatible"
 }
 
 fn usage_status() -> &'static str {
@@ -1364,6 +1667,22 @@ fn usage_status() -> &'static str {
 
 fn usage_disconnect() -> &'static str {
     "Usage: dam disconnect"
+}
+
+fn usage_profile() -> &'static str {
+    "Usage: dam profile <command>\n\nCommands:\n  status  Show the active harness profile and apply state\n  set     Select the active harness profile\n  clear   Clear the active harness profile"
+}
+
+fn usage_profile_status() -> &'static str {
+    "Usage: dam profile status [--json]"
+}
+
+fn usage_profile_set() -> &'static str {
+    "Usage: dam profile set <profile> [--json]"
+}
+
+fn usage_profile_clear() -> &'static str {
+    "Usage: dam profile clear [--json]"
 }
 
 fn usage_integrations() -> &'static str {
@@ -1562,10 +1881,46 @@ mod tests {
     }
 
     #[test]
-    fn connect_apply_requires_profile() {
+    fn parses_connect_apply_with_active_profile() {
+        let cli = parse_cli_with_active_profile(
+            [
+                "connect".to_string(),
+                "--apply".to_string(),
+                "--listen".to_string(),
+                "127.0.0.1:9000".to_string(),
+            ],
+            Some("claude-code".to_string()),
+        )
+        .unwrap();
+
+        let CommandKind::Connect(args) = cli.command else {
+            panic!("expected connect");
+        };
+        assert_eq!(args.apply_profile_id, Some("claude-code".to_string()));
+        assert_eq!(args.proxy.listen, "127.0.0.1:9000");
+        assert_eq!(args.proxy.provider, "anthropic");
+        assert_eq!(args.proxy.upstream, ANTHROPIC_UPSTREAM);
+    }
+
+    #[test]
+    fn connect_apply_requires_profile_or_active_profile() {
         let error = parse_cli(["connect".to_string(), "--apply".to_string()]).unwrap_err();
 
-        assert!(error.contains("--apply requires --profile"));
+        assert!(error.contains("active profile"));
+    }
+
+    #[test]
+    fn connect_apply_rejects_profile_provider_mismatch() {
+        let error = parse_cli([
+            "connect".to_string(),
+            "--profile".to_string(),
+            "claude-code".to_string(),
+            "--apply".to_string(),
+            "--openai".to_string(),
+        ])
+        .unwrap_err();
+
+        assert!(error.contains("connect is configured for provider openai-compatible"));
     }
 
     #[test]
@@ -1676,6 +2031,55 @@ mod tests {
         let cli = parse_cli(["status".to_string(), "--json".to_string()]).unwrap();
 
         assert_eq!(cli.command, CommandKind::Status(StatusArgs { json: true }));
+    }
+
+    #[test]
+    fn parses_profile_status_json() {
+        let cli = parse_cli([
+            "profile".to_string(),
+            "status".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.command,
+            CommandKind::Profile(ProfileArgs::Status { json: true })
+        );
+    }
+
+    #[test]
+    fn parses_profile_set_json() {
+        let cli = parse_cli([
+            "profile".to_string(),
+            "set".to_string(),
+            "claude-code".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.command,
+            CommandKind::Profile(ProfileArgs::Set {
+                profile_id: "claude-code".to_string(),
+                json: true,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_profile_clear_json() {
+        let cli = parse_cli([
+            "profile".to_string(),
+            "clear".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.command,
+            CommandKind::Profile(ProfileArgs::Clear { json: true })
+        );
     }
 
     #[test]

@@ -441,11 +441,24 @@ fn dam_connect_profile_apply_writes_claude_settings_and_starts_daemon() {
     let daemon = DamDaemonGuard::new(state_dir.clone(), dir.path().to_path_buf());
 
     ensure_binaries();
+    let profile_set = Command::new(binary("dam"))
+        .args(["profile", "set", "claude-code"])
+        .current_dir(dir.path())
+        .env("DAM_STATE_DIR", &state_dir)
+        .env("HOME", &home_dir)
+        .output()
+        .expect("run dam profile set");
+
+    assert!(
+        profile_set.status.success(),
+        "{}",
+        utf8(&profile_set.stderr)
+    );
+    assert!(utf8(&profile_set.stdout).contains("active_profile: claude-code"));
+
     let connect_output = Command::new(binary("dam"))
         .args([
             "connect",
-            "--profile",
-            "claude-code",
             "--apply",
             "--listen",
             &addr.to_string(),
@@ -479,6 +492,19 @@ fn dam_connect_profile_apply_writes_claude_settings_and_starts_daemon() {
         settings["env"]["ANTHROPIC_BASE_URL"],
         format!("http://{addr}")
     );
+
+    let status = Command::new(binary("dam"))
+        .arg("status")
+        .current_dir(dir.path())
+        .env("DAM_STATE_DIR", &state_dir)
+        .env("HOME", &home_dir)
+        .output()
+        .expect("run dam status");
+
+    assert!(status.status.success(), "{}", utf8(&status.stderr));
+    let status_stdout = utf8(&status.stdout);
+    assert!(status_stdout.contains("state: connected"));
+    assert!(status_stdout.contains("active_profile: claude-code"));
 
     let rollback = Command::new(binary("dam"))
         .args(["integrations", "rollback", "claude-code"])

@@ -81,7 +81,8 @@ It must not contain raw sensitive values, vault values, provider API keys, or au
 
 ```bash
 dam connect [--openai|--anthropic] [DAM_OPTIONS]
-dam connect --profile <profile>
+dam connect --profile <profile> [--apply]
+dam connect --apply
 dam status [--json]
 dam disconnect
 ```
@@ -90,6 +91,7 @@ Daemon options:
 
 ```text
 --profile <id>       Apply integration profile daemon defaults
+--apply              Apply the selected or active integration profile before connecting
 --openai             Use the OpenAI-compatible preset (default)
 --anthropic          Use the Anthropic preset
 --config <path>      Load DAM config before daemon overrides

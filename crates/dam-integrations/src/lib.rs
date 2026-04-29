@@ -27,6 +27,12 @@ pub struct IntegrationProfile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveProfileState {
+    pub profile_id: String,
+    pub selected_at_unix: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntegrationSetting {
     pub key: String,
     pub value: String,
@@ -179,6 +185,69 @@ pub fn profile_ids() -> Vec<&'static str> {
 
 pub fn openai_base_url(proxy_url: &str) -> String {
     format!("{}/v1", proxy_url.trim_end_matches('/'))
+}
+
+pub fn active_profile_path(integration_state_dir: &Path) -> PathBuf {
+    integration_state_dir.join("active-profile.json")
+}
+
+pub fn read_active_profile(
+    integration_state_dir: &Path,
+) -> Result<Option<ActiveProfileState>, String> {
+    let path = active_profile_path(integration_state_dir);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to read active profile {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    let state = serde_json::from_str::<ActiveProfileState>(&raw)
+        .map_err(|error| format!("failed to parse active profile {}: {error}", path.display()))?;
+    if profile(&state.profile_id, DEFAULT_PROXY_URL).is_none() {
+        return Err(format!(
+            "active profile {} is not a known integration profile\nknown profiles: {}",
+            state.profile_id,
+            profile_ids().join(", ")
+        ));
+    }
+    Ok(Some(state))
+}
+
+pub fn set_active_profile(
+    profile_id: &str,
+    integration_state_dir: &Path,
+) -> Result<ActiveProfileState, String> {
+    if profile(profile_id, DEFAULT_PROXY_URL).is_none() {
+        return Err(unknown_profile_error(profile_id));
+    }
+    fs::create_dir_all(integration_state_dir).map_err(|error| {
+        format!(
+            "failed to create integration state directory {}: {error}",
+            integration_state_dir.display()
+        )
+    })?;
+    let state = ActiveProfileState {
+        profile_id: profile_id.to_string(),
+        selected_at_unix: unix_timestamp(),
+    };
+    write_json_file(&active_profile_path(integration_state_dir), &state)?;
+    Ok(state)
+}
+
+pub fn clear_active_profile(integration_state_dir: &Path) -> Result<bool, String> {
+    let path = active_profile_path(integration_state_dir);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "failed to remove active profile {}: {error}",
+            path.display()
+        )),
+    }
 }
 
 pub fn default_apply_path(
@@ -973,6 +1042,30 @@ mod tests {
             path,
             PathBuf::from("/tmp/dam/integrations/profiles/anthropic.env")
         );
+    }
+
+    #[test]
+    fn active_profile_state_roundtrips_and_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("integrations");
+
+        assert_eq!(read_active_profile(&state_dir).unwrap(), None);
+
+        let selected = set_active_profile("claude-code", &state_dir).unwrap();
+        assert_eq!(selected.profile_id, "claude-code");
+        assert_eq!(read_active_profile(&state_dir).unwrap(), Some(selected));
+
+        assert!(clear_active_profile(&state_dir).unwrap());
+        assert_eq!(read_active_profile(&state_dir).unwrap(), None);
+        assert!(!clear_active_profile(&state_dir).unwrap());
+    }
+
+    #[test]
+    fn active_profile_rejects_unknown_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = set_active_profile("missing", dir.path()).unwrap_err();
+
+        assert!(error.contains("unknown integration profile: missing"));
     }
 
     #[test]

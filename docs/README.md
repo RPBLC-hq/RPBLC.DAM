@@ -15,7 +15,7 @@ Deferred security and product-design work is tracked in [parking-lot.md](parking
 - [dam-consent](dam-consent.md): exact-value passthrough grants with TTL and revocation.
 - [dam-daemon](dam-daemon.md): background local proxy lifecycle, state file, and `dam connect/status/disconnect` support.
 - [dam-diagnostics](dam-diagnostics.md): shared local readiness checks for `damctl doctor` and `dam-web /doctor`.
-- [dam-integrations](dam-integrations.md): known local harness profiles for `dam integrations` and `dam connect --profile`.
+- [dam-integrations](dam-integrations.md): known local harness profiles and active profile state for `dam integrations`, `dam profile`, and `dam connect --profile`.
 - [damctl](damctl.md): local status and config diagnostics CLI.
 - [dam-detect](dam-detect.md): pure rule-based sensitive value detection.
 - [dam-e2e](dam-e2e.md): process-level end-to-end tests across the local binaries.
@@ -119,7 +119,10 @@ dam status / dam disconnect
   -> daemon state file
   -> dam-proxy /health when connected
 
-dam integrations list/show
+dam profile
+  -> active harness profile state
+
+dam integrations list/show/apply/rollback
   -> dam-integrations profile catalog
   -> local base URL and harness setup snippets
 

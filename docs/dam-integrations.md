@@ -12,10 +12,16 @@ dam integrations show <profile>
 dam integrations apply <profile> --dry-run
 dam integrations apply <profile>
 dam integrations rollback <profile>
+dam profile status
+dam profile set <profile>
+dam profile clear
 dam connect --profile <profile> --apply
+dam connect --apply
 ```
 
 `dam integrations list` shows known profiles. `dam integrations show` renders the base URL settings and command snippets for one profile. `dam connect --profile` applies the daemon-side defaults for profiles that need a specific provider/upstream. Add `--apply` to apply the profile target before connecting.
+
+`dam profile set <id>` writes the active local harness profile under DAM's integration state directory. `dam profile status` reports the active profile, effective proxy URL, and apply state for the profile target. `dam connect --apply` uses the active profile when `--profile` is omitted.
 
 `dam integrations apply` calls the `dam-integrations` apply engine to write profile setup to a safe target with a rollback record:
 
@@ -46,9 +52,11 @@ One-command setup and connect:
 
 ```bash
 dam connect --profile claude-code --apply
+dam profile set claude-code
+dam connect --apply
 ```
 
-`dam connect --profile <id> --apply` refuses to overwrite a target that DAM previously applied but that no longer matches DAM's desired content. Use `damctl integrations check <id>` to inspect that state, or `dam integrations rollback <id>` to restore the last DAM-created backup.
+`dam connect --profile <id> --apply` and `dam connect --apply` with an active profile refuse to overwrite a target that DAM previously applied but that no longer matches DAM's desired content. Use `damctl integrations check <id>` to inspect that state, or `dam integrations rollback <id>` to restore the last DAM-created backup.
 
 Use `--json` on `list` or `show` for machine-readable profile data:
 
@@ -79,6 +87,7 @@ When `--proxy-url` is omitted, `dam` uses the connected daemon state if availabl
 
 `dam-integrations` owns:
 
+- active local profile state;
 - default target path selection for known profiles;
 - desired file content generation;
 - dry-run planning;
@@ -107,4 +116,4 @@ Profiles may contain:
 - Generic profiles write DAM-managed environment files rather than mutating shell or unknown harness config.
 - No model discovery is performed.
 - No system proxy, VPN/TUN, TLS interception, or WebSocket configuration is installed.
-- One `dam connect --profile` command still starts one daemon target at a time.
+- One `dam connect --profile` or active-profile `dam connect --apply` command still starts one daemon target at a time.

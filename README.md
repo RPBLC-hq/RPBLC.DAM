@@ -225,7 +225,11 @@ Background local endpoint:
 ```bash
 dam connect [--openai|--anthropic] [DAM_OPTIONS]
 dam connect --profile <profile> [--apply] [DAM_OPTIONS]
+dam connect --apply [DAM_OPTIONS]
 dam status [--json]
+dam profile status [--json]
+dam profile set <profile> [--json]
+dam profile clear [--json]
 dam disconnect
 dam integrations list [--json]
 dam integrations show <profile> [--json]
@@ -244,7 +248,7 @@ DAM options:
 
 ```text
 --profile <id>        Apply integration profile daemon defaults
---apply               Apply the selected integration profile before connecting
+--apply               Apply the selected or active integration profile before connecting
 --openai              Use the OpenAI-compatible daemon preset
 --anthropic           Use the Anthropic daemon preset
 --api                 Use Codex API-key mode through DAM
@@ -293,7 +297,8 @@ Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default
 ## V1 Limits
 
 - DAM is explicit base-URL routing, not transparent HTTPS interception, VPN/TUN routing, or TLS MITM.
-- `dam connect` starts a local endpoint, and `dam connect --profile <id> --apply` can apply reversible harness setup before connecting. `dam integrations apply codex-api` edits Codex config with a backup, `dam integrations apply claude-code` edits Claude Code settings with a backup, and generic profiles write DAM-managed environment files.
+- `dam profile set <id>` selects the active harness profile for the local user. `dam connect --apply` uses that active profile when `--profile` is omitted.
+- `dam connect` starts a local endpoint, and `dam connect --profile <id> --apply` or `dam connect --apply` with an active profile can apply reversible harness setup before connecting. `dam integrations apply codex-api` edits Codex config with a backup, `dam integrations apply claude-code` edits Claude Code settings with a backup, and generic profiles write DAM-managed environment files.
 - Codex ChatGPT-login mode is blocked because its current model transport is not protected by the base-URL launcher.
 - Inbound provider responses are not redetected. Known DAM references can be resolved locally with `--resolve-inbound`, but this is off by default.
 - The current vault/log/consent stores are local SQLite implementations.
@@ -305,8 +310,8 @@ Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default
 Recommended order for the next engineering sessions:
 
 1. Smoke test `dam connect`, `dam claude`, and `dam codex --api` against fake or real provider paths, then inspect the vault and log SQLite databases.
-2. Expand profile apply support beyond Claude/Codex where harness config files can be changed safely.
-3. Expand `damctl` beyond doctor with richer service/install checks.
+2. Add the web/tray profile selector on top of the active profile state used by `dam profile set`.
+3. Expand profile apply support beyond Claude/Codex where harness config files can be changed safely.
 4. Add login/startup UX for the daemon after profile apply is stable.
 
 Do not spend the next session on these until their prerequisite slice exists:
@@ -324,10 +329,11 @@ Implemented extraction modules:
 - `dam-router`: reusable first-target selection, provider classification, auth mode, and failure-mode decisions.
 - `dam-diagnostics`: shared local readiness checks for `damctl doctor` and `dam-web /doctor`.
 - `dam-daemon`: background local proxy lifecycle and state file for `dam connect/status/disconnect`.
-- `dam-integrations`: known local harness profiles for `dam integrations` and `dam connect --profile`.
+- `dam-integrations`: known local harness profiles for `dam integrations`, `dam profile`, and `dam connect --profile`.
 
 Near-term product slices still to build:
 
+- web/tray profile selection that reads and writes the active local profile state.
 - broader integration profile apply/install support with safe rollback where harness config files can be changed reliably.
 - login/startup UX for the local daemon after profile apply is stable.
 
