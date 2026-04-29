@@ -6,6 +6,7 @@ use std::time::Duration;
 enum Command {
     Status(StatusArgs),
     Doctor(DoctorArgs),
+    Daemon(DaemonArgs),
     Integrations(IntegrationsArgs),
     ConfigCheck(ConfigCheckArgs),
     McpConfig(McpConfigArgs),
@@ -32,6 +33,28 @@ struct DoctorArgs {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ConfigCheckArgs {
     common: CommonArgs,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct DaemonArgs {
+    command: DaemonCommand,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DaemonCommand {
+    Inspect(DaemonInspectArgs),
+}
+
+impl Default for DaemonCommand {
+    fn default() -> Self {
+        Self::Inspect(DaemonInspectArgs::default())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct DaemonInspectArgs {
+    json: bool,
+    state_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -70,6 +93,16 @@ struct IntegrationsCheckReport {
     profiles: Vec<dam_integrations::IntegrationApplyInspection>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct DaemonInspectReport {
+    state: &'static str,
+    message: String,
+    state_dir: PathBuf,
+    state_file: PathBuf,
+    process_running: Option<bool>,
+    daemon: Option<dam_daemon::DaemonState>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CommandOutput {
     code: i32,
@@ -103,6 +136,7 @@ async fn run(command: Command) -> CommandOutput {
     match command {
         Command::Status(args) => status(args).await,
         Command::Doctor(args) => doctor(args).await,
+        Command::Daemon(args) => daemon(args),
         Command::Integrations(args) => integrations(args),
         Command::ConfigCheck(args) => config_check(args),
         Command::McpConfig(args) => mcp_config(args),
@@ -240,6 +274,30 @@ fn config_check(args: ConfigCheckArgs) -> CommandOutput {
 
     CommandOutput {
         code,
+        stdout,
+        stderr: String::new(),
+    }
+}
+
+fn daemon(args: DaemonArgs) -> CommandOutput {
+    match args.command {
+        DaemonCommand::Inspect(args) => daemon_inspect(args),
+    }
+}
+
+fn daemon_inspect(args: DaemonInspectArgs) -> CommandOutput {
+    let report = match daemon_inspect_report(&args) {
+        Ok(report) => report,
+        Err(error) => return CommandOutput::fail(2, format!("{error}\n")),
+    };
+    let stdout = if args.json {
+        json(&report)
+    } else {
+        render_daemon_inspect_report(&report)
+    };
+
+    CommandOutput {
+        code: 0,
         stdout,
         stderr: String::new(),
     }
@@ -391,6 +449,64 @@ fn config_load_failed_report(error: dam_config::ConfigError) -> dam_api::HealthR
     }
 }
 
+fn daemon_inspect_report(args: &DaemonInspectArgs) -> Result<DaemonInspectReport, String> {
+    let paths = daemon_state_paths(args.state_dir.clone())?;
+    let status = match args.state_dir.as_ref() {
+        Some(_) => daemon_status_from_file(&paths.state_file)?,
+        None => dam_daemon::daemon_status().map_err(|error| error.to_string())?,
+    };
+
+    let report = match status {
+        dam_daemon::DaemonStatus::Disconnected => DaemonInspectReport {
+            state: "disconnected",
+            message: "no daemon state file".to_string(),
+            state_dir: paths.state_dir,
+            state_file: paths.state_file,
+            process_running: None,
+            daemon: None,
+        },
+        dam_daemon::DaemonStatus::Stale(state) => DaemonInspectReport {
+            state: "stale",
+            message: format!("daemon state points at stopped pid {}", state.pid),
+            state_dir: paths.state_dir,
+            state_file: paths.state_file,
+            process_running: Some(false),
+            daemon: Some(state),
+        },
+        dam_daemon::DaemonStatus::Connected(state) => DaemonInspectReport {
+            state: "connected",
+            message: format!("daemon process {} is running", state.pid),
+            state_dir: paths.state_dir,
+            state_file: paths.state_file,
+            process_running: Some(true),
+            daemon: Some(state),
+        },
+    };
+
+    Ok(report)
+}
+
+fn daemon_state_paths(state_dir: Option<PathBuf>) -> Result<dam_daemon::StatePaths, String> {
+    match state_dir {
+        Some(state_dir) => Ok(dam_daemon::StatePaths {
+            state_file: state_dir.join("daemon.json"),
+            state_dir,
+        }),
+        None => dam_daemon::state_paths().map_err(|error| error.to_string()),
+    }
+}
+
+fn daemon_status_from_file(path: &std::path::Path) -> Result<dam_daemon::DaemonStatus, String> {
+    let Some(state) = dam_daemon::read_state_from(path).map_err(|error| error.to_string())? else {
+        return Ok(dam_daemon::DaemonStatus::Disconnected);
+    };
+    if dam_daemon::process_is_running(state.pid) {
+        Ok(dam_daemon::DaemonStatus::Connected(state))
+    } else {
+        Ok(dam_daemon::DaemonStatus::Stale(state))
+    }
+}
+
 fn integrations_check_report(
     args: &IntegrationsCheckArgs,
 ) -> Result<IntegrationsCheckReport, String> {
@@ -499,6 +615,52 @@ fn render_integrations_check_report(report: &IntegrationsCheckReport) -> String 
         if let Some(error) = &profile.record_error {
             output.push_str(&format!("  record_error: {error}\n"));
         }
+    }
+    output
+}
+
+fn render_daemon_inspect_report(report: &DaemonInspectReport) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("state: {}\n", report.state));
+    output.push_str(&format!("message: {}\n", report.message));
+    output.push_str(&format!("state_dir: {}\n", report.state_dir.display()));
+    output.push_str(&format!("state_file: {}\n", report.state_file.display()));
+    if let Some(process_running) = report.process_running {
+        output.push_str(&format!(
+            "process: {}\n",
+            if process_running {
+                "running"
+            } else {
+                "not_running"
+            }
+        ));
+    }
+    if let Some(state) = &report.daemon {
+        output.push_str(&format!("pid: {}\n", state.pid));
+        output.push_str(&format!("listen: {}\n", state.listen));
+        output.push_str(&format!("proxy: {}\n", state.proxy_url));
+        if let Some(target) = &state.target_name {
+            output.push_str(&format!("target: {target}\n"));
+        }
+        if let Some(provider) = &state.target_provider {
+            output.push_str(&format!("provider: {provider}\n"));
+        }
+        if let Some(upstream) = &state.upstream {
+            output.push_str(&format!("upstream: {upstream}\n"));
+        }
+        if let Some(config_path) = &state.config_path {
+            output.push_str(&format!("config: {}\n", config_path.display()));
+        }
+        output.push_str(&format!("vault: {}\n", state.vault_path.display()));
+        match &state.log_path {
+            Some(path) => output.push_str(&format!("log: {}\n", path.display())),
+            None => output.push_str("log: disabled\n"),
+        }
+        if let Some(path) = &state.consent_path {
+            output.push_str(&format!("consent: {}\n", path.display()));
+        }
+        output.push_str(&format!("resolve_inbound: {}\n", state.resolve_inbound));
+        output.push_str(&format!("started_at_unix: {}\n", state.started_at_unix));
     }
     output
 }
@@ -654,6 +816,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     match args[0].as_str() {
         "status" => parse_status_args(&args[1..]),
         "doctor" => parse_doctor_args(&args[1..]),
+        "daemon" => parse_daemon_args(&args[1..]),
         "integrations" => parse_integrations_args(&args[1..]),
         "config" => parse_config_args(&args[1..]),
         "mcp" => parse_mcp_args(&args[1..]),
@@ -663,6 +826,37 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         }
         command => Err(format!("unknown command: {command}")),
     }
+}
+
+fn parse_daemon_args(args: &[String]) -> Result<Command, String> {
+    if args.first().map(String::as_str) != Some("inspect") {
+        return Err("expected daemon inspect".to_string());
+    }
+
+    let mut parsed = DaemonInspectArgs::default();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--state-dir" => {
+                i += 1;
+                parsed.state_dir = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| "--state-dir requires a path".to_string())?,
+                ));
+            }
+            "--json" => parsed.json = true,
+            "-h" | "--help" => {
+                println!("{}", usage_daemon_inspect());
+                std::process::exit(0);
+            }
+            arg => return Err(format!("unknown daemon inspect argument: {arg}")),
+        }
+        i += 1;
+    }
+
+    Ok(Command::Daemon(DaemonArgs {
+        command: DaemonCommand::Inspect(parsed),
+    }))
 }
 
 fn parse_integrations_args(args: &[String]) -> Result<Command, String> {
@@ -831,7 +1025,7 @@ fn parse_config_args(args: &[String]) -> Result<Command, String> {
 }
 
 fn usage() -> &'static str {
-    "Usage: damctl <command>\n\nCommands:\n  status              Check the local DAM proxy health endpoint\n  doctor              Run local readiness checks for the protected UX\n  integrations check  Inspect integration profile apply state\n  config check        Validate local DAM config for the current implementation\n  mcp config          Print MCP server config for DAM"
+    "Usage: damctl <command>\n\nCommands:\n  status              Check the local DAM proxy health endpoint\n  doctor              Run local readiness checks for the protected UX\n  daemon inspect      Inspect local daemon state without changing it\n  integrations check  Inspect integration profile apply state\n  config check        Validate local DAM config for the current implementation\n  mcp config          Print MCP server config for DAM"
 }
 
 fn usage_status() -> &'static str {
@@ -844,6 +1038,10 @@ fn usage_doctor() -> &'static str {
 
 fn usage_config_check() -> &'static str {
     "Usage: damctl config check [--config dam.toml] [--json]"
+}
+
+fn usage_daemon_inspect() -> &'static str {
+    "Usage: damctl daemon inspect [--state-dir PATH] [--json]"
 }
 
 fn usage_integrations_check() -> &'static str {
@@ -934,6 +1132,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_daemon_inspect_accepts_state_dir_and_json() {
+        let command = parse_args([
+            "daemon".to_string(),
+            "inspect".to_string(),
+            "--state-dir".to_string(),
+            "/tmp/dam-state".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            Command::Daemon(DaemonArgs {
+                command: DaemonCommand::Inspect(DaemonInspectArgs {
+                    json: true,
+                    state_dir: Some(PathBuf::from("/tmp/dam-state")),
+                })
+            })
+        );
+    }
+
+    #[test]
     fn parse_config_check_accepts_config() {
         let command = parse_args([
             "config".to_string(),
@@ -1012,6 +1232,73 @@ mod tests {
         assert_eq!(output.code, 0);
         assert!(output.stdout.contains("\"command\": \"dam-mcp\""));
         assert!(output.stdout.contains("\"--config\""));
+    }
+
+    #[test]
+    fn daemon_inspect_reports_disconnected_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = daemon_inspect(DaemonInspectArgs {
+            json: true,
+            state_dir: Some(dir.path().join("state")),
+        });
+
+        assert_eq!(output.code, 0);
+        let report: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(report["state"], "disconnected");
+        assert_eq!(report["process_running"], serde_json::Value::Null);
+        assert!(
+            report["state_file"]
+                .as_str()
+                .unwrap()
+                .ends_with("daemon.json")
+        );
+    }
+
+    #[test]
+    fn daemon_inspect_reports_stale_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state = test_daemon_state(9_999_999);
+        dam_daemon::write_state_to(&state_dir.join("daemon.json"), &state).unwrap();
+
+        let output = daemon_inspect(DaemonInspectArgs {
+            json: false,
+            state_dir: Some(state_dir.clone()),
+        });
+
+        assert_eq!(output.code, 0);
+        assert!(output.stdout.contains("state: stale"));
+        assert!(output.stdout.contains("process: not_running"));
+        assert!(output.stdout.contains("pid: 9999999"));
+        assert!(
+            output
+                .stdout
+                .contains(&format!("state_dir: {}", state_dir.display()))
+        );
+    }
+
+    #[test]
+    fn daemon_inspect_reports_connected_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let state = test_daemon_state(std::process::id());
+        dam_daemon::write_state_to(&state_dir.join("daemon.json"), &state).unwrap();
+
+        let output = daemon_inspect(DaemonInspectArgs {
+            json: false,
+            state_dir: Some(state_dir),
+        });
+
+        assert_eq!(output.code, 0);
+        assert!(output.stdout.contains("state: connected"));
+        assert!(output.stdout.contains("process: running"));
+        assert!(output.stdout.contains("target: openai"));
+        assert!(output.stdout.contains("provider: openai-compatible"));
+        assert!(output.stdout.contains("upstream: https://api.openai.com"));
+        assert!(output.stdout.contains("log: disabled"));
+        assert!(output.stdout.contains("resolve_inbound: false"));
     }
 
     #[test]
@@ -1280,5 +1567,23 @@ mod tests {
                 .stdout
                 .contains("proxy_config: degraded - proxy is disabled")
         );
+    }
+
+    fn test_daemon_state(pid: u32) -> dam_daemon::DaemonState {
+        dam_daemon::DaemonState {
+            version: 1,
+            pid,
+            listen: "127.0.0.1:7828".to_string(),
+            proxy_url: "http://127.0.0.1:7828".to_string(),
+            config_path: Some(PathBuf::from("dam.toml")),
+            vault_path: PathBuf::from("vault.db"),
+            log_path: None,
+            consent_path: Some(PathBuf::from("consent.db")),
+            resolve_inbound: false,
+            target_name: Some("openai".to_string()),
+            target_provider: Some("openai-compatible".to_string()),
+            upstream: Some("https://api.openai.com".to_string()),
+            started_at_unix: 1_700_000_000,
+        }
     }
 }

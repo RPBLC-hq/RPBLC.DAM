@@ -6,6 +6,7 @@ The current slice does not start or stop services. It answers these questions:
 
 - is the local proxy protecting traffic?
 - is this local install ready for the protected agent UX?
+- what daemon state file and process does the local lifecycle layer see?
 - are known integration profiles applied, unapplied, or modified?
 - is the local config valid for the current implementation?
 - what MCP config should an agent use for DAM?
@@ -15,6 +16,7 @@ The current slice does not start or stop services. It answers these questions:
 ```bash
 cargo run -p damctl -- status
 cargo run -p damctl -- doctor
+cargo run -p damctl -- daemon inspect
 cargo run -p damctl -- integrations check
 cargo run -p damctl -- config check
 cargo run -p damctl -- mcp config
@@ -41,6 +43,7 @@ JSON output:
 ```bash
 cargo run -p damctl -- status --json
 cargo run -p damctl -- doctor --json
+cargo run -p damctl -- daemon inspect --json
 cargo run -p damctl -- integrations check --json
 cargo run -p damctl -- config check --json
 ```
@@ -83,6 +86,29 @@ Exit codes:
 - `2`: command arguments or config loading failed.
 
 Use `--proxy-url` to check a specific running proxy endpoint instead of the configured `proxy.listen`.
+
+## `daemon inspect`
+
+`daemon inspect` reads the local daemon state file and reports what lifecycle state DAM sees. It does not start, stop, or repair the daemon.
+
+```bash
+cargo run -p damctl -- daemon inspect
+cargo run -p damctl -- daemon inspect --json
+```
+
+It reports:
+
+- lifecycle state: `connected`, `stale`, or `disconnected`;
+- state directory and state file path;
+- whether the recorded PID is running when a state file exists;
+- proxy URL, target, provider, upstream, local database paths, and inbound resolution setting from the state file.
+
+Use `--state-dir PATH` to inspect a non-default state directory, for example in tests or support sessions.
+
+Exit codes:
+
+- `0`: daemon state inspection completed, including disconnected and stale states.
+- `2`: command arguments failed, state path resolution failed, or the daemon state file was unreadable.
 
 ## `integrations check`
 
@@ -140,6 +166,7 @@ This is the bridge until the installer layer can write agent-specific MCP config
 ## Current Limits
 
 - No daemon lifecycle management yet.
+- `damctl daemon inspect` is read-only. Use `dam connect` and `dam disconnect` for lifecycle changes.
 - No bypass toggle command yet.
 - No real-provider credential validation beyond checking whether configured env vars are present.
 

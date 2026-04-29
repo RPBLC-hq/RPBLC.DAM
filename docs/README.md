@@ -143,6 +143,9 @@ damctl doctor
   -> dam-integrations apply-state summary
   -> dam-api HealthReport
 
+damctl daemon inspect
+  -> dam-daemon state file
+
 damctl integrations check
   -> dam-integrations apply-state inspection
 

@@ -272,6 +272,7 @@ Control and diagnostics:
 ```bash
 cargo run -p damctl -- status
 cargo run -p damctl -- doctor --config dam.example.toml
+cargo run -p damctl -- daemon inspect
 cargo run -p damctl -- integrations check
 cargo run -p damctl -- config check --config dam.example.toml
 cargo run -p damctl -- mcp config --config dam.example.toml
@@ -304,7 +305,7 @@ Recommended order for the next engineering sessions:
 
 1. Smoke test `dam connect`, `dam claude`, and `dam codex --api` against fake or real provider paths, then inspect the vault and log SQLite databases.
 2. Expand profile apply support beyond Codex where harness config files can be changed safely.
-3. Expand `damctl` beyond doctor: bypass status and daemon state inspection.
+3. Expand `damctl` beyond doctor: bypass status and richer service/install checks.
 4. Add login/startup UX for the daemon after profile apply is stable.
 
 Do not spend the next session on these until their prerequisite slice exists:

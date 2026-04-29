@@ -107,6 +107,8 @@ Daemon options:
 
 `dam status --json` emits a local status envelope containing daemon state and, when reachable, the `dam-api` `ProxyReport` returned by `/health`.
 
+`damctl daemon inspect` is the read-only support/debug view over the same state file. It reports `connected`, `stale`, or `disconnected`, state file paths, process status, selected proxy target, local database paths, and inbound resolution settings without starting or stopping the daemon.
+
 ## Current Limits
 
 - The daemon runs one proxy target at a time.
