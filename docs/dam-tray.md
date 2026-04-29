@@ -2,9 +2,11 @@
 
 `dam-tray` is the first native desktop shell for DAM's local Connect UX.
 
-The first slice is macOS-focused. It starts a local `dam-web` child process, opens `/connect` in a native WebView, and keeps a menu-bar item available for opening, reloading, or quitting the shell.
+The first slice is macOS-focused. It starts a local `dam-web` child process, prepares `/connect` in a hidden native WebView, and opens that WebView as a borderless popover anchored under the `[R:]` menu-bar item only when the user clicks the item.
 
-The macOS menu-bar item is text-only and renders `[R:]` as its native title. `tray-icon` does not expose custom font styling for that title, so the menu-bar item uses the platform's default menu-bar font and color rather than a custom image.
+The macOS menu-bar item is text-only and renders `[R:]` as its native title. It does not attach a native tray menu; clicking the item opens the hosted Connect surface. `tray-icon` does not expose custom font styling for that title, so the menu-bar item uses the platform's default menu-bar font and color rather than a custom image.
+
+Inside the tray-hosted page, clicking the `[R:]` brand mark opens `https://rpblc.com` in the user's default browser through the native shell instead of navigating inside the WebView.
 
 It does not implement protection logic. Connect, disconnect, profile selection, setup apply/rollback, vault/log viewing, consent, and diagnostics continue to live in `dam`, `dam-daemon`, `dam-integrations`, and `dam-web`.
 
@@ -66,8 +68,9 @@ daemon.json
 ## Boundary
 
 - `dam-tray` owns the native shell and the hosted `dam-web` child process.
-- Closing the window hides it; the app remains available from the menu-bar item.
-- Quitting `dam-tray` stops only the hosted web UI. It does not disconnect a running DAM daemon.
+- Starting `dam-tray` creates the menu-bar item without opening the popover.
+- Losing focus hides the popover; the app remains available from the menu-bar item.
+- The tray-hosted page renders a Quit DAM button. It runs `dam disconnect`, then stops the hosted web UI and exits the tray shell.
 - Non-macOS platforms currently return a clear unsupported-platform message; users can run `dam-web` directly until native shells are added.
 
 ## Packaging Notes

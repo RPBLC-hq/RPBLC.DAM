@@ -27,6 +27,8 @@ The vault and logs tables support column ordering through header buttons. They u
 
 `/connect` uses the same active profile state as `dam profile set`. It can select or clear the active profile, apply safe profile setup, roll back when a rollback record is available, start DAM with `dam connect --apply`, and disconnect the running daemon. `dam-tray` hosts this route in a native desktop shell.
 
+When `DAM_WEB_SHELL=tray`, `dam-web` renders a compact tray shell with an in-page Quit DAM button and routes the `[R:]` brand link through the native tray bridge so `https://rpblc.com` opens in the default browser. Browser mode remains the default.
+
 The Connect action shells out to the local `dam` binary from `PATH`. Set `DAM_BIN=/path/to/dam` for source-tree runs or custom installs.
 
 ## Usage

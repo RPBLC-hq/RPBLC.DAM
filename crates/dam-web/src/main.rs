@@ -21,6 +21,10 @@ use tokio::process::Command as TokioCommand;
 const RPBLC_HOME_URL: &str = "https://rpblc.com";
 const RPBLC_FAVICON_SVG: &str = include_str!("../assets/favicon.svg");
 const DAM_BIN_ENV: &str = "DAM_BIN";
+const DAM_WEB_SHELL_ENV: &str = "DAM_WEB_SHELL";
+const DAM_WEB_SHELL_TRAY: &str = "tray";
+const DAM_TRAY_OPEN_RPBLC_MESSAGE: &str = "dam-tray:open-rpblc";
+const DAM_TRAY_QUIT_MESSAGE: &str = "dam-tray:quit";
 
 #[derive(Clone)]
 struct AppState {
@@ -85,6 +89,25 @@ enum DashboardState {
     Degraded,
     NeedsSetup,
     NeedsProfile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellMode {
+    Browser,
+    Tray,
+}
+
+impl ShellMode {
+    fn from_env() -> Self {
+        match env::var(DAM_WEB_SHELL_ENV) {
+            Ok(value) if value == DAM_WEB_SHELL_TRAY => Self::Tray,
+            _ => Self::Browser,
+        }
+    }
+
+    fn is_tray(self) -> bool {
+        self == Self::Tray
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1712,6 +1735,70 @@ fn render_shell(
     count_label: &str,
     content: &str,
 ) -> String {
+    render_shell_with_mode(
+        ShellMode::from_env(),
+        title,
+        active,
+        meta,
+        count,
+        count_label,
+        content,
+    )
+}
+
+fn render_shell_with_mode(
+    shell_mode: ShellMode,
+    title: &str,
+    active: &str,
+    meta: &str,
+    count: usize,
+    count_label: &str,
+    content: &str,
+) -> String {
+    let body_class = if shell_mode.is_tray() {
+        " class=\"tray-shell\""
+    } else {
+        ""
+    };
+    let tray_quit = if shell_mode.is_tray() {
+        r#"<button class="tray-quit" type="button" data-tray-quit>Quit DAM</button>"#
+    } else {
+        ""
+    };
+    let brand_tray_attrs = if shell_mode.is_tray() {
+        r#" data-tray-external="rpblc""#
+    } else {
+        ""
+    };
+    let tray_script = if shell_mode.is_tray() {
+        r#"<script>
+    (() => {
+      const post = (message) => {
+        if (window.ipc && typeof window.ipc.postMessage === "function") {
+          window.ipc.postMessage(message);
+        }
+      };
+      document.querySelectorAll("[data-tray-external='rpblc']").forEach((link) => {
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          post("{open_rpblc_message}");
+        });
+      });
+      const button = document.querySelector("[data-tray-quit]");
+      if (button) {
+        button.addEventListener("click", () => {
+          button.disabled = true;
+          post("{quit_message}");
+        });
+      }
+    })();
+  </script>"#
+            .replace("{open_rpblc_message}", DAM_TRAY_OPEN_RPBLC_MESSAGE)
+            .replace("{quit_message}", DAM_TRAY_QUIT_MESSAGE)
+    } else {
+        String::new()
+    };
+
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -1800,6 +1887,32 @@ fn render_shell(
     .brand-home:hover .brand-mark .letter,
     .brand-out:hover {{
       color: var(--accent);
+    }}
+    .brand-actions {{
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }}
+    .tray-quit {{
+      border: 1px solid var(--line-strong);
+      background: var(--panel-strong);
+      color: var(--muted);
+      padding: 8px 10px;
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      cursor: pointer;
+    }}
+    .tray-quit:hover {{
+      color: var(--bad);
+      border-color: var(--bad-line);
+    }}
+    .tray-quit:disabled {{
+      cursor: wait;
+      opacity: .62;
     }}
     nav {{
       display: flex;
@@ -2311,8 +2424,86 @@ fn render_shell(
       color: var(--accent);
       border-color: var(--accent);
     }}
+    body.tray-shell {{
+      overflow-x: hidden;
+    }}
+    body.tray-shell main {{
+      width: 100%;
+      margin: 0;
+      padding: 14px;
+    }}
+    body.tray-shell .brand-bar {{
+      padding: 12px 14px;
+      margin-bottom: 10px;
+    }}
+    body.tray-shell .brand-copy,
+    body.tray-shell .brand-out {{
+      display: none;
+    }}
+    body.tray-shell nav {{
+      gap: 6px;
+      margin-bottom: 12px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+      -webkit-overflow-scrolling: touch;
+    }}
+    body.tray-shell nav a {{
+      flex: 0 0 auto;
+      padding: 7px 9px;
+      font-size: 11px;
+    }}
+    body.tray-shell header {{
+      display: none;
+    }}
+    body.tray-shell .connect-hero,
+    body.tray-shell .connect-section {{
+      box-shadow: none;
+    }}
+    body.tray-shell .connect-hero {{
+      padding: 16px;
+      margin-bottom: 12px;
+    }}
+    body.tray-shell .connect-status {{
+      display: grid;
+      gap: 14px;
+      margin-bottom: 14px;
+    }}
+    body.tray-shell .connect-state {{
+      font-size: 34px;
+    }}
+    body.tray-shell .connect-button {{
+      width: 112px;
+      height: 112px;
+      font-size: 13px;
+      justify-self: start;
+      box-shadow: 0 0 0 8px rgba(184, 150, 90, .12);
+    }}
+    body.tray-shell .connect-button.disconnect {{
+      box-shadow: 0 0 0 8px rgba(223, 120, 101, .10);
+    }}
+    body.tray-shell .connect-facts {{
+      grid-template-columns: 94px 1fr;
+      font-size: 12px;
+    }}
+    body.tray-shell .setup-actions {{
+      align-items: stretch;
+    }}
+    body.tray-shell .connect-grid {{
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }}
+    body.tray-shell .connect-section {{
+      padding: 14px;
+    }}
+    body.tray-shell .profile-grid {{
+      grid-template-columns: 1fr;
+    }}
+    body.tray-shell .settings-list strong {{
+      font-size: 12px;
+    }}
     @media (max-width: 720px) {{
       header {{ display: block; }}
+      body.tray-shell header {{ display: none; }}
       .count {{ margin-top: 18px; }}
       th, td {{ padding: 10px 8px; font-size: 13px; }}
       .diagnostics-grid,
@@ -2324,14 +2515,17 @@ fn render_shell(
     }}
   </style>
 </head>
-<body>
+<body{body_class}>
   <main>
     <div class="brand-bar">
-      <a class="brand-home" href="{brand_url}" target="_blank" rel="noopener noreferrer" aria-label="RPBLC home">
+      <a class="brand-home" href="{brand_url}" target="_blank" rel="noopener noreferrer" aria-label="RPBLC home"{brand_tray_attrs}>
         <span class="brand-mark" aria-hidden="true"><span class="bracket">[</span><span class="letter">R</span><span class="colon">:</span><span class="bracket">]</span></span>
         <span class="brand-copy">privacy infrastructure</span>
       </a>
-      <a class="brand-out" href="{brand_url}" target="_blank" rel="noopener noreferrer">RPBLC.com</a>
+      <div class="brand-actions">
+        {tray_quit}
+        <a class="brand-out" href="{brand_url}" target="_blank" rel="noopener noreferrer">RPBLC.com</a>
+      </div>
     </div>
     <nav>
       <a class="{connect_class}" href="/connect">Connect</a>
@@ -2352,9 +2546,14 @@ fn render_shell(
       {content}
     </div>
   </main>
+  {tray_script}
 </body>
 </html>"#,
         brand_url = RPBLC_HOME_URL,
+        body_class = body_class,
+        tray_quit = tray_quit,
+        brand_tray_attrs = brand_tray_attrs,
+        tray_script = tray_script,
         title = title,
         meta = meta,
         count = count,
@@ -3344,6 +3543,44 @@ mod tests {
         assert!(html.contains("&lt;bad setup&gt;"));
         assert!(html.contains("&lt;script&gt;x&lt;/script&gt;"));
         assert!(!html.contains("<script>x</script>"));
+    }
+
+    #[test]
+    fn render_shell_tray_mode_adds_quit_bridge() {
+        let html = render_shell_with_mode(
+            ShellMode::Tray,
+            "DAM Connect",
+            "Connect",
+            "meta",
+            0,
+            "items",
+            "<p>content</p>",
+        );
+
+        assert!(html.contains("<body class=\"tray-shell\">"));
+        assert!(html.contains("data-tray-external=\"rpblc\""));
+        assert!(html.contains("window.ipc.postMessage(message)"));
+        assert!(html.contains("dam-tray:open-rpblc"));
+        assert!(html.contains("class=\"tray-quit\""));
+        assert!(html.contains("dam-tray:quit"));
+    }
+
+    #[test]
+    fn render_shell_browser_mode_omits_quit_bridge() {
+        let html = render_shell_with_mode(
+            ShellMode::Browser,
+            "DAM Connect",
+            "Connect",
+            "meta",
+            0,
+            "items",
+            "<p>content</p>",
+        );
+
+        assert!(!html.contains("class=\"tray-quit\""));
+        assert!(!html.contains("data-tray-external=\"rpblc\""));
+        assert!(!html.contains("dam-tray:open-rpblc"));
+        assert!(!html.contains("dam-tray:quit"));
     }
 
     #[test]

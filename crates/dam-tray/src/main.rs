@@ -11,6 +11,8 @@ const DAM_BIN_ENV: &str = "DAM_BIN";
 const DAM_WEB_BIN_ENV: &str = "DAM_WEB_BIN";
 const DAM_STATE_DIR_ENV: &str = "DAM_STATE_DIR";
 const DAM_CONSENT_PATH_ENV: &str = "DAM_CONSENT_PATH";
+const DAM_WEB_SHELL_ENV: &str = "DAM_WEB_SHELL";
+const DAM_WEB_SHELL_TRAY: &str = "tray";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CliArgs {
@@ -229,26 +231,35 @@ mod macos {
     };
 
     use tao::{
-        dpi::LogicalSize,
+        dpi::{LogicalSize, PhysicalPosition},
         event::{Event, StartCause, WindowEvent},
         event_loop::{ControlFlow, EventLoopBuilder},
-        window::WindowBuilder,
+        platform::macos::{ActivationPolicy, EventLoopExtMacOS, WindowBuilderExtMacOS},
+        window::{Window, WindowBuilder},
     };
-    use tray_icon::{
-        TrayIconBuilder, TrayIconEvent,
-        menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
-    };
+    use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use wry::WebViewBuilder;
 
-    const SHOW_ITEM_ID: &str = "show";
-    const RELOAD_ITEM_ID: &str = "reload";
-    const BROWSER_ITEM_ID: &str = "browser";
-    const QUIT_ITEM_ID: &str = "quit";
+    const POPOVER_WIDTH: f64 = 430.0;
+    const POPOVER_HEIGHT: f64 = 720.0;
+    const POPOVER_MARGIN: f64 = 8.0;
+    const RPBLC_HOME_URL: &str = "https://rpblc.com";
+    const TRAY_OPEN_RPBLC_MESSAGE: &str = "dam-tray:open-rpblc";
+    const TRAY_QUIT_MESSAGE: &str = "dam-tray:quit";
 
     #[derive(Debug)]
     enum UserEvent {
         TrayIcon(TrayIconEvent),
-        Menu(MenuEvent),
+        OpenRpblc,
+        QuitRequested,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct PhysicalFrame {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
     }
 
     pub(super) fn run(cli: CliArgs) -> Result<(), String> {
@@ -273,30 +284,50 @@ mod macos {
         )?;
         wait_for_tcp(&addr, Duration::from_secs(8))?;
 
-        let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+        let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+        event_loop.set_activation_policy(ActivationPolicy::Accessory);
+        event_loop.set_dock_visibility(false);
         let proxy = event_loop.create_proxy();
         TrayIconEvent::set_event_handler(Some(move |event| {
             let _ = proxy.send_event(UserEvent::TrayIcon(event));
         }));
-        let proxy = event_loop.create_proxy();
-        MenuEvent::set_event_handler(Some(move |event| {
-            let _ = proxy.send_event(UserEvent::Menu(event));
-        }));
+        let ipc_proxy = event_loop.create_proxy();
 
         let window = WindowBuilder::new()
             .with_title("DAM")
-            .with_inner_size(LogicalSize::new(430.0, 760.0))
-            .with_min_inner_size(LogicalSize::new(380.0, 620.0))
-            .with_resizable(true)
+            .with_inner_size(LogicalSize::new(POPOVER_WIDTH, POPOVER_HEIGHT))
+            .with_min_inner_size(LogicalSize::new(POPOVER_WIDTH, POPOVER_HEIGHT))
+            .with_max_inner_size(LogicalSize::new(POPOVER_WIDTH, POPOVER_HEIGHT))
+            .with_resizable(false)
+            .with_minimizable(false)
+            .with_maximizable(false)
+            .with_closable(false)
+            .with_visible(false)
+            .with_focused(false)
+            .with_decorations(false)
+            .with_always_on_top(true)
+            .with_visible_on_all_workspaces(true)
+            .with_has_shadow(true)
             .build(&event_loop)
             .map_err(|error| format!("failed to create DAM window: {error}"))?;
 
-        let webview = WebViewBuilder::new()
+        let _webview = WebViewBuilder::new()
             .with_url(&url)
+            .with_ipc_handler(move |request| match request.body().trim() {
+                TRAY_OPEN_RPBLC_MESSAGE => {
+                    let _ = ipc_proxy.send_event(UserEvent::OpenRpblc);
+                }
+                TRAY_QUIT_MESSAGE => {
+                    let _ = ipc_proxy.send_event(UserEvent::QuitRequested);
+                }
+                _ => {}
+            })
             .build(&window)
             .map_err(|error| format!("failed to create DAM webview: {error}"))?;
 
         let mut tray_icon = None;
+        let dam_bin_for_quit = dam_bin.clone();
+        let state_dir_for_quit = data_paths.state_dir.clone();
 
         event_loop.run(move |event, _, control_flow| {
             *control_flow = ControlFlow::Wait;
@@ -305,36 +336,44 @@ mod macos {
                 Event::NewEvents(StartCause::Init) => {
                     if tray_icon.is_none() {
                         match build_tray() {
-                            Ok(icon) => tray_icon = Some(icon),
+                            Ok(icon) => {
+                                tray_icon = Some(icon);
+                            }
                             Err(error) => {
                                 eprintln!("{error}");
                                 web_child.stop();
                                 *control_flow = ControlFlow::Exit;
-                                return;
                             }
                         }
                     }
-                    window.set_visible(true);
-                    window.set_focus();
                 }
-                Event::UserEvent(UserEvent::TrayIcon(TrayIconEvent::Click { .. }))
-                | Event::UserEvent(UserEvent::TrayIcon(TrayIconEvent::DoubleClick { .. })) => {
-                    show_window(&window);
+                Event::UserEvent(UserEvent::TrayIcon(TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                })) => {
+                    if let Some(icon) = tray_icon.as_ref() {
+                        show_popover(&window, icon);
+                    }
                 }
                 Event::UserEvent(UserEvent::TrayIcon(_)) => {}
-                Event::UserEvent(UserEvent::Menu(event)) if event.id() == SHOW_ITEM_ID => {
-                    show_window(&window);
+                Event::UserEvent(UserEvent::OpenRpblc) => {
+                    if let Err(error) = open_in_browser(RPBLC_HOME_URL) {
+                        eprintln!("{error}");
+                    }
                 }
-                Event::UserEvent(UserEvent::Menu(event)) if event.id() == RELOAD_ITEM_ID => {
-                    let _ = webview.load_url(&url);
-                    show_window(&window);
-                }
-                Event::UserEvent(UserEvent::Menu(event)) if event.id() == BROWSER_ITEM_ID => {
-                    let _ = open_in_browser(&url);
-                }
-                Event::UserEvent(UserEvent::Menu(event)) if event.id() == QUIT_ITEM_ID => {
+                Event::UserEvent(UserEvent::QuitRequested) => {
+                    if let Err(error) = disconnect_dam(&dam_bin_for_quit, &state_dir_for_quit) {
+                        eprintln!("{error}");
+                    }
                     web_child.stop();
                     *control_flow = ControlFlow::Exit;
+                }
+                Event::WindowEvent {
+                    event: WindowEvent::Focused(false),
+                    ..
+                } => {
+                    window.set_visible(false);
                 }
                 Event::WindowEvent {
                     event: WindowEvent::CloseRequested,
@@ -348,28 +387,91 @@ mod macos {
     }
 
     fn build_tray() -> Result<tray_icon::TrayIcon, String> {
-        let show = MenuItem::with_id(MenuId::new(SHOW_ITEM_ID), "Open DAM", true, None);
-        let reload = MenuItem::with_id(MenuId::new(RELOAD_ITEM_ID), "Reload", true, None);
-        let browser =
-            MenuItem::with_id(MenuId::new(BROWSER_ITEM_ID), "Open in Browser", true, None);
-        let quit = MenuItem::with_id(MenuId::new(QUIT_ITEM_ID), "Quit DAM", true, None);
-        let separator = PredefinedMenuItem::separator();
-        let menu = Menu::new();
-        menu.append_items(&[&show, &reload, &browser, &separator, &quit])
-            .map_err(|error| format!("failed to build tray menu: {error}"))?;
-
         TrayIconBuilder::new()
             .with_tooltip("DAM")
             .with_title("[R:]")
-            .with_menu(Box::new(menu))
-            .with_menu_on_left_click(true)
             .build()
             .map_err(|error| format!("failed to create tray icon: {error}"))
     }
 
-    fn show_window(window: &tao::window::Window) {
+    fn show_popover(window: &Window, tray_icon: &tray_icon::TrayIcon) {
+        position_popover(window, tray_icon.rect());
         window.set_visible(true);
         window.set_focus();
+    }
+
+    fn position_popover(window: &Window, tray_rect: Option<tray_icon::Rect>) {
+        let monitor = tray_rect
+            .and_then(|rect| window.monitor_from_point(rect.position.x, rect.position.y))
+            .or_else(|| window.current_monitor())
+            .or_else(|| window.primary_monitor());
+        let scale = monitor
+            .as_ref()
+            .map(|monitor| monitor.scale_factor())
+            .unwrap_or_else(|| window.scale_factor());
+        let monitor_frame = monitor
+            .map(|monitor| {
+                let position = monitor.position();
+                let size = monitor.size();
+                PhysicalFrame {
+                    x: position.x as f64,
+                    y: position.y as f64,
+                    width: size.width as f64,
+                    height: size.height as f64,
+                }
+            })
+            .unwrap_or(PhysicalFrame {
+                x: 0.0,
+                y: 0.0,
+                width: POPOVER_WIDTH * scale,
+                height: POPOVER_HEIGHT * scale,
+            });
+        let anchor = tray_rect.map(|rect| PhysicalFrame {
+            x: rect.position.x,
+            y: rect.position.y,
+            width: rect.size.width as f64,
+            height: rect.size.height as f64,
+        });
+        let position = popover_origin(
+            anchor,
+            monitor_frame,
+            POPOVER_WIDTH * scale,
+            POPOVER_HEIGHT * scale,
+            POPOVER_MARGIN * scale,
+        );
+        window.set_outer_position(position);
+    }
+
+    fn popover_origin(
+        anchor: Option<PhysicalFrame>,
+        monitor: PhysicalFrame,
+        popover_width: f64,
+        popover_height: f64,
+        margin: f64,
+    ) -> PhysicalPosition<i32> {
+        let anchor_center_x = anchor
+            .map(|anchor| anchor.x + (anchor.width / 2.0))
+            .unwrap_or(monitor.x + monitor.width - margin - (popover_width / 2.0));
+        let anchor_bottom_y = anchor
+            .map(|anchor| anchor.y + anchor.height)
+            .unwrap_or(monitor.y + margin);
+        let min_x = monitor.x + margin;
+        let max_x = monitor.x + monitor.width - popover_width - margin;
+        let min_y = monitor.y + margin;
+        let max_y = monitor.y + monitor.height - popover_height - margin;
+
+        PhysicalPosition::new(
+            clamp_to_range(anchor_center_x - (popover_width / 2.0), min_x, max_x).round() as i32,
+            clamp_to_range(anchor_bottom_y, min_y, max_y).round() as i32,
+        )
+    }
+
+    fn clamp_to_range(value: f64, min: f64, max: f64) -> f64 {
+        if max < min {
+            min
+        } else {
+            value.clamp(min, max)
+        }
     }
 
     fn open_in_browser(url: &str) -> Result<(), String> {
@@ -379,13 +481,29 @@ mod macos {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .map_err(|error| format!("failed to open browser: {error}"))?;
+            .map_err(|error| format!("failed to open {url}: {error}"))?;
         if status.success() {
             Ok(())
         } else {
             Err(format!(
-                "failed to open browser: command exited with {status}"
+                "failed to open {url}: command exited with {status}"
             ))
+        }
+    }
+
+    fn disconnect_dam(dam_bin: &PathBuf, state_dir: &PathBuf) -> Result<(), String> {
+        let status = Command::new(dam_bin)
+            .arg("disconnect")
+            .env(DAM_STATE_DIR_ENV, state_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .map_err(|error| format!("failed to run `dam disconnect`: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("`dam disconnect` exited with {status}"))
         }
     }
 
@@ -415,6 +533,7 @@ mod macos {
                 .env(DAM_BIN_ENV, dam_bin)
                 .env(DAM_STATE_DIR_ENV, &data_paths.state_dir)
                 .env(DAM_CONSENT_PATH_ENV, &data_paths.consent_path)
+                .env(DAM_WEB_SHELL_ENV, DAM_WEB_SHELL_TRAY)
                 .stdin(Stdio::null())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit());
@@ -439,6 +558,53 @@ mod macos {
     impl Drop for WebChild {
         fn drop(&mut self) {
             self.stop();
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn popover_origin_centers_under_tray_anchor() {
+            let monitor = PhysicalFrame {
+                x: 0.0,
+                y: 0.0,
+                width: 1440.0,
+                height: 900.0,
+            };
+            let anchor = PhysicalFrame {
+                x: 980.0,
+                y: 0.0,
+                width: 80.0,
+                height: 24.0,
+            };
+
+            let origin = popover_origin(Some(anchor), monitor, 430.0, 720.0, 8.0);
+
+            assert_eq!(origin.x, 805);
+            assert_eq!(origin.y, 24);
+        }
+
+        #[test]
+        fn popover_origin_clamps_to_monitor_edges() {
+            let monitor = PhysicalFrame {
+                x: 0.0,
+                y: 0.0,
+                width: 1440.0,
+                height: 900.0,
+            };
+            let anchor = PhysicalFrame {
+                x: 1410.0,
+                y: 0.0,
+                width: 60.0,
+                height: 24.0,
+            };
+
+            let origin = popover_origin(Some(anchor), monitor, 430.0, 720.0, 8.0);
+
+            assert_eq!(origin.x, 1002);
+            assert_eq!(origin.y, 24);
         }
     }
 }
