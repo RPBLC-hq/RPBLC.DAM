@@ -4,6 +4,8 @@
 
 The first slice is macOS-focused. It starts a local `dam-web` child process, opens `/connect` in a native WebView, and keeps a menu-bar item available for opening, reloading, or quitting the shell.
 
+The tray icon and window icon are rasterized from the same vendored RPBLC favicon SVG used by `dam-web`.
+
 It does not implement protection logic. Connect, disconnect, profile selection, setup apply/rollback, vault/log viewing, consent, and diagnostics continue to live in `dam`, `dam-daemon`, `dam-integrations`, and `dam-web`.
 
 ## Usage
