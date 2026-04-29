@@ -22,6 +22,7 @@ members = [
     "crates/dam-router",
     "crates/dam-resolve",
     "crates/dam-redact",
+    "crates/dam-tray",
     "crates/dam-vault",
     "crates/dam-web",
 ]

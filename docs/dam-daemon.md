@@ -114,6 +114,6 @@ Daemon options:
 ## Current Limits
 
 - The daemon runs one proxy target at a time.
-- It does not install system proxy settings, mutate harness configs, start at login, or expose a tray/menu-bar UI yet.
+- It does not install system proxy settings, mutate harness configs, or start at login. The first tray/menu-bar shell lives in `dam-tray` and hosts `dam-web /connect`; it does not change daemon lifecycle behavior.
 - It does not add VPN/TUN routing, TLS interception, or WebSocket handling.
 - `dam disconnect` terminates the daemon process by PID and removes stale state when the process is no longer running.

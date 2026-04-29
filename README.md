@@ -17,6 +17,7 @@
   <a href="#how-it-works">How It Works</a> &middot;
   <a href="#consent">Consent</a> &middot;
   <a href="#web-ui">Web UI</a> &middot;
+  <a href="#tray-app">Tray App</a> &middot;
   <a href="#commands">Commands</a> &middot;
   <a href="#v1-limits">V1 Limits</a> &middot;
   <a href="#what-to-do-next">What To Do Next</a>
@@ -104,6 +105,8 @@ From a source checkout:
 ```bash
 cargo run -p dam -- connect
 cargo run -p dam -- integrations list
+cargo build -p dam -p dam-web -p dam-tray
+cargo run -p dam-tray
 cargo run -p dam -- claude
 cargo run -p dam -- codex --api
 ```
@@ -203,6 +206,17 @@ It provides:
 `/connect` uses the same active profile state as `dam profile set`. The Connect action shells out to the local `dam` binary from `PATH`; set `DAM_BIN=/path/to/dam` when running from a source tree or custom install.
 
 The web UI displays vault values in clear text. Treat it as a local admin surface, not a public web app.
+
+## Tray App
+
+`dam-tray` is the first native shell for the VPN-style local UX. On macOS it starts a local `dam-web` child process, opens `/connect` in a WebView, and adds a menu-bar item for opening, reloading, or quitting the shell.
+
+```bash
+cargo build -p dam -p dam-web -p dam-tray
+cargo run -p dam-tray
+```
+
+The tray shell uses `$DAM_STATE_DIR` or `$HOME/.dam` for persistent local state by default. Quitting the tray app stops the hosted web UI only; it does not disconnect a running DAM daemon.
 
 ## MCP
 
@@ -312,10 +326,10 @@ Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default
 
 Recommended order for the next engineering sessions:
 
-1. Smoke test `dam connect`, `dam claude`, and `dam codex --api` against fake or real provider paths, then inspect the vault and log SQLite databases.
-2. Wrap the `/connect` surface in the native tray/menu-bar app shell.
-3. Expand profile apply support beyond Claude/Codex where harness config files can be changed safely.
-4. Add login/startup UX for the daemon after profile apply is stable.
+1. Smoke test `dam connect`, `dam claude`, `dam codex --api`, and `dam-tray` against fake or real provider paths, then inspect the vault and log SQLite databases.
+2. Expand profile apply support beyond Claude/Codex where harness config files can be changed safely.
+3. Add login/startup UX for the daemon after profile apply is stable.
+4. Package the tray app with signed native binaries and npm/native release assets.
 
 Do not spend the next session on these until their prerequisite slice exists:
 
@@ -333,12 +347,13 @@ Implemented extraction modules:
 - `dam-diagnostics`: shared local readiness checks for `damctl doctor` and `dam-web /doctor`.
 - `dam-daemon`: background local proxy lifecycle and state file for `dam connect/status/disconnect`.
 - `dam-integrations`: known local harness profiles for `dam integrations`, `dam profile`, and `dam connect --profile`.
+- `dam-tray`: first native desktop shell hosting the Connect surface.
 
 Near-term product slices still to build:
 
-- native tray/menu-bar wrapper for the `/connect` surface.
 - broader integration profile apply/install support with safe rollback where harness config files can be changed reliably.
 - login/startup UX for the local daemon after profile apply is stable.
+- signed native tray/menu-bar packaging and release installation.
 
 Backend replacement modules:
 

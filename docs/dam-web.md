@@ -2,7 +2,7 @@
 
 `dam-web` is the local web UI.
 
-It is for development inspection of local SQLite vault, consent, and log databases, and it hosts the first visual connect surface intended to become the tray/menu-bar app content.
+It is for development inspection of local SQLite vault, consent, and log databases, and it hosts the visual Connect surface used directly in a browser or through `dam-tray`.
 
 ## Routes
 
@@ -25,7 +25,7 @@ The vault and logs tables support column ordering through header buttons. They u
 /logs?sort=time&dir=desc
 ```
 
-`/connect` uses the same active profile state as `dam profile set`. It can select or clear the active profile, apply safe profile setup, roll back when a rollback record is available, start DAM with `dam connect --apply`, and disconnect the running daemon.
+`/connect` uses the same active profile state as `dam profile set`. It can select or clear the active profile, apply safe profile setup, roll back when a rollback record is available, start DAM with `dam connect --apply`, and disconnect the running daemon. `dam-tray` hosts this route in a native desktop shell.
 
 The Connect action shells out to the local `dam` binary from `PATH`. Set `DAM_BIN=/path/to/dam` for source-tree runs or custom installs.
 

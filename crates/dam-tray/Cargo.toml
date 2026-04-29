@@ -1,0 +1,10 @@
+[package]
+name = "dam-tray"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tao = { version = "0.35", default-features = false, features = ["rwh_06"] }
+tray-icon = { version = "0.22", default-features = false }
+wry = { version = "0.55", default-features = false, features = ["os-webview"] }
