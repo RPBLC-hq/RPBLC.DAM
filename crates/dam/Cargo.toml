@@ -6,7 +6,12 @@ license.workspace = true
 
 [dependencies]
 axum.workspace = true
+dam-api.workspace = true
 dam-config.workspace = true
+dam-daemon.workspace = true
+dam-integrations.workspace = true
 dam-proxy.workspace = true
 reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true

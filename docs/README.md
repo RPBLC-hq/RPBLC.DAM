@@ -9,10 +9,13 @@ Deferred security and product-design work is tracked in [parking-lot.md](parking
 ## Modules
 
 - [dam-core](dam-core.md): shared contracts, reference generation, replacement planning, policy actions, log event shape.
-- [dam](dam.md): local launcher and npm wrapper entry point for running Claude Code and explicit Codex API-key mode through an embedded DAM proxy. Codex ChatGPT-login mode is blocked until its current model transport can be protected.
+- [dam](dam.md): local UX entry point for `connect/status/disconnect`, Claude Code, explicit Codex API-key mode, and the npm wrapper.
 - [dam-api](dam-api.md): shared JSON/report/status DTOs for CLIs, proxy status, health, and future automation.
 - [dam-config](dam-config.md): layered runtime config for defaults, TOML, env, and CLI overrides.
 - [dam-consent](dam-consent.md): exact-value passthrough grants with TTL and revocation.
+- [dam-daemon](dam-daemon.md): background local proxy lifecycle, state file, and `dam connect/status/disconnect` support.
+- [dam-diagnostics](dam-diagnostics.md): shared local readiness checks for `damctl doctor` and `dam-web /doctor`.
+- [dam-integrations](dam-integrations.md): known local harness profiles for `dam integrations` and `dam connect --profile`.
 - [damctl](damctl.md): local status and config diagnostics CLI.
 - [dam-detect](dam-detect.md): pure rule-based sensitive value detection.
 - [dam-e2e](dam-e2e.md): process-level end-to-end tests across the local binaries.
@@ -106,6 +109,20 @@ dam claude
   -> tool base URL override
   -> pass-through provider auth
 
+dam connect
+  -> background daemon process
+  -> dam-proxy
+  -> explicit local endpoint for AI harnesses
+  -> pass-through provider auth
+
+dam status / dam disconnect
+  -> daemon state file
+  -> dam-proxy /health when connected
+
+dam integrations list/show
+  -> dam-integrations profile catalog
+  -> local base URL and harness setup snippets
+
 npx @rpblc/dam claude
   -> npm wrapper trial mode
   -> temporary vault/log/consent stores
@@ -121,8 +138,16 @@ damctl status
   -> dam-proxy /health
   -> dam-api ProxyReport
 
+damctl doctor
+  -> dam-diagnostics
+  -> dam-api HealthReport
+
 damctl config check
-  -> dam-config
+  -> dam-diagnostics
+  -> dam-api HealthReport
+
+dam-web /doctor
+  -> dam-diagnostics
   -> dam-api HealthReport
 
 dam-web /diagnostics

@@ -1,18 +1,17 @@
 [package]
-name = "damctl"
+name = "dam-daemon"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-dam-api.workspace = true
+axum.workspace = true
 dam-config.workspace = true
-dam-diagnostics.workspace = true
-reqwest.workspace = true
+dam-proxy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-axum.workspace = true
 tempfile.workspace = true

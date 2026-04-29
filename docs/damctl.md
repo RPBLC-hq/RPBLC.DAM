@@ -5,6 +5,7 @@
 The current slice does not start or stop services. It answers these questions:
 
 - is the local proxy protecting traffic?
+- is this local install ready for the protected agent UX?
 - is the local config valid for the current implementation?
 - what MCP config should an agent use for DAM?
 
@@ -12,6 +13,7 @@ The current slice does not start or stop services. It answers these questions:
 
 ```bash
 cargo run -p damctl -- status
+cargo run -p damctl -- doctor
 cargo run -p damctl -- config check
 cargo run -p damctl -- mcp config
 ```
@@ -20,6 +22,7 @@ With an explicit config:
 
 ```bash
 cargo run -p damctl -- status --config dam.example.toml
+cargo run -p damctl -- doctor --config dam.example.toml
 cargo run -p damctl -- config check --config dam.example.toml
 cargo run -p damctl -- mcp config --config dam.example.toml
 ```
@@ -34,6 +37,7 @@ JSON output:
 
 ```bash
 cargo run -p damctl -- status --json
+cargo run -p damctl -- doctor --json
 cargo run -p damctl -- config check --json
 ```
 
@@ -55,9 +59,29 @@ Exit codes:
 - `1`: proxy reports anything else, returns unreadable health JSON, or cannot be reached.
 - `2`: command arguments, config loading, or URL construction failed.
 
+## `doctor`
+
+`doctor` runs local readiness checks through `dam-diagnostics` and emits a `dam-api` `HealthReport`.
+
+It checks:
+
+- normal config loading;
+- vault/log/consent compatibility and local SQLite openability;
+- router target selection, provider support, auth mode, and failure mode;
+- proxy runtime `/health` when proxy is enabled;
+- launcher readiness for `dam claude`, `dam codex --api`, and fail-closed Codex ChatGPT-login mode.
+
+Exit codes:
+
+- `0`: doctor state is `healthy` or `degraded`.
+- `1`: doctor state is `unhealthy`.
+- `2`: command arguments or config loading failed.
+
+Use `--proxy-url` to check a specific running proxy endpoint instead of the configured `proxy.listen`.
+
 ## `config check`
 
-`config check` loads the normal DAM config stack and emits a `dam-api` `HealthReport`.
+`config check` loads the normal DAM config stack through `dam-diagnostics` and emits a `dam-api` `HealthReport`.
 
 It checks:
 
@@ -89,7 +113,7 @@ This is the bridge until the installer layer can write agent-specific MCP config
 - No daemon lifecycle management yet.
 - No automatic install/integration profile writes yet.
 - No bypass toggle command yet.
-- No provider credential validation beyond checking whether configured env vars are present.
+- No real-provider credential validation beyond checking whether configured env vars are present.
 
 ## Tests
 

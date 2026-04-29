@@ -189,9 +189,14 @@ name = "dam"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "dam-api",
  "dam-config",
+ "dam-daemon",
+ "dam-integrations",
  "dam-proxy",
  "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -238,12 +243,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "dam-daemon"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "dam-config",
+ "dam-proxy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "dam-detect"
 version = "0.1.0"
 dependencies = [
  "dam-core",
  "once_cell",
  "regex",
+]
+
+[[package]]
+name = "dam-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "dam-api",
+ "dam-config",
+ "dam-consent",
+ "dam-log",
+ "dam-router",
+ "dam-vault",
+ "reqwest",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -274,6 +309,13 @@ dependencies = [
  "dam-vault",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "dam-integrations"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -410,6 +452,7 @@ dependencies = [
  "dam-config",
  "dam-consent",
  "dam-core",
+ "dam-diagnostics",
  "dam-log",
  "dam-vault",
  "reqwest",
@@ -423,6 +466,7 @@ dependencies = [
  "axum",
  "dam-api",
  "dam-config",
+ "dam-diagnostics",
  "reqwest",
  "serde",
  "serde_json",

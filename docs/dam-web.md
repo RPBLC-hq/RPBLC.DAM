@@ -10,6 +10,7 @@ It is for development inspection of local SQLite vault, consent, and log databas
 /          vault entries and row-level consent grant/revoke actions
 /consents  consent entries and revoke actions
 /logs      operational log events
+/doctor    local readiness checks shared with damctl doctor
 /diagnostics  damctl-style config and proxy checks
 /health    health check
 ```
@@ -56,6 +57,8 @@ Remote vault/consent/log views are not implemented yet.
 
 ## Diagnostics
 
+`/doctor` shows the shared `dam-diagnostics` readiness report used by `damctl doctor`.
+
 `/diagnostics` shows:
 
 - config health using the same `dam-api` `HealthReport` shape used by `damctl config check`;
@@ -73,7 +76,7 @@ The UI follows the RPBLC public site direction:
 - Dark background.
 - Warm gold accent.
 - `[R:]` brand mark.
-- Embedded SVG favicon derived from `RPBLC.public/public/favicon.svg`.
+- `/favicon.svg` served from the same SVG as `RPBLC.public/public/favicon.svg`.
 - External link to `https://rpblc.com`.
 
 ## Tests

@@ -10,6 +10,7 @@ dam-api.workspace = true
 dam-config.workspace = true
 dam-consent.workspace = true
 dam-core.workspace = true
+dam-diagnostics.workspace = true
 dam-log.workspace = true
 dam-vault.workspace = true
 reqwest.workspace = true

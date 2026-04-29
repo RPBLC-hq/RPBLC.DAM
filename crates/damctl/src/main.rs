@@ -1,11 +1,11 @@
 use std::env;
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
     Status(StatusArgs),
+    Doctor(DoctorArgs),
     ConfigCheck(ConfigCheckArgs),
     McpConfig(McpConfigArgs),
 }
@@ -18,6 +18,12 @@ struct CommonArgs {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct StatusArgs {
+    common: CommonArgs,
+    proxy_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct DoctorArgs {
     common: CommonArgs,
     proxy_url: Option<String>,
 }
@@ -64,6 +70,7 @@ async fn main() {
 async fn run(command: Command) -> CommandOutput {
     match command {
         Command::Status(args) => status(args).await,
+        Command::Doctor(args) => doctor(args).await,
         Command::ConfigCheck(args) => config_check(args),
         Command::McpConfig(args) => mcp_config(args),
     }
@@ -126,23 +133,53 @@ async fn status(args: StatusArgs) -> CommandOutput {
     }
 }
 
+async fn doctor(args: DoctorArgs) -> CommandOutput {
+    let config = match dam_config::load(&args.common.config) {
+        Ok(config) => config,
+        Err(error) => {
+            let report = config_load_failed_report(error);
+            return CommandOutput {
+                code: 2,
+                stdout: if args.common.json {
+                    json(&report)
+                } else {
+                    render_health_report(&report)
+                },
+                stderr: String::new(),
+            };
+        }
+    };
+
+    let report = dam_diagnostics::doctor_report(
+        &config,
+        &dam_diagnostics::DoctorOptions {
+            proxy_url: args.proxy_url,
+        },
+    )
+    .await;
+    let code = if report.state == dam_api::HealthState::Unhealthy {
+        1
+    } else {
+        0
+    };
+    let stdout = if args.common.json {
+        json(&report)
+    } else {
+        render_health_report(&report)
+    };
+
+    CommandOutput {
+        code,
+        stdout,
+        stderr: String::new(),
+    }
+}
+
 fn config_check(args: ConfigCheckArgs) -> CommandOutput {
     let config = match dam_config::load(&args.common.config) {
         Ok(config) => config,
         Err(error) => {
-            let report = dam_api::HealthReport {
-                state: dam_api::HealthState::Unhealthy,
-                components: vec![dam_api::ComponentHealth {
-                    component: "config".to_string(),
-                    state: dam_api::HealthState::Unhealthy,
-                    message: format!("config load failed: {error}"),
-                }],
-                diagnostics: vec![dam_api::Diagnostic::new(
-                    dam_api::DiagnosticSeverity::Error,
-                    "config_load_failed",
-                    error.to_string(),
-                )],
-            };
+            let report = config_load_failed_report(error);
             return CommandOutput {
                 code: 1,
                 stdout: if args.common.json {
@@ -155,7 +192,7 @@ fn config_check(args: ConfigCheckArgs) -> CommandOutput {
         }
     };
 
-    let report = build_config_report(&config);
+    let report = dam_diagnostics::config_report(&config);
     let code = if report.state == dam_api::HealthState::Unhealthy {
         1
     } else {
@@ -197,248 +234,33 @@ fn mcp_config(args: McpConfigArgs) -> CommandOutput {
     }
 }
 
-fn build_config_report(config: &dam_config::DamConfig) -> dam_api::HealthReport {
-    let mut components = Vec::new();
-    let mut diagnostics = Vec::new();
-
-    components.push(dam_api::ComponentHealth {
-        component: "config".to_string(),
-        state: dam_api::HealthState::Healthy,
-        message: "config loaded".to_string(),
-    });
-
-    components.push(vault_component(config, &mut diagnostics));
-    components.push(consent_component(config, &mut diagnostics));
-    components.push(log_component(config, &mut diagnostics));
-    components.push(proxy_component(config, &mut diagnostics));
-
-    let state = if components
-        .iter()
-        .any(|component| component.state == dam_api::HealthState::Unhealthy)
-    {
-        dam_api::HealthState::Unhealthy
-    } else if components
-        .iter()
-        .any(|component| component.state == dam_api::HealthState::Degraded)
-    {
-        dam_api::HealthState::Degraded
-    } else {
-        dam_api::HealthState::Healthy
-    };
-
+fn config_load_failed_report(error: dam_config::ConfigError) -> dam_api::HealthReport {
     dam_api::HealthReport {
-        state,
-        components,
-        diagnostics,
-    }
-}
-
-fn vault_component(
-    config: &dam_config::DamConfig,
-    diagnostics: &mut Vec<dam_api::Diagnostic>,
-) -> dam_api::ComponentHealth {
-    match config.vault.backend {
-        dam_config::VaultBackend::Sqlite => dam_api::ComponentHealth {
-            component: "vault".to_string(),
-            state: dam_api::HealthState::Healthy,
-            message: format!("sqlite vault path {}", config.vault.sqlite_path.display()),
-        },
-        dam_config::VaultBackend::Remote
-            if config.failure.vault_write == dam_config::VaultWriteFailureMode::RedactOnly =>
-        {
-            diagnostics.push(dam_api::Diagnostic::new(
-                dam_api::DiagnosticSeverity::Warning,
-                "remote_vault_not_implemented",
-                "remote vault backend is configured but this local build only has redact-only fallback",
-            ));
-            dam_api::ComponentHealth {
-                component: "vault".to_string(),
-                state: dam_api::HealthState::Degraded,
-                message: "remote vault backend is not implemented; redact-only fallback configured"
-                    .to_string(),
-            }
-        }
-        dam_config::VaultBackend::Remote => {
-            diagnostics.push(dam_api::Diagnostic::new(
-                dam_api::DiagnosticSeverity::Error,
-                "remote_vault_not_implemented",
-                "remote vault backend is configured but this local build cannot use it with fail-closed behavior",
-            ));
-            dam_api::ComponentHealth {
-                component: "vault".to_string(),
-                state: dam_api::HealthState::Unhealthy,
-                message: "remote vault backend is not implemented for fail-closed behavior"
-                    .to_string(),
-            }
-        }
-    }
-}
-
-fn consent_component(
-    config: &dam_config::DamConfig,
-    _diagnostics: &mut Vec<dam_api::Diagnostic>,
-) -> dam_api::ComponentHealth {
-    if !config.consent.enabled {
-        return dam_api::ComponentHealth {
-            component: "consent".to_string(),
-            state: dam_api::HealthState::Degraded,
-            message: "consent is disabled".to_string(),
-        };
-    }
-
-    match config.consent.backend {
-        dam_config::ConsentBackend::Sqlite => dam_api::ComponentHealth {
-            component: "consent".to_string(),
-            state: dam_api::HealthState::Healthy,
-            message: format!(
-                "sqlite consent path {}, default ttl {}s, mcp writes {}",
-                config.consent.sqlite_path.display(),
-                config.consent.default_ttl_seconds,
-                if config.consent.mcp_write_enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            ),
-        },
-    }
-}
-
-fn log_component(
-    config: &dam_config::DamConfig,
-    diagnostics: &mut Vec<dam_api::Diagnostic>,
-) -> dam_api::ComponentHealth {
-    if !config.log.enabled || config.log.backend == dam_config::LogBackend::None {
-        return dam_api::ComponentHealth {
-            component: "log".to_string(),
-            state: dam_api::HealthState::Degraded,
-            message: "logging is disabled".to_string(),
-        };
-    }
-
-    match config.log.backend {
-        dam_config::LogBackend::Sqlite => dam_api::ComponentHealth {
-            component: "log".to_string(),
-            state: dam_api::HealthState::Healthy,
-            message: format!("sqlite log path {}", config.log.sqlite_path.display()),
-        },
-        dam_config::LogBackend::Remote
-            if config.failure.log_write == dam_config::LogWriteFailureMode::WarnContinue =>
-        {
-            diagnostics.push(dam_api::Diagnostic::new(
-                dam_api::DiagnosticSeverity::Warning,
-                "remote_log_not_implemented",
-                "remote log backend is configured but this local build only supports warn-and-continue",
-            ));
-            dam_api::ComponentHealth {
-                component: "log".to_string(),
-                state: dam_api::HealthState::Degraded,
-                message: "remote log backend is not implemented; warn-and-continue configured"
-                    .to_string(),
-            }
-        }
-        dam_config::LogBackend::Remote => {
-            diagnostics.push(dam_api::Diagnostic::new(
-                dam_api::DiagnosticSeverity::Error,
-                "remote_log_not_implemented",
-                "remote log backend is configured but this local build cannot use it with fail-closed behavior",
-            ));
-            dam_api::ComponentHealth {
-                component: "log".to_string(),
-                state: dam_api::HealthState::Unhealthy,
-                message: "remote log backend is not implemented for fail-closed behavior"
-                    .to_string(),
-            }
-        }
-        dam_config::LogBackend::None => unreachable!("none handled before backend match"),
-    }
-}
-
-fn proxy_component(
-    config: &dam_config::DamConfig,
-    diagnostics: &mut Vec<dam_api::Diagnostic>,
-) -> dam_api::ComponentHealth {
-    if !config.proxy.enabled {
-        return dam_api::ComponentHealth {
-            component: "proxy".to_string(),
-            state: dam_api::HealthState::Degraded,
-            message: "proxy is disabled".to_string(),
-        };
-    }
-
-    let mut errors = Vec::new();
-    if config.proxy.listen.parse::<SocketAddr>().is_err() {
-        errors.push(format!(
-            "proxy listen address is invalid: {}",
-            config.proxy.listen
-        ));
-    }
-
-    for target in &config.proxy.targets {
-        if !matches!(target.provider.as_str(), "openai-compatible" | "anthropic") {
-            errors.push(format!(
-                "proxy target {} uses unsupported provider {}",
-                target.name, target.provider
-            ));
-        }
-        if reqwest::Url::parse(&target.upstream).is_err() {
-            errors.push(format!(
-                "proxy target {} has invalid upstream URL {}",
-                target.name, target.upstream
-            ));
-        }
-        if let Some(api_key_env) = &target.api_key_env
-            && target.api_key.is_none()
-        {
-            errors.push(format!(
-                "proxy target {} requires missing env var {}",
-                target.name, api_key_env
-            ));
-        }
-    }
-
-    if errors.is_empty() {
-        dam_api::ComponentHealth {
-            component: "proxy".to_string(),
-            state: dam_api::HealthState::Healthy,
-            message: format!(
-                "proxy enabled on {} with {} target(s)",
-                config.proxy.listen,
-                config.proxy.targets.len()
-            ),
-        }
-    } else {
-        for error in &errors {
-            diagnostics.push(dam_api::Diagnostic::new(
-                dam_api::DiagnosticSeverity::Error,
-                "proxy_config_invalid",
-                error,
-            ));
-        }
-        dam_api::ComponentHealth {
-            component: "proxy".to_string(),
+        state: dam_api::HealthState::Unhealthy,
+        components: vec![dam_api::ComponentHealth {
+            component: "config".to_string(),
             state: dam_api::HealthState::Unhealthy,
-            message: errors.join("; "),
-        }
+            message: format!("config load failed: {error}"),
+        }],
+        diagnostics: vec![dam_api::Diagnostic::new(
+            dam_api::DiagnosticSeverity::Error,
+            "config_load_failed",
+            error.to_string(),
+        )],
     }
 }
 
 fn status_url(args: &StatusArgs, config: Option<&dam_config::DamConfig>) -> Result<String, String> {
     if let Some(proxy_url) = &args.proxy_url {
-        return append_health(proxy_url);
+        return dam_diagnostics::proxy_health_url(
+            &dam_config::DamConfig::default(),
+            Some(proxy_url),
+        );
     }
 
     let config =
         config.ok_or_else(|| "config is required when --proxy-url is omitted".to_string())?;
-    append_health(&format!("http://{}", config.proxy.listen))
-}
-
-fn append_health(value: &str) -> Result<String, String> {
-    let mut url = reqwest::Url::parse(value)
-        .map_err(|error| format!("invalid proxy url {value}: {error}"))?;
-    let path = url.path().trim_end_matches('/');
-    url.set_path(&format!("{path}/health"));
-    Ok(url.to_string())
+    dam_diagnostics::proxy_health_url(config, None)
 }
 
 fn dam_down_report(
@@ -554,6 +376,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
 
     match args[0].as_str() {
         "status" => parse_status_args(&args[1..]),
+        "doctor" => parse_doctor_args(&args[1..]),
         "config" => parse_config_args(&args[1..]),
         "mcp" => parse_mcp_args(&args[1..]),
         "-h" | "--help" => {
@@ -625,6 +448,39 @@ fn parse_status_args(args: &[String]) -> Result<Command, String> {
     Ok(Command::Status(parsed))
 }
 
+fn parse_doctor_args(args: &[String]) -> Result<Command, String> {
+    let mut parsed = DoctorArgs::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" => {
+                i += 1;
+                parsed.common.config.config_path = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| "--config requires a path".to_string())?,
+                ));
+            }
+            "--proxy-url" => {
+                i += 1;
+                parsed.proxy_url = Some(
+                    args.get(i)
+                        .ok_or_else(|| "--proxy-url requires a URL".to_string())?
+                        .clone(),
+                );
+            }
+            "--json" => parsed.common.json = true,
+            "-h" | "--help" => {
+                println!("{}", usage_doctor());
+                std::process::exit(0);
+            }
+            arg => return Err(format!("unknown doctor argument: {arg}")),
+        }
+        i += 1;
+    }
+
+    Ok(Command::Doctor(parsed))
+}
+
 fn parse_config_args(args: &[String]) -> Result<Command, String> {
     if args.first().map(String::as_str) != Some("check") {
         return Err("expected config check".to_string());
@@ -655,11 +511,15 @@ fn parse_config_args(args: &[String]) -> Result<Command, String> {
 }
 
 fn usage() -> &'static str {
-    "Usage: damctl <command>\n\nCommands:\n  status        Check the local DAM proxy health endpoint\n  config check  Validate local DAM config for the current implementation\n  mcp config    Print MCP server config for DAM"
+    "Usage: damctl <command>\n\nCommands:\n  status        Check the local DAM proxy health endpoint\n  doctor        Run local readiness checks for the protected UX\n  config check  Validate local DAM config for the current implementation\n  mcp config    Print MCP server config for DAM"
 }
 
 fn usage_status() -> &'static str {
     "Usage: damctl status [--config dam.toml] [--proxy-url http://127.0.0.1:7828] [--json]"
+}
+
+fn usage_doctor() -> &'static str {
+    "Usage: damctl doctor [--config dam.toml] [--proxy-url http://127.0.0.1:7828] [--json]"
 }
 
 fn usage_config_check() -> &'static str {
@@ -716,6 +576,33 @@ mod tests {
                 common: CommonArgs {
                     json: true,
                     ..CommonArgs::default()
+                },
+                proxy_url: Some("http://127.0.0.1:7828".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_doctor_accepts_config_proxy_url_and_json() {
+        let command = parse_args([
+            "doctor".to_string(),
+            "--config".to_string(),
+            "/tmp/dam.toml".to_string(),
+            "--proxy-url".to_string(),
+            "http://127.0.0.1:7828".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            Command::Doctor(DoctorArgs {
+                common: CommonArgs {
+                    config: dam_config::ConfigOverrides {
+                        config_path: Some(PathBuf::from("/tmp/dam.toml")),
+                        ..dam_config::ConfigOverrides::default()
+                    },
+                    json: true,
                 },
                 proxy_url: Some("http://127.0.0.1:7828".to_string()),
             })
@@ -815,6 +702,70 @@ mod tests {
         assert_eq!(report.diagnostics[0].code, "dam_down");
     }
 
+    #[tokio::test]
+    async fn doctor_json_reports_router_and_proxy_runtime() {
+        let proxy_url = spawn_health(dam_api::ProxyReport {
+            operation_id: None,
+            target: Some("openai".to_string()),
+            upstream: Some("http://127.0.0.1:9999".to_string()),
+            state: dam_api::ProxyState::Protected,
+            message: "proxy is ready".to_string(),
+            diagnostics: Vec::new(),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            &format!(
+                r#"
+                [vault]
+                path = "{vault}"
+
+                [log]
+                enabled = true
+                path = "{log}"
+
+                [consent]
+                path = "{consent}"
+
+                [proxy]
+                enabled = true
+                listen = "127.0.0.1:7828"
+
+                [[proxy.targets]]
+                name = "openai"
+                provider = "openai-compatible"
+                upstream = "https://api.openai.com"
+                "#,
+                vault = dir.path().join("vault.db").display(),
+                log = dir.path().join("log.db").display(),
+                consent = dir.path().join("consent.db").display(),
+            ),
+        );
+
+        let output = doctor(DoctorArgs {
+            common: CommonArgs {
+                config: dam_config::ConfigOverrides {
+                    config_path: Some(path),
+                    ..dam_config::ConfigOverrides::default()
+                },
+                json: true,
+            },
+            proxy_url: Some(proxy_url),
+        })
+        .await;
+
+        assert_eq!(output.code, 0);
+        let report: dam_api::HealthReport = serde_json::from_str(&output.stdout).unwrap();
+        assert!(report.components.iter().any(|component| {
+            component.component == "router" && component.state == dam_api::HealthState::Healthy
+        }));
+        assert!(report.components.iter().any(|component| {
+            component.component == "proxy_runtime"
+                && component.state == dam_api::HealthState::Healthy
+        }));
+    }
+
     #[test]
     fn config_check_reports_missing_proxy_api_key_as_unhealthy() {
         let dir = tempfile::tempdir().unwrap();
@@ -892,7 +843,7 @@ mod tests {
 
     #[test]
     fn default_config_report_is_degraded_but_not_failed() {
-        let report = build_config_report(&dam_config::DamConfig::default());
+        let report = dam_diagnostics::config_report(&dam_config::DamConfig::default());
         let output = CommandOutput {
             code: if report.state == dam_api::HealthState::Unhealthy {
                 1
@@ -908,7 +859,7 @@ mod tests {
         assert!(
             output
                 .stdout
-                .contains("proxy: degraded - proxy is disabled")
+                .contains("proxy_config: degraded - proxy is disabled")
         );
     }
 }

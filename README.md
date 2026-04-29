@@ -26,8 +26,9 @@
 
 DAM runs on your machine between a coding agent and its model provider. It detects sensitive values in outbound prompts, applies local policy and consent, replaces protected values with stable references, and stores originals in a local vault so the provider only sees what you meant to share.
 
-V1 is focused on the two agent paths that matter most right now:
+V1 is focused on the local AI paths that matter most right now:
 
+- **Harnesses and agents** through `dam connect`, which starts a local protected endpoint.
 - **Claude Code** through `ANTHROPIC_BASE_URL`.
 - **Codex API-key mode** through an injected OpenAI provider config.
 
@@ -85,6 +86,9 @@ Install globally for normal persistent local state:
 
 ```bash
 npm install -g @rpblc/dam
+dam connect
+dam status
+dam integrations list
 dam claude
 dam codex --api
 ```
@@ -98,6 +102,8 @@ npx @rpblc/dam claude --persist
 From a source checkout:
 
 ```bash
+cargo run -p dam -- connect
+cargo run -p dam -- integrations list
 cargo run -p dam -- claude
 cargo run -p dam -- codex --api
 ```
@@ -107,7 +113,7 @@ cargo run -p dam -- codex --api
 ```text
               local machine                                      provider
 
-  prompt ──► dam launcher ──► dam-proxy ───────────────────────► model API
+  prompt ──► dam launcher/daemon ──► dam-proxy ────────────────► model API
               │                 │                                    │
               │                 ├─ detect sensitive values           │
               │                 ├─ apply policy                      │
@@ -190,6 +196,7 @@ It provides:
 - `/` for vault rows, cleartext values, and row-level grant/revoke actions.
 - `/consents` for active and historical consent records.
 - `/logs` for non-sensitive detection, redaction, consent, and resolve events.
+- `/doctor` for local readiness checks shared with `damctl doctor`.
 - `/diagnostics` for config and proxy health checks.
 
 The web UI displays vault values in clear text. Treat it as a local admin surface, not a public web app.
@@ -213,6 +220,17 @@ Current tools:
 
 ## Commands
 
+Background local endpoint:
+
+```bash
+dam connect [--openai|--anthropic] [DAM_OPTIONS]
+dam connect --profile <profile> [DAM_OPTIONS]
+dam status [--json]
+dam disconnect
+dam integrations list [--json]
+dam integrations show <profile> [--json]
+```
+
 Protected agent launchers:
 
 ```bash
@@ -220,12 +238,17 @@ dam claude [DAM_OPTIONS] [-- CLAUDE_ARGS...]
 dam codex --api [DAM_OPTIONS] [-- CODEX_ARGS...]
 ```
 
-DAM launcher options:
+DAM options:
 
 ```text
+--profile <id>        Apply integration profile daemon defaults
+--openai              Use the OpenAI-compatible daemon preset
+--anthropic           Use the Anthropic daemon preset
 --api                 Use Codex API-key mode through DAM
 --config <path>       Load DAM config before launcher overrides
 --listen <addr>       Local proxy listen address, default 127.0.0.1:7828
+--target-name <name>  Proxy target name for daemon mode
+--provider <name>     Provider adapter for daemon mode
 --upstream <url>      Provider upstream
 --db <path>           Vault SQLite path, default vault.db
 --log <path>          Log SQLite path, default log.db
@@ -246,6 +269,7 @@ Control and diagnostics:
 
 ```bash
 cargo run -p damctl -- status
+cargo run -p damctl -- doctor --config dam.example.toml
 cargo run -p damctl -- config check --config dam.example.toml
 cargo run -p damctl -- mcp config --config dam.example.toml
 ```
@@ -264,6 +288,7 @@ Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default
 ## V1 Limits
 
 - DAM is explicit base-URL routing, not transparent HTTPS interception, VPN/TUN routing, or TLS MITM.
+- `dam connect` starts a local endpoint, and `dam integrations` shows harness setup profiles, but DAM does not yet mutate harness configs automatically.
 - Codex ChatGPT-login mode is blocked because its current model transport is not protected by the base-URL launcher.
 - Inbound provider responses are not redetected. Known DAM references can be resolved locally with `--resolve-inbound`, but this is off by default.
 - The current vault/log/consent stores are local SQLite implementations.
@@ -274,10 +299,10 @@ Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default
 
 Recommended order for the next engineering sessions:
 
-1. Smoke test `dam claude` and `dam codex --api` against fake or real provider paths, then inspect the vault and log SQLite databases.
-2. Expand `damctl`: deeper doctor checks, bypass status, install profile inspection, and eventually daemon lifecycle.
-3. Add `dam-daemon` only after proxy/router behavior is stable. Its role is lifecycle, health, and VPN-like UX, not protection logic.
-4. Add `dam-integrations` for harness profiles where tools allow low-configuration routing.
+1. Smoke test `dam connect`, `dam claude`, and `dam codex --api` against fake or real provider paths, then inspect the vault and log SQLite databases.
+2. Add apply/install support for selected integration profiles where harness config can be changed safely.
+3. Expand `damctl` beyond doctor: bypass status, daemon state inspection, and integration checks.
+4. Add login/startup UX for the daemon after the profile-apply shape is stable.
 
 Do not spend the next session on these until their prerequisite slice exists:
 
@@ -292,11 +317,14 @@ Implemented extraction modules:
 - `dam-provider-openai`: OpenAI-compatible adapter with fixture-first tests and no real provider calls in automated tests.
 - `dam-provider-anthropic`: Anthropic-compatible adapter with fixture-first tests and no real provider calls in automated tests.
 - `dam-router`: reusable first-target selection, provider classification, auth mode, and failure-mode decisions.
+- `dam-diagnostics`: shared local readiness checks for `damctl doctor` and `dam-web /doctor`.
+- `dam-daemon`: background local proxy lifecycle and state file for `dam connect/status/disconnect`.
+- `dam-integrations`: known local harness profiles for `dam integrations` and `dam connect --profile`.
 
-Near-term modules still to build:
+Near-term product slices still to build:
 
-- `dam-daemon`: local service lifecycle and health/status model for VPN-like user experience.
-- `dam-integrations`: known harness profiles for minimal manual setup where tools allow it.
+- integration profile apply/install support with safe rollback where harness config files can be changed reliably.
+- login/startup UX for the local daemon after profile apply is stable.
 
 Backend replacement modules:
 

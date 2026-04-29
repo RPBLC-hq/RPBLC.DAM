@@ -1,18 +1,19 @@
 [package]
-name = "damctl"
-version.workspace = true
+name = "dam-diagnostics"
 edition.workspace = true
 license.workspace = true
+version.workspace = true
 
 [dependencies]
 dam-api.workspace = true
 dam-config.workspace = true
-dam-diagnostics.workspace = true
+dam-consent.workspace = true
+dam-log.workspace = true
+dam-router.workspace = true
+dam-vault.workspace = true
 reqwest.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-tokio.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
 tempfile.workspace = true
+tokio.workspace = true

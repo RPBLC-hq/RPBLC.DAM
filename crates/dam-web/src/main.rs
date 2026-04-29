@@ -17,17 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const RPBLC_HOME_URL: &str = "https://rpblc.com";
-const RPBLC_FAVICON_DATA_URI: &str = concat!(
-    "data:image/svg+xml,",
-    "%3Csvg viewBox='0 0 64 64' fill='none' xmlns='http://www.w3.org/2000/svg'%3E",
-    "%3Crect x='1' y='1' width='62' height='62' rx='0' stroke='%23faf8f2' stroke-width='2'/%3E",
-    "%3Ctext x='32' y='46' text-anchor='middle' font-family='JetBrains Mono, monospace' font-size='36' font-weight='700'%3E",
-    "%3Ctspan fill='%233d3a32'%3E%5B%3C/tspan%3E",
-    "%3Ctspan fill='%23faf8f2'%3ER%3C/tspan%3E",
-    "%3Ctspan fill='%23B8965A'%3E%3A%3C/tspan%3E",
-    "%3Ctspan fill='%233d3a32'%3E%5D%3C/tspan%3E",
-    "%3C/text%3E%3C/svg%3E"
-);
+const RPBLC_FAVICON_SVG: &str = include_str!("../assets/favicon.svg");
 
 #[derive(Clone)]
 struct AppState {
@@ -186,7 +176,9 @@ fn router(state: AppState) -> Router {
         .route("/consents", get(consents))
         .route("/consents/grant", post(grant_consent))
         .route("/consents/revoke", post(revoke_consent))
+        .route("/doctor", get(doctor))
         .route("/diagnostics", get(diagnostics))
+        .route("/favicon.svg", get(favicon))
         .route("/health", get(|| async { "ok" }))
         .route_layer(middleware::from_fn(require_local_browser_context))
         .with_state(state)
@@ -362,6 +354,24 @@ async fn diagnostics(State(state): State<AppState>) -> Response {
     let config_report = build_config_report(&state.config);
     let proxy_report = proxy_report(&state.config, &state.client).await;
     Html(render_diagnostics(&config_report, &proxy_report)).into_response()
+}
+
+async fn doctor(State(state): State<AppState>) -> Response {
+    let report =
+        dam_diagnostics::doctor_report(&state.config, &dam_diagnostics::DoctorOptions::default())
+            .await;
+    Html(render_doctor(&report)).into_response()
+}
+
+async fn favicon() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "image/svg+xml; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        RPBLC_FAVICON_SVG,
+    )
+        .into_response()
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliArgs, String> {
@@ -899,6 +909,42 @@ fn render_diagnostics(
     )
 }
 
+fn render_doctor(report: &dam_api::HealthReport) -> String {
+    let cards = report
+        .components
+        .iter()
+        .map(render_component_card)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let diagnostics = render_diagnostic_list(&report.diagnostics);
+
+    render_shell(
+        "DAM Doctor",
+        "Doctor",
+        "Local readiness checks for protected AI traffic.",
+        report.components.len(),
+        "checks",
+        &format!(
+            r#"<section class="diagnostics-grid">
+      <article class="status-card status-{state_class}">
+        <div class="status-label">Overall Readiness</div>
+        <div class="state-pill state-{state_class}">{state}</div>
+        <p>{message}</p>
+        {diagnostics}
+      </article>
+    </section>
+    <section class="component-grid">
+      {cards}
+    </section>"#,
+            state_class = escape_html(health_state_tag(report.state)),
+            state = escape_html(health_state_tag(report.state)),
+            message = escape_html(config_summary(report.state)),
+            diagnostics = diagnostics,
+            cards = cards,
+        ),
+    )
+}
+
 fn render_shell(
     title: &str,
     active: &str,
@@ -913,7 +959,7 @@ fn render_shell(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="icon" type="image/svg+xml" href="{favicon}">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <title>{title}</title>
   <style>
     :root {{
@@ -1340,6 +1386,7 @@ fn render_shell(
       <a class="{vault_class}" href="/">Vault</a>
       <a class="{logs_class}" href="/logs">Logs</a>
       <a class="{consents_class}" href="/consents">Consents</a>
+      <a class="{doctor_class}" href="/doctor">Doctor</a>
       <a class="{diagnostics_class}" href="/diagnostics">Diagnostics</a>
     </nav>
     <header>
@@ -1355,7 +1402,6 @@ fn render_shell(
   </main>
 </body>
 </html>"#,
-        favicon = RPBLC_FAVICON_DATA_URI,
         brand_url = RPBLC_HOME_URL,
         title = title,
         meta = meta,
@@ -1365,6 +1411,7 @@ fn render_shell(
         vault_class = if active == "Vault" { "active" } else { "" },
         logs_class = if active == "Logs" { "active" } else { "" },
         consents_class = if active == "Consents" { "active" } else { "" },
+        doctor_class = if active == "Doctor" { "active" } else { "" },
         diagnostics_class = if active == "Diagnostics" {
             "active"
         } else {
@@ -2120,8 +2167,7 @@ mod tests {
     fn render_shell_includes_rpblc_branding() {
         let html = render_vault(&PathBuf::from("vault.db"), &[]);
 
-        assert!(html.contains("rel=\"icon\" type=\"image/svg+xml\""));
-        assert!(html.contains("data:image/svg+xml"));
+        assert!(html.contains("rel=\"icon\" type=\"image/svg+xml\" href=\"/favicon.svg\""));
         assert!(html.contains("https://rpblc.com"));
         assert!(html.contains("RPBLC.com"));
         assert!(html.contains("privacy infrastructure"));
@@ -2238,6 +2284,45 @@ mod tests {
         assert!(html.contains("status-degraded"));
         assert!(html.contains("state-degraded"));
         assert!(html.contains("href=\"/diagnostics\""));
+    }
+
+    #[test]
+    fn render_doctor_shows_readiness_components() {
+        let html = render_doctor(&dam_api::HealthReport {
+            state: dam_api::HealthState::Degraded,
+            components: vec![
+                dam_api::ComponentHealth {
+                    component: "router".to_string(),
+                    state: dam_api::HealthState::Healthy,
+                    message: "target openai routes to openai-compatible".to_string(),
+                },
+                dam_api::ComponentHealth {
+                    component: "proxy_runtime".to_string(),
+                    state: dam_api::HealthState::Degraded,
+                    message: "proxy is not configured to run".to_string(),
+                },
+            ],
+            diagnostics: vec![dam_api::Diagnostic::new(
+                dam_api::DiagnosticSeverity::Warning,
+                "router_config_required",
+                "target requires auth",
+            )],
+        });
+
+        assert!(html.contains("DAM Doctor"));
+        assert!(html.contains("Overall Readiness"));
+        assert!(html.contains("router"));
+        assert!(html.contains("proxy_runtime"));
+        assert!(html.contains("router_config_required"));
+        assert!(html.contains("href=\"/doctor\""));
+        assert!(html.contains("class=\"active\" href=\"/doctor\""));
+    }
+
+    #[test]
+    fn favicon_uses_vendored_rpblc_public_asset_shape() {
+        assert!(RPBLC_FAVICON_SVG.contains("viewBox=\"0 0 64 64\""));
+        assert!(RPBLC_FAVICON_SVG.contains("font-family=\"'JetBrains Mono', monospace\""));
+        assert!(RPBLC_FAVICON_SVG.contains("<tspan fill=\"#faf8f2\">R</tspan>"));
     }
 
     #[test]

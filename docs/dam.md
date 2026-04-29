@@ -1,17 +1,23 @@
 # dam
 
-`dam` is the local launcher binary for running known LLM tools through DAM with minimal setup.
+`dam` is the local UX entry point for running selected AI traffic through DAM with minimal setup.
 
-It currently supports Claude Code and explicit Codex API-key mode:
+It currently supports the background daemon UX, Claude Code, and explicit Codex API-key mode:
 
 ```bash
+cargo run -p dam -- connect
+cargo run -p dam -- status
+cargo run -p dam -- disconnect
+cargo run -p dam -- integrations list
 cargo run -p dam -- claude
 cargo run -p dam -- codex --api
 ```
 
 `dam codex` without `--api` still fails closed. Codex v0.125 ChatGPT-login mode sends model turns to `wss://chatgpt.com/backend-api/codex/responses` and HTTPS fallback on the same path; that transport is not controlled by `chatgpt_base_url`, so the current explicit base-URL launcher cannot protect it.
 
-The launcher starts an embedded `dam-proxy`, waits for `/health`, starts the selected tool with a DAM base URL, and shuts the proxy down when the tool exits.
+`dam connect` starts a background local daemon that owns a `dam-proxy` until `dam disconnect`.
+
+The launcher commands start an embedded `dam-proxy`, wait for `/health`, start the selected tool with a DAM base URL, and shut the proxy down when the tool exits.
 
 By default, the embedded proxy redacts outbound requests before they reach the provider and leaves DAM references unresolved on inbound responses. Inbound responses are not redacted. Set `proxy.resolve_inbound = true` or use `--resolve-inbound` to restore known `[kind:id]` references back to local values before the tool sees the response.
 
@@ -30,6 +36,11 @@ Proxy-managed API key injection still exists in `dam-proxy` for gateway-style de
 ## Commands
 
 ```bash
+dam connect [--openai|--anthropic] [DAM_OPTIONS]
+dam status [--json]
+dam disconnect
+dam integrations list [--json]
+dam integrations show <profile> [--json]
 dam codex --api [DAM_OPTIONS] [-- CODEX_ARGS...]
 dam claude [DAM_OPTIONS] [-- CLAUDE_ARGS...]
 ```
@@ -37,9 +48,14 @@ dam claude [DAM_OPTIONS] [-- CLAUDE_ARGS...]
 DAM options:
 
 ```text
+--profile <id>       Apply integration profile daemon defaults (connect only)
+--openai             Use the OpenAI-compatible daemon preset (default for connect)
+--anthropic          Use the Anthropic daemon preset (connect only)
 --api                Use Codex API-key mode through DAM (Codex only)
 --config <path>      Load DAM config file before launcher overrides
 --listen <addr>      Local proxy listen address (default: 127.0.0.1:7828)
+--target-name <name> Proxy target name (connect only)
+--provider <name>    Provider adapter: openai-compatible or anthropic (connect only)
 --upstream <url>     Provider upstream
 --db <path>          Vault SQLite path (default: vault.db)
 --log <path>         Log SQLite path (default: log.db)
@@ -52,6 +68,12 @@ DAM options:
 Examples:
 
 ```bash
+dam connect
+dam connect --profile xai-compatible
+dam connect --anthropic
+dam status
+dam integrations show codex-api
+dam disconnect
 cargo run -p dam -- claude -- --model sonnet
 cargo run -p dam -- codex --api -- -m gpt-5.5
 cargo run -p dam -- claude --listen 127.0.0.1:7829
@@ -70,6 +92,8 @@ When invoked from `npx`, `claude` and `codex` run in trial mode by default. Tria
 
 ## Current Limits
 
+- `dam connect` runs one background proxy target at a time. It does not install system proxy settings or configure harnesses yet.
+- `dam integrations` renders known profile setup data; it does not mutate harness config files yet.
 - One launcher command starts one single-target proxy.
 - Codex API-key mode is protected through the public Responses API. Codex ChatGPT-login model turns are not protected by the current launcher and are blocked.
 - Codex WebSockets are disabled in the injected provider config until DAM has a WebSocket adapter.
@@ -80,6 +104,7 @@ When invoked from `npx`, `claude` and `codex` run in trial mode by default. Tria
 
 ```bash
 cargo test -p dam
+cargo test -p dam-daemon
 cargo test -p dam-e2e dam_codex_launcher_fails_closed_until_transport_is_protected
 cargo test -p dam-e2e dam_codex_api_launcher_sets_dam_model_provider
 cargo test -p dam-e2e dam_claude_launcher_passes_anthropic_base_url_to_claude

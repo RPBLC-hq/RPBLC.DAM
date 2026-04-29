@@ -5,6 +5,9 @@ members = [
     "crates/dam-config",
     "crates/dam-consent",
     "crates/dam-core",
+    "crates/dam-daemon",
+    "crates/dam-diagnostics",
+    "crates/dam-integrations",
     "crates/dam-mcp",
     "crates/damctl",
     "crates/dam-detect",
@@ -35,8 +38,11 @@ bs58 = "0.5"
 dam-config = { path = "crates/dam-config" }
 dam-consent = { path = "crates/dam-consent" }
 dam-api = { path = "crates/dam-api" }
+dam-daemon = { path = "crates/dam-daemon" }
 dam-proxy = { path = "crates/dam-proxy" }
 dam-core = { path = "crates/dam-core" }
+dam-diagnostics = { path = "crates/dam-diagnostics" }
+dam-integrations = { path = "crates/dam-integrations" }
 damctl = { path = "crates/damctl" }
 dam-detect = { path = "crates/dam-detect" }
 dam-e2e = { path = "crates/dam-e2e" }

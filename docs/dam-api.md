@@ -9,7 +9,7 @@ It does not detect, redact, store, resolve, proxy, log, or read config. It only 
 - Filter report DTOs for detections, policy decisions, replacements, vault-write failures, blocked detections, and summary counts.
 - Resolve report DTOs for references found, resolved references, missing references, read failures, strict-mode status, and summary counts.
 - Proxy status DTOs for `protected`, `bypassing`, `blocked`, `provider_down`, `config_required`, and `dam_down`.
-- Health DTOs for future `damctl`, `dam-daemon`, web UI status, and installer diagnostics.
+- Health DTOs for `damctl`, `dam-daemon`, web UI status, and future installer diagnostics.
 - Diagnostic DTOs for non-sensitive warnings and errors.
 
 ## Privacy Rule
