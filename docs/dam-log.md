@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS log_events (
 );
 ```
 
+Existing local databases with older `log_events` schemas are migrated in place by adding the current non-sensitive columns. Legacy `value_preview` columns are not read into `LogEntry` and are not shown by current log views.
+
 ## Privacy Rules
 
 Allowed:
