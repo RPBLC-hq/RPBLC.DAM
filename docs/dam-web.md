@@ -2,11 +2,12 @@
 
 `dam-web` is the local web UI.
 
-It is for development inspection of local SQLite vault, consent, and log databases.
+It is for development inspection of local SQLite vault, consent, and log databases, and it hosts the first visual connect surface intended to become the tray/menu-bar app content.
 
 ## Routes
 
 ```text
+/connect   VPN-style local protection surface for profile select, setup, connect, and disconnect
 /          vault entries and row-level consent grant/revoke actions
 /consents  consent entries and revoke actions
 /logs      operational log events
@@ -23,6 +24,10 @@ The vault and logs tables support column ordering through header buttons. They u
 /?sort=key&dir=asc
 /logs?sort=time&dir=desc
 ```
+
+`/connect` uses the same active profile state as `dam profile set`. It can select or clear the active profile, apply safe profile setup, roll back when a rollback record is available, start DAM with `dam connect --apply`, and disconnect the running daemon.
+
+The Connect action shells out to the local `dam` binary from `PATH`. Set `DAM_BIN=/path/to/dam` for source-tree runs or custom installs.
 
 ## Usage
 
@@ -68,6 +73,8 @@ Remote vault/consent/log views are not implemented yet.
 ## Security Posture
 
 This UI displays vault values in clear text and can grant/revoke passthrough consent. Treat it as a local development/admin tool, not a public-facing service.
+
+Connect/profile mutation routes are POST-only and use the same local Host and Origin/Referer guardrails as consent mutation routes.
 
 ## Branding
 

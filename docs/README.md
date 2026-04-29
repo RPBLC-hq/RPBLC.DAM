@@ -30,7 +30,7 @@ Deferred security and product-design work is tracked in [parking-lot.md](parking
 - [dam-filter](dam-filter.md): CLI pipeline wiring detection, policy, vault, logs, and redaction.
 - [dam-resolve](dam-resolve.md): CLI pipeline for resolving `[kind:id]` references through `VaultReader`.
 - [dam-proxy](dam-proxy.md): first app-layer LLM proxy slice with OpenAI-compatible and Anthropic reverse proxy behavior.
-- [dam-web](dam-web.md): local web UI for vault entries, consent grants, log events, and diagnostics.
+- [dam-web](dam-web.md): local web UI for Connect/profile controls, vault entries, consent grants, log events, and diagnostics.
 - [dam-mcp](dam-mcp.md): MCP tools for agent-managed consent operations.
 
 ## Current Pipeline
@@ -159,6 +159,10 @@ damctl integrations check
 damctl config check
   -> dam-diagnostics
   -> dam-api HealthReport
+
+dam-web /connect
+  -> dam-integrations active profile and apply-state inspection
+  -> dam connect/disconnect control
 
 dam-web /doctor
   -> dam-diagnostics

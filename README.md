@@ -193,11 +193,14 @@ cargo run -p dam-web -- --config dam.example.toml
 
 It provides:
 
+- `/connect` for a VPN-style local protection surface: select a profile, apply setup, connect, disconnect, and inspect the active endpoint.
 - `/` for vault rows, cleartext values, and row-level grant/revoke actions.
 - `/consents` for active and historical consent records.
 - `/logs` for non-sensitive detection, redaction, consent, and resolve events.
 - `/doctor` for local readiness checks shared with `damctl doctor`.
 - `/diagnostics` for config and proxy health checks.
+
+`/connect` uses the same active profile state as `dam profile set`. The Connect action shells out to the local `dam` binary from `PATH`; set `DAM_BIN=/path/to/dam` when running from a source tree or custom install.
 
 The web UI displays vault values in clear text. Treat it as a local admin surface, not a public web app.
 
@@ -310,7 +313,7 @@ Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default
 Recommended order for the next engineering sessions:
 
 1. Smoke test `dam connect`, `dam claude`, and `dam codex --api` against fake or real provider paths, then inspect the vault and log SQLite databases.
-2. Add the web/tray profile selector on top of the active profile state used by `dam profile set`.
+2. Wrap the `/connect` surface in the native tray/menu-bar app shell.
 3. Expand profile apply support beyond Claude/Codex where harness config files can be changed safely.
 4. Add login/startup UX for the daemon after profile apply is stable.
 
@@ -333,7 +336,7 @@ Implemented extraction modules:
 
 Near-term product slices still to build:
 
-- web/tray profile selection that reads and writes the active local profile state.
+- native tray/menu-bar wrapper for the `/connect` surface.
 - broader integration profile apply/install support with safe rollback where harness config files can be changed reliably.
 - login/startup UX for the local daemon after profile apply is stable.
 
