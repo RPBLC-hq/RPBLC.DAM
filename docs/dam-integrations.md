@@ -72,6 +72,7 @@ When `--proxy-url` is omitted, `dam` uses the connected daemon state if availabl
 - default target path selection for known profiles;
 - desired file content generation;
 - dry-run planning;
+- install-state inspection for `applied`, `needs_apply`, and `modified` profile targets;
 - backup creation;
 - rollback record format;
 - rollback restore/delete behavior.

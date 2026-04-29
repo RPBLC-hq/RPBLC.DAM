@@ -114,6 +114,27 @@ pub struct IntegrationRollbackResult {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IntegrationApplyInspection {
+    pub profile_id: String,
+    pub proxy_url: String,
+    pub target_path: PathBuf,
+    pub rollback_record_path: PathBuf,
+    pub status: IntegrationApplyStatus,
+    pub planned_action: FileAction,
+    pub rollback_available: bool,
+    pub record_error: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegrationApplyStatus {
+    Applied,
+    NeedsApply,
+    Modified,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct IntegrationApplyRecord {
     profile_id: String,
@@ -303,6 +324,65 @@ pub fn run_apply(
         changes,
         record_path: Some(record_path),
         message: "integration profile applied".to_string(),
+    })
+}
+
+pub fn inspect_apply(
+    profile_id: &str,
+    proxy_url: &str,
+    target_path: PathBuf,
+    state_dir: &Path,
+) -> Result<IntegrationApplyInspection, String> {
+    let prepared = prepare_apply(profile_id, proxy_url, target_path)?;
+    let record_path = profile_state_dir(state_dir, profile_id).join("latest.json");
+    let (rollback_available, record_error) = rollback_record_state(profile_id, &record_path);
+    let status = match (prepared.action, rollback_available) {
+        (FileAction::Unchanged, _) => IntegrationApplyStatus::Applied,
+        (_, true) => IntegrationApplyStatus::Modified,
+        _ => IntegrationApplyStatus::NeedsApply,
+    };
+    let message = match (status, rollback_available, record_error.as_ref()) {
+        (IntegrationApplyStatus::Applied, true, None) => {
+            "integration profile is applied; rollback is available"
+        }
+        (IntegrationApplyStatus::Applied, false, None) => {
+            "integration profile content is present; no DAM rollback record is available"
+        }
+        (IntegrationApplyStatus::Applied, false, Some(_)) => {
+            "integration profile content is present; rollback record is unreadable"
+        }
+        (IntegrationApplyStatus::Applied, true, Some(_)) => {
+            "integration profile content is present; rollback record needs attention"
+        }
+        (IntegrationApplyStatus::Modified, true, None) => {
+            "integration profile was applied but target content no longer matches DAM's desired content"
+        }
+        (IntegrationApplyStatus::Modified, _, Some(_)) => {
+            "integration profile target content changed and rollback record is unreadable"
+        }
+        (IntegrationApplyStatus::Modified, false, None) => {
+            "integration profile target content does not match DAM's desired content"
+        }
+        (IntegrationApplyStatus::NeedsApply, true, None) => {
+            "integration profile is not applied but rollback is available"
+        }
+        (IntegrationApplyStatus::NeedsApply, _, Some(_)) => {
+            "integration profile is not applied and rollback record is unreadable"
+        }
+        (IntegrationApplyStatus::NeedsApply, _, None) => "integration profile is not applied",
+    }
+    .to_string();
+
+    Ok(IntegrationApplyInspection {
+        profile_id: prepared.profile_id,
+        proxy_url: prepared.proxy_url,
+        target_path: prepared.target_path,
+        rollback_record_path: record_path,
+        status,
+        planned_action: prepared.action,
+        rollback_available,
+        record_error,
+        message,
     })
 }
 
@@ -683,6 +763,36 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         .map_err(|error| format!("failed to write {}: {error}", path.display()))
 }
 
+fn rollback_record_state(profile_id: &str, record_path: &Path) -> (bool, Option<String>) {
+    match fs::read_to_string(record_path) {
+        Ok(raw) => match serde_json::from_str::<IntegrationApplyRecord>(&raw) {
+            Ok(record) if record.profile_id == profile_id => (true, None),
+            Ok(record) => (
+                false,
+                Some(format!(
+                    "rollback record profile id {} does not match {profile_id}",
+                    record.profile_id
+                )),
+            ),
+            Err(error) => (
+                false,
+                Some(format!(
+                    "failed to parse rollback record {}: {error}",
+                    record_path.display()
+                )),
+            ),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (false, None),
+        Err(error) => (
+            false,
+            Some(format!(
+                "failed to read rollback record {}: {error}",
+                record_path.display()
+            )),
+        ),
+    }
+}
+
 fn render_apply_plan_message(plan: &IntegrationApplyPlan) -> String {
     if plan
         .changes
@@ -857,5 +967,67 @@ mod tests {
 
         assert_eq!(rollback.changes[0].action, FileAction::Delete);
         assert!(!env_path.exists());
+    }
+
+    #[test]
+    fn inspect_apply_reports_missing_applied_and_modified_states() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let env_path = dir.path().join("claude.env");
+
+        let missing = inspect_apply(
+            "claude-code",
+            "http://127.0.0.1:9000",
+            env_path.clone(),
+            &state_dir,
+        )
+        .unwrap();
+        assert_eq!(missing.status, IntegrationApplyStatus::NeedsApply);
+        assert_eq!(missing.planned_action, FileAction::Create);
+        assert!(!missing.rollback_available);
+
+        let prepared =
+            prepare_apply("claude-code", "http://127.0.0.1:9000", env_path.clone()).unwrap();
+        run_apply(prepared, false, &state_dir).unwrap();
+
+        let applied = inspect_apply(
+            "claude-code",
+            "http://127.0.0.1:9000",
+            env_path.clone(),
+            &state_dir,
+        )
+        .unwrap();
+        assert_eq!(applied.status, IntegrationApplyStatus::Applied);
+        assert_eq!(applied.planned_action, FileAction::Unchanged);
+        assert!(applied.rollback_available);
+
+        fs::write(
+            &env_path,
+            "export ANTHROPIC_BASE_URL=http://example.invalid\n",
+        )
+        .unwrap();
+
+        let modified =
+            inspect_apply("claude-code", "http://127.0.0.1:9000", env_path, &state_dir).unwrap();
+        assert_eq!(modified.status, IntegrationApplyStatus::Modified);
+        assert_eq!(modified.planned_action, FileAction::Update);
+        assert!(modified.rollback_available);
+    }
+
+    #[test]
+    fn inspect_apply_reports_unreadable_rollback_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let env_path = dir.path().join("claude.env");
+        let record_path = profile_state_dir(&state_dir, "claude-code").join("latest.json");
+        fs::create_dir_all(record_path.parent().unwrap()).unwrap();
+        fs::write(&record_path, "not json").unwrap();
+
+        let report =
+            inspect_apply("claude-code", "http://127.0.0.1:9000", env_path, &state_dir).unwrap();
+
+        assert_eq!(report.status, IntegrationApplyStatus::NeedsApply);
+        assert!(!report.rollback_available);
+        assert!(report.record_error.unwrap().contains("failed to parse"));
     }
 }
