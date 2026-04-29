@@ -6,6 +6,7 @@ use std::time::Duration;
 enum Command {
     Status(StatusArgs),
     Doctor(DoctorArgs),
+    Bypass(BypassArgs),
     Daemon(DaemonArgs),
     Integrations(IntegrationsArgs),
     ConfigCheck(ConfigCheckArgs),
@@ -32,6 +33,27 @@ struct DoctorArgs {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ConfigCheckArgs {
+    common: CommonArgs,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct BypassArgs {
+    command: BypassCommand,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BypassCommand {
+    Status(BypassStatusArgs),
+}
+
+impl Default for BypassCommand {
+    fn default() -> Self {
+        Self::Status(BypassStatusArgs::default())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct BypassStatusArgs {
     common: CommonArgs,
 }
 
@@ -103,6 +125,29 @@ struct DaemonInspectReport {
     daemon: Option<dam_daemon::DaemonState>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct BypassStatusReport {
+    state: &'static str,
+    message: String,
+    reduced_guarantees: bool,
+    proxy_enabled: bool,
+    proxy_default_failure_mode: String,
+    proxy_targets: Vec<BypassTargetStatus>,
+    vault_write_failure_mode: String,
+    log_write_failure_mode: String,
+    diagnostics: Vec<dam_api::Diagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct BypassTargetStatus {
+    name: String,
+    provider: String,
+    upstream: String,
+    configured_failure_mode: Option<String>,
+    effective_failure_mode: String,
+    reduced_guarantee: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CommandOutput {
     code: i32,
@@ -136,6 +181,7 @@ async fn run(command: Command) -> CommandOutput {
     match command {
         Command::Status(args) => status(args).await,
         Command::Doctor(args) => doctor(args).await,
+        Command::Bypass(args) => bypass(args),
         Command::Daemon(args) => daemon(args),
         Command::Integrations(args) => integrations(args),
         Command::ConfigCheck(args) => config_check(args),
@@ -270,6 +316,32 @@ fn config_check(args: ConfigCheckArgs) -> CommandOutput {
         json(&report)
     } else {
         render_health_report(&report)
+    };
+
+    CommandOutput {
+        code,
+        stdout,
+        stderr: String::new(),
+    }
+}
+
+fn bypass(args: BypassArgs) -> CommandOutput {
+    match args.command {
+        BypassCommand::Status(args) => bypass_status(args),
+    }
+}
+
+fn bypass_status(args: BypassStatusArgs) -> CommandOutput {
+    let config = match dam_config::load(&args.common.config) {
+        Ok(config) => config,
+        Err(error) => return CommandOutput::fail(2, format!("config load failed: {error}\n")),
+    };
+    let report = bypass_status_report(&config);
+    let code = if report.reduced_guarantees { 1 } else { 0 };
+    let stdout = if args.common.json {
+        json(&report)
+    } else {
+        render_bypass_status_report(&report)
     };
 
     CommandOutput {
@@ -550,6 +622,119 @@ fn integrations_check_report(
     })
 }
 
+fn bypass_status_report(config: &dam_config::DamConfig) -> BypassStatusReport {
+    let diagnostics = bypass_status_diagnostics(config);
+    let proxy_targets = config
+        .proxy
+        .targets
+        .iter()
+        .map(|target| {
+            let effective = target.effective_failure_mode(config.proxy.default_failure_mode);
+            BypassTargetStatus {
+                name: target.name.clone(),
+                provider: target.provider.clone(),
+                upstream: target.upstream.clone(),
+                configured_failure_mode: target.failure_mode.map(|mode| mode.tag().to_string()),
+                effective_failure_mode: effective.tag().to_string(),
+                reduced_guarantee: proxy_failure_mode_reduces_guarantees(effective),
+            }
+        })
+        .collect::<Vec<_>>();
+    let reduced_guarantees = !diagnostics.is_empty();
+
+    BypassStatusReport {
+        state: if reduced_guarantees {
+            "reduced"
+        } else {
+            "strict"
+        },
+        message: if reduced_guarantees {
+            "reduced-protection modes are enabled".to_string()
+        } else {
+            "failure modes are strict".to_string()
+        },
+        reduced_guarantees,
+        proxy_enabled: config.proxy.enabled,
+        proxy_default_failure_mode: config.proxy.default_failure_mode.tag().to_string(),
+        proxy_targets,
+        vault_write_failure_mode: config.failure.vault_write.tag().to_string(),
+        log_write_failure_mode: config.failure.log_write.tag().to_string(),
+        diagnostics,
+    }
+}
+
+fn bypass_status_diagnostics(config: &dam_config::DamConfig) -> Vec<dam_api::Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    match config.proxy.default_failure_mode {
+        dam_config::ProxyFailureMode::BypassOnError => {
+            diagnostics.push(dam_api::Diagnostic::new(
+                dam_api::DiagnosticSeverity::Warning,
+                "proxy_bypass_on_error",
+                "proxy default failure mode can forward unprotected traffic when protection fails",
+            ));
+        }
+        dam_config::ProxyFailureMode::RedactOnly => {
+            diagnostics.push(dam_api::Diagnostic::new(
+                dam_api::DiagnosticSeverity::Warning,
+                "proxy_redact_only",
+                "proxy default failure mode can continue with irreversible placeholders when recoverability is unavailable",
+            ));
+        }
+        dam_config::ProxyFailureMode::BlockOnError => {}
+    }
+
+    for target in &config.proxy.targets {
+        match target.failure_mode {
+            Some(dam_config::ProxyFailureMode::BypassOnError) => {
+                diagnostics.push(dam_api::Diagnostic::new(
+                    dam_api::DiagnosticSeverity::Warning,
+                    "proxy_target_bypass_on_error",
+                    format!(
+                        "proxy target {} can forward unprotected traffic when protection fails",
+                        target.name
+                    ),
+                ));
+            }
+            Some(dam_config::ProxyFailureMode::RedactOnly) => {
+                diagnostics.push(dam_api::Diagnostic::new(
+                    dam_api::DiagnosticSeverity::Warning,
+                    "proxy_target_redact_only",
+                    format!(
+                        "proxy target {} can continue with irreversible placeholders when recoverability is unavailable",
+                        target.name
+                    ),
+                ));
+            }
+            Some(dam_config::ProxyFailureMode::BlockOnError) | None => {}
+        }
+    }
+
+    if config.failure.vault_write == dam_config::VaultWriteFailureMode::RedactOnly {
+        diagnostics.push(dam_api::Diagnostic::new(
+            dam_api::DiagnosticSeverity::Warning,
+            "vault_redact_only",
+            "vault write failures fall back to irreversible redaction",
+        ));
+    }
+    if config.failure.log_write == dam_config::LogWriteFailureMode::WarnContinue {
+        diagnostics.push(dam_api::Diagnostic::new(
+            dam_api::DiagnosticSeverity::Warning,
+            "log_warn_continue",
+            "log write failures do not fail the protected path",
+        ));
+    }
+
+    diagnostics
+}
+
+fn proxy_failure_mode_reduces_guarantees(mode: dam_config::ProxyFailureMode) -> bool {
+    matches!(
+        mode,
+        dam_config::ProxyFailureMode::BypassOnError | dam_config::ProxyFailureMode::RedactOnly
+    )
+}
+
 fn integration_proxy_url(proxy_url: Option<String>) -> String {
     if let Some(proxy_url) = proxy_url {
         return proxy_url;
@@ -615,6 +800,58 @@ fn render_integrations_check_report(report: &IntegrationsCheckReport) -> String 
         if let Some(error) = &profile.record_error {
             output.push_str(&format!("  record_error: {error}\n"));
         }
+    }
+    output
+}
+
+fn render_bypass_status_report(report: &BypassStatusReport) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("state: {}\n", report.state));
+    output.push_str(&format!("message: {}\n", report.message));
+    output.push_str(&format!(
+        "reduced_guarantees: {}\n",
+        report.reduced_guarantees
+    ));
+    output.push_str(&format!("proxy_enabled: {}\n", report.proxy_enabled));
+    output.push_str(&format!(
+        "proxy_default_failure_mode: {}\n",
+        report.proxy_default_failure_mode
+    ));
+    output.push_str(&format!(
+        "vault_write_failure_mode: {}\n",
+        report.vault_write_failure_mode
+    ));
+    output.push_str(&format!(
+        "log_write_failure_mode: {}\n",
+        report.log_write_failure_mode
+    ));
+    for target in &report.proxy_targets {
+        output.push_str(&format!("target: {}\n", target.name));
+        output.push_str(&format!("  provider: {}\n", target.provider));
+        output.push_str(&format!("  upstream: {}\n", target.upstream));
+        output.push_str(&format!(
+            "  configured_failure_mode: {}\n",
+            target
+                .configured_failure_mode
+                .as_deref()
+                .unwrap_or("default")
+        ));
+        output.push_str(&format!(
+            "  effective_failure_mode: {}\n",
+            target.effective_failure_mode
+        ));
+        output.push_str(&format!(
+            "  reduced_guarantee: {}\n",
+            target.reduced_guarantee
+        ));
+    }
+    for diagnostic in &report.diagnostics {
+        output.push_str(&format!(
+            "{} {}: {}\n",
+            severity_tag(diagnostic.severity),
+            diagnostic.code,
+            diagnostic.message
+        ));
     }
     output
 }
@@ -816,6 +1053,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     match args[0].as_str() {
         "status" => parse_status_args(&args[1..]),
         "doctor" => parse_doctor_args(&args[1..]),
+        "bypass" => parse_bypass_args(&args[1..]),
         "daemon" => parse_daemon_args(&args[1..]),
         "integrations" => parse_integrations_args(&args[1..]),
         "config" => parse_config_args(&args[1..]),
@@ -826,6 +1064,37 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         }
         command => Err(format!("unknown command: {command}")),
     }
+}
+
+fn parse_bypass_args(args: &[String]) -> Result<Command, String> {
+    if args.first().map(String::as_str) != Some("status") {
+        return Err("expected bypass status".to_string());
+    }
+
+    let mut parsed = BypassStatusArgs::default();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" => {
+                i += 1;
+                parsed.common.config.config_path = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| "--config requires a path".to_string())?,
+                ));
+            }
+            "--json" => parsed.common.json = true,
+            "-h" | "--help" => {
+                println!("{}", usage_bypass_status());
+                std::process::exit(0);
+            }
+            arg => return Err(format!("unknown bypass status argument: {arg}")),
+        }
+        i += 1;
+    }
+
+    Ok(Command::Bypass(BypassArgs {
+        command: BypassCommand::Status(parsed),
+    }))
 }
 
 fn parse_daemon_args(args: &[String]) -> Result<Command, String> {
@@ -1025,7 +1294,7 @@ fn parse_config_args(args: &[String]) -> Result<Command, String> {
 }
 
 fn usage() -> &'static str {
-    "Usage: damctl <command>\n\nCommands:\n  status              Check the local DAM proxy health endpoint\n  doctor              Run local readiness checks for the protected UX\n  daemon inspect      Inspect local daemon state without changing it\n  integrations check  Inspect integration profile apply state\n  config check        Validate local DAM config for the current implementation\n  mcp config          Print MCP server config for DAM"
+    "Usage: damctl <command>\n\nCommands:\n  status              Check the local DAM proxy health endpoint\n  doctor              Run local readiness checks for the protected UX\n  bypass status       Show reduced-protection/bypass failure modes\n  daemon inspect      Inspect local daemon state without changing it\n  integrations check  Inspect integration profile apply state\n  config check        Validate local DAM config for the current implementation\n  mcp config          Print MCP server config for DAM"
 }
 
 fn usage_status() -> &'static str {
@@ -1034,6 +1303,10 @@ fn usage_status() -> &'static str {
 
 fn usage_doctor() -> &'static str {
     "Usage: damctl doctor [--config dam.toml] [--proxy-url http://127.0.0.1:7828] [--json]"
+}
+
+fn usage_bypass_status() -> &'static str {
+    "Usage: damctl bypass status [--config dam.toml] [--json]"
 }
 
 fn usage_config_check() -> &'static str {
@@ -1127,6 +1400,33 @@ mod tests {
                     json: true,
                 },
                 proxy_url: Some("http://127.0.0.1:7828".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_bypass_status_accepts_config_and_json() {
+        let command = parse_args([
+            "bypass".to_string(),
+            "status".to_string(),
+            "--config".to_string(),
+            "/tmp/dam.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            Command::Bypass(BypassArgs {
+                command: BypassCommand::Status(BypassStatusArgs {
+                    common: CommonArgs {
+                        config: dam_config::ConfigOverrides {
+                            config_path: Some(PathBuf::from("/tmp/dam.toml")),
+                            ..dam_config::ConfigOverrides::default()
+                        },
+                        json: true,
+                    }
+                })
             })
         );
     }
@@ -1232,6 +1532,117 @@ mod tests {
         assert_eq!(output.code, 0);
         assert!(output.stdout.contains("\"command\": \"dam-mcp\""));
         assert!(output.stdout.contains("\"--config\""));
+    }
+
+    #[test]
+    fn bypass_status_reports_reduced_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            r#"
+            [failure]
+            vault_write = "redact_only"
+            log_write = "warn_continue"
+
+            [proxy]
+            enabled = true
+            listen = "127.0.0.1:7828"
+            default_failure_mode = "bypass_on_error"
+
+            [[proxy.targets]]
+            name = "openai"
+            provider = "openai-compatible"
+            upstream = "https://api.openai.com"
+            "#,
+        );
+
+        let output = bypass_status(BypassStatusArgs {
+            common: CommonArgs {
+                config: dam_config::ConfigOverrides {
+                    config_path: Some(path),
+                    ..dam_config::ConfigOverrides::default()
+                },
+                json: true,
+            },
+        });
+
+        assert_eq!(output.code, 1);
+        let report: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(report["state"], "reduced");
+        assert_eq!(report["reduced_guarantees"], true);
+        assert_eq!(report["proxy_default_failure_mode"], "bypass_on_error");
+        assert_eq!(report["proxy_targets"].as_array().unwrap().len(), 1);
+        assert_eq!(report["proxy_targets"][0]["reduced_guarantee"], true);
+        let diagnostics = report["diagnostics"].as_array().unwrap();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic["code"] == "proxy_bypass_on_error"
+                && diagnostic["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("unprotected traffic")
+        }));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "vault_redact_only")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "log_warn_continue")
+        );
+    }
+
+    #[test]
+    fn bypass_status_reports_strict_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(
+            dir.path(),
+            r#"
+            [failure]
+            vault_write = "fail_closed"
+            log_write = "fail_closed"
+
+            [proxy]
+            enabled = true
+            listen = "127.0.0.1:7828"
+            default_failure_mode = "block_on_error"
+
+            [[proxy.targets]]
+            name = "openai"
+            provider = "openai-compatible"
+            upstream = "https://api.openai.com"
+            "#,
+        );
+
+        let output = bypass_status(BypassStatusArgs {
+            common: CommonArgs {
+                config: dam_config::ConfigOverrides {
+                    config_path: Some(path),
+                    ..dam_config::ConfigOverrides::default()
+                },
+                json: false,
+            },
+        });
+
+        assert_eq!(output.code, 0);
+        assert!(output.stdout.contains("state: strict"));
+        assert!(output.stdout.contains("reduced_guarantees: false"));
+        assert!(
+            output
+                .stdout
+                .contains("proxy_default_failure_mode: block_on_error")
+        );
+        assert!(
+            output
+                .stdout
+                .contains("vault_write_failure_mode: fail_closed")
+        );
+        assert!(
+            output
+                .stdout
+                .contains("log_write_failure_mode: fail_closed")
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@ The current slice does not start or stop services. It answers these questions:
 
 - is the local proxy protecting traffic?
 - is this local install ready for the protected agent UX?
+- can configured failure modes reduce protection guarantees?
 - what daemon state file and process does the local lifecycle layer see?
 - are known integration profiles applied, unapplied, or modified?
 - is the local config valid for the current implementation?
@@ -16,6 +17,7 @@ The current slice does not start or stop services. It answers these questions:
 ```bash
 cargo run -p damctl -- status
 cargo run -p damctl -- doctor
+cargo run -p damctl -- bypass status
 cargo run -p damctl -- daemon inspect
 cargo run -p damctl -- integrations check
 cargo run -p damctl -- config check
@@ -27,6 +29,7 @@ With an explicit config:
 ```bash
 cargo run -p damctl -- status --config dam.example.toml
 cargo run -p damctl -- doctor --config dam.example.toml
+cargo run -p damctl -- bypass status --config dam.example.toml
 cargo run -p damctl -- config check --config dam.example.toml
 cargo run -p damctl -- mcp config --config dam.example.toml
 ```
@@ -43,6 +46,7 @@ JSON output:
 ```bash
 cargo run -p damctl -- status --json
 cargo run -p damctl -- doctor --json
+cargo run -p damctl -- bypass status --json
 cargo run -p damctl -- daemon inspect --json
 cargo run -p damctl -- integrations check --json
 cargo run -p damctl -- config check --json
@@ -86,6 +90,31 @@ Exit codes:
 - `2`: command arguments or config loading failed.
 
 Use `--proxy-url` to check a specific running proxy endpoint instead of the configured `proxy.listen`.
+
+## `bypass status`
+
+`bypass status` loads config and reports whether any configured failure mode can reduce DAM's protection guarantees.
+
+It reports:
+
+- proxy default failure mode;
+- per-target configured and effective proxy failure mode;
+- vault write failure mode;
+- log write failure mode;
+- diagnostics explaining every reduced-protection mode.
+
+The command treats these settings as reduced guarantees:
+
+- `proxy.default_failure_mode = "bypass_on_error"` or target-level `failure_mode = "bypass_on_error"` because traffic can forward unprotected when DAM cannot inspect/protect it.
+- `proxy.default_failure_mode = "redact_only"` or target-level `failure_mode = "redact_only"` because recoverability can be lost.
+- `failure.vault_write = "redact_only"` because references cannot be restored after vault write failure.
+- `failure.log_write = "warn_continue"` because audit failure does not stop the protected path.
+
+Exit codes:
+
+- `0`: failure modes are strict.
+- `1`: one or more reduced-protection modes are enabled.
+- `2`: command arguments or config loading failed.
 
 ## `daemon inspect`
 
@@ -167,7 +196,7 @@ This is the bridge until the installer layer can write agent-specific MCP config
 
 - No daemon lifecycle management yet.
 - `damctl daemon inspect` is read-only. Use `dam connect` and `dam disconnect` for lifecycle changes.
-- No bypass toggle command yet.
+- `damctl bypass status` is read-only. No bypass toggle command yet.
 - No real-provider credential validation beyond checking whether configured env vars are present.
 
 ## Tests

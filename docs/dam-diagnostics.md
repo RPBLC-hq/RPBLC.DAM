@@ -12,6 +12,7 @@ Status: implemented first extraction.
 
 - config loading state;
 - vault, consent, and log backend compatibility;
+- failure-mode strictness and reduced-protection warnings;
 - SQLite runtime open checks for local vault, consent, and log stores;
 - router target/provider/auth/failure-mode decisions;
 - proxy runtime `/health` reachability when proxy is enabled;

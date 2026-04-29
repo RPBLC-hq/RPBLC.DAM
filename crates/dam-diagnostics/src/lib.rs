@@ -48,6 +48,7 @@ pub fn config_report(config: &dam_config::DamConfig) -> dam_api::HealthReport {
     components.push(consent_component(config, &mut diagnostics));
     components.push(log_component(config, &mut diagnostics));
     components.push(proxy_config_component(config, &mut diagnostics));
+    components.push(failure_modes_component(config, &mut diagnostics));
 
     dam_api::HealthReport {
         state: aggregate_state(&components),
@@ -405,6 +406,97 @@ fn proxy_config_component(
     }
 }
 
+fn failure_modes_component(
+    config: &dam_config::DamConfig,
+    diagnostics: &mut Vec<dam_api::Diagnostic>,
+) -> dam_api::ComponentHealth {
+    let mut reduced_modes = Vec::new();
+
+    match config.proxy.default_failure_mode {
+        dam_config::ProxyFailureMode::BypassOnError => {
+            reduced_modes.push("proxy default bypass_on_error".to_string());
+            diagnostics.push(dam_api::Diagnostic::new(
+                dam_api::DiagnosticSeverity::Warning,
+                "proxy_bypass_on_error",
+                "proxy default failure mode can forward unprotected traffic when protection fails",
+            ));
+        }
+        dam_config::ProxyFailureMode::RedactOnly => {
+            reduced_modes.push("proxy default redact_only".to_string());
+            diagnostics.push(dam_api::Diagnostic::new(
+                dam_api::DiagnosticSeverity::Warning,
+                "proxy_redact_only",
+                "proxy default failure mode can continue with irreversible placeholders when recoverability is unavailable",
+            ));
+        }
+        dam_config::ProxyFailureMode::BlockOnError => {}
+    }
+
+    for target in &config.proxy.targets {
+        match target.failure_mode {
+            Some(dam_config::ProxyFailureMode::BypassOnError) => {
+                reduced_modes.push(format!("proxy target {} bypass_on_error", target.name));
+                diagnostics.push(dam_api::Diagnostic::new(
+                    dam_api::DiagnosticSeverity::Warning,
+                    "proxy_target_bypass_on_error",
+                    format!(
+                        "proxy target {} can forward unprotected traffic when protection fails",
+                        target.name
+                    ),
+                ));
+            }
+            Some(dam_config::ProxyFailureMode::RedactOnly) => {
+                reduced_modes.push(format!("proxy target {} redact_only", target.name));
+                diagnostics.push(dam_api::Diagnostic::new(
+                    dam_api::DiagnosticSeverity::Warning,
+                    "proxy_target_redact_only",
+                    format!(
+                        "proxy target {} can continue with irreversible placeholders when recoverability is unavailable",
+                        target.name
+                    ),
+                ));
+            }
+            Some(dam_config::ProxyFailureMode::BlockOnError) | None => {}
+        }
+    }
+
+    if config.failure.vault_write == dam_config::VaultWriteFailureMode::RedactOnly {
+        reduced_modes.push("vault redact_only".to_string());
+        diagnostics.push(dam_api::Diagnostic::new(
+            dam_api::DiagnosticSeverity::Warning,
+            "vault_redact_only",
+            "vault write failures fall back to irreversible redaction",
+        ));
+    }
+
+    if config.failure.log_write == dam_config::LogWriteFailureMode::WarnContinue {
+        reduced_modes.push("log warn_continue".to_string());
+        diagnostics.push(dam_api::Diagnostic::new(
+            dam_api::DiagnosticSeverity::Warning,
+            "log_warn_continue",
+            "log write failures do not fail the protected path",
+        ));
+    }
+
+    if reduced_modes.is_empty() {
+        dam_api::ComponentHealth {
+            component: "failure_modes".to_string(),
+            state: dam_api::HealthState::Healthy,
+            message: "failure modes are strict".to_string(),
+        }
+    } else {
+        dam_api::ComponentHealth {
+            component: "failure_modes".to_string(),
+            state: dam_api::HealthState::Degraded,
+            message: format!(
+                "{} reduced-protection mode(s): {}",
+                reduced_modes.len(),
+                reduced_modes.join(", ")
+            ),
+        }
+    }
+}
+
 fn router_component(
     config: &dam_config::DamConfig,
     diagnostics: &mut Vec<dam_api::Diagnostic>,
@@ -698,6 +790,59 @@ mod tests {
                     .message
                     .contains("requires missing env var MISSING_TEST_OPENAI_KEY")
         }));
+    }
+
+    #[test]
+    fn config_report_marks_reduced_failure_modes_as_degraded() {
+        let report = config_report(&proxy_config("https://api.openai.com", "openai-compatible"));
+
+        assert!(report.components.iter().any(|component| {
+            component.component == "failure_modes"
+                && component.state == dam_api::HealthState::Degraded
+                && component.message.contains("proxy default bypass_on_error")
+                && component.message.contains("vault redact_only")
+                && component.message.contains("log warn_continue")
+        }));
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "proxy_bypass_on_error"
+                && diagnostic.message.contains("unprotected traffic")
+        }));
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "vault_redact_only")
+        );
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "log_warn_continue")
+        );
+    }
+
+    #[test]
+    fn config_report_marks_strict_failure_modes_as_healthy() {
+        let mut config = proxy_config("https://api.openai.com", "openai-compatible");
+        config.proxy.default_failure_mode = dam_config::ProxyFailureMode::BlockOnError;
+        config.failure.vault_write = dam_config::VaultWriteFailureMode::FailClosed;
+        config.failure.log_write = dam_config::LogWriteFailureMode::FailClosed;
+
+        let report = config_report(&config);
+
+        assert!(report.components.iter().any(|component| {
+            component.component == "failure_modes"
+                && component.state == dam_api::HealthState::Healthy
+                && component.message == "failure modes are strict"
+        }));
+        assert!(
+            !report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "proxy_bypass_on_error"
+                    || diagnostic.code == "vault_redact_only"
+                    || diagnostic.code == "log_warn_continue")
+        );
     }
 
     #[tokio::test]

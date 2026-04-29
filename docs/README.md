@@ -143,6 +143,10 @@ damctl doctor
   -> dam-integrations apply-state summary
   -> dam-api HealthReport
 
+damctl bypass status
+  -> dam-config
+  -> proxy/vault/log failure-mode report
+
 damctl daemon inspect
   -> dam-daemon state file
 

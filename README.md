@@ -305,7 +305,7 @@ Recommended order for the next engineering sessions:
 
 1. Smoke test `dam connect`, `dam claude`, and `dam codex --api` against fake or real provider paths, then inspect the vault and log SQLite databases.
 2. Expand profile apply support beyond Codex where harness config files can be changed safely.
-3. Expand `damctl` beyond doctor: bypass status and richer service/install checks.
+3. Expand `damctl` beyond doctor with richer service/install checks.
 4. Add login/startup UX for the daemon after profile apply is stable.
 
 Do not spend the next session on these until their prerequisite slice exists:

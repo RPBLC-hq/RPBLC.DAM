@@ -211,6 +211,15 @@ pub enum VaultWriteFailureMode {
     FailClosed,
 }
 
+impl VaultWriteFailureMode {
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::RedactOnly => "redact_only",
+            Self::FailClosed => "fail_closed",
+        }
+    }
+}
+
 impl FromStr for VaultWriteFailureMode {
     type Err = ConfigError;
 
@@ -231,6 +240,15 @@ impl FromStr for VaultWriteFailureMode {
 pub enum LogWriteFailureMode {
     WarnContinue,
     FailClosed,
+}
+
+impl LogWriteFailureMode {
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::WarnContinue => "warn_continue",
+            Self::FailClosed => "fail_closed",
+        }
+    }
 }
 
 impl FromStr for LogWriteFailureMode {
