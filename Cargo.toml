@@ -68,4 +68,5 @@ tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "0.8"
+toml_edit = "0.22"
 uuid = { version = "1", features = ["v4"] }

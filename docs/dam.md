@@ -41,6 +41,8 @@ dam status [--json]
 dam disconnect
 dam integrations list [--json]
 dam integrations show <profile> [--json]
+dam integrations apply <profile> [--dry-run]
+dam integrations rollback <profile>
 dam codex --api [DAM_OPTIONS] [-- CODEX_ARGS...]
 dam claude [DAM_OPTIONS] [-- CLAUDE_ARGS...]
 ```
@@ -73,6 +75,7 @@ dam connect --profile xai-compatible
 dam connect --anthropic
 dam status
 dam integrations show codex-api
+dam integrations apply codex-api --dry-run
 dam disconnect
 cargo run -p dam -- claude -- --model sonnet
 cargo run -p dam -- codex --api -- -m gpt-5.5
@@ -93,7 +96,7 @@ When invoked from `npx`, `claude` and `codex` run in trial mode by default. Tria
 ## Current Limits
 
 - `dam connect` runs one background proxy target at a time. It does not install system proxy settings or configure harnesses yet.
-- `dam integrations` renders known profile setup data; it does not mutate harness config files yet.
+- `dam integrations apply codex-api` can edit Codex config with a backup; other profiles currently write DAM-managed environment files.
 - One launcher command starts one single-target proxy.
 - Codex API-key mode is protected through the public Responses API. Codex ChatGPT-login model turns are not protected by the current launcher and are blocked.
 - Codex WebSockets are disabled in the injected provider config until DAM has a WebSocket adapter.

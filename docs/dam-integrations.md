@@ -9,10 +9,36 @@ The first slice is intentionally descriptive and deterministic. It does not muta
 ```bash
 dam integrations list
 dam integrations show <profile>
+dam integrations apply <profile> --dry-run
+dam integrations apply <profile>
+dam integrations rollback <profile>
 dam connect --profile <profile>
 ```
 
 `dam integrations list` shows known profiles. `dam integrations show` renders the base URL settings and command snippets for one profile. `dam connect --profile` applies the daemon-side defaults for profiles that need a specific provider/upstream.
+
+`dam integrations apply` writes profile setup to a safe target with a rollback record:
+
+- `codex-api` updates the Codex TOML config with the `dam_openai` provider and selects it as `model_provider`.
+- Other current profiles write a DAM-managed environment file that can be sourced or inspected.
+
+Use `--dry-run` before writing:
+
+```bash
+dam integrations apply codex-api --dry-run
+```
+
+Override the target file for tests or non-standard installs:
+
+```bash
+dam integrations apply codex-api --target-path ./codex-test.toml
+```
+
+Rollback restores the last DAM-created backup for that profile:
+
+```bash
+dam integrations rollback codex-api
+```
 
 Use `--json` on `list` or `show` for machine-readable profile data:
 
@@ -53,7 +79,8 @@ Profiles may contain:
 
 ## Current Limits
 
-- Profiles are not yet applied by editing harness config files.
+- Only `codex-api` currently edits a known harness config file directly.
+- Non-Codex profiles write DAM-managed environment files rather than mutating shell or harness config.
 - No model discovery is performed.
 - No system proxy, VPN/TUN, TLS interception, or WebSocket configuration is installed.
 - One `dam connect --profile` command still starts one daemon target at a time.

@@ -229,6 +229,8 @@ dam status [--json]
 dam disconnect
 dam integrations list [--json]
 dam integrations show <profile> [--json]
+dam integrations apply <profile> [--dry-run]
+dam integrations rollback <profile>
 ```
 
 Protected agent launchers:
@@ -288,7 +290,7 @@ Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default
 ## V1 Limits
 
 - DAM is explicit base-URL routing, not transparent HTTPS interception, VPN/TUN routing, or TLS MITM.
-- `dam connect` starts a local endpoint, and `dam integrations` shows harness setup profiles, but DAM does not yet mutate harness configs automatically.
+- `dam connect` starts a local endpoint, and `dam integrations` shows harness setup profiles. `dam integrations apply codex-api` can edit Codex config with a backup; other profiles currently write DAM-managed environment files.
 - Codex ChatGPT-login mode is blocked because its current model transport is not protected by the base-URL launcher.
 - Inbound provider responses are not redetected. Known DAM references can be resolved locally with `--resolve-inbound`, but this is off by default.
 - The current vault/log/consent stores are local SQLite implementations.
@@ -300,9 +302,9 @@ Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default
 Recommended order for the next engineering sessions:
 
 1. Smoke test `dam connect`, `dam claude`, and `dam codex --api` against fake or real provider paths, then inspect the vault and log SQLite databases.
-2. Add apply/install support for selected integration profiles where harness config can be changed safely.
+2. Expand profile apply support beyond Codex where harness config files can be changed safely.
 3. Expand `damctl` beyond doctor: bypass status, daemon state inspection, and integration checks.
-4. Add login/startup UX for the daemon after the profile-apply shape is stable.
+4. Add login/startup UX for the daemon after profile apply is stable.
 
 Do not spend the next session on these until their prerequisite slice exists:
 
@@ -323,7 +325,7 @@ Implemented extraction modules:
 
 Near-term product slices still to build:
 
-- integration profile apply/install support with safe rollback where harness config files can be changed reliably.
+- broader integration profile apply/install support with safe rollback where harness config files can be changed reliably.
 - login/startup UX for the local daemon after profile apply is stable.
 
 Backend replacement modules:
