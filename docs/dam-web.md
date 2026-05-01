@@ -7,7 +7,8 @@ It is for development inspection of local SQLite vault, consent, and log databas
 ## Routes
 
 ```text
-/connect   local protection surface for profile select, setup, connect, and disconnect
+/connect   local protection surface for enabled apps, setup, connect, and disconnect
+/settings  app/profile configuration surface for enabling/disabling protected harnesses
 /          smart landing route: Connect when disconnected, Vault when connected
 /vault     protected values with row-level allow/protect actions
 /vault/detail/:key  value metadata and audit detail view
@@ -28,9 +29,11 @@ The vault and logs tables support column ordering through header buttons. Vault 
 /logs?sort=time&dir=desc
 ```
 
-`/connect` uses the same active profile state as `dam profile set`. It can select or clear the active profile, apply safe profile setup, roll back when a rollback record is available, start DAM, and disconnect the running daemon. Without an active profile, the visible default is Protect Everything and the web action starts `dam connect` without profile apply. With an active profile, the web action starts `dam connect --apply`. The Profiles toggle shows the selected profile inline, with the chevron at the far right. Profiles are shown as compact two-line picker rows with an ellipsis details control for profile settings and inspection status. `dam-tray` hosts this route in a native desktop shell.
+`/connect` uses the enabled integration state managed by `dam-integrations`. It can enable or disable known app profiles, apply safe profile setup for every enabled app, roll back when rollback records are available, start DAM, and disconnect the running daemon. The primary Connect action consumes the shared `dam-diagnostics` setup plan and advances setup in order: profile apply, macOS system-proxy routing, local CA trust, then daemon connect. Profile apply is automatic; routing and trust changes require a short confirmation before the web UI shells out to `dam network ... --yes` or `dam trust ... --yes`. The final daemon start uses `dam connect --apply --network-mode system_proxy --trust-mode local_ca` when any app is enabled. Disconnect restores DAM-managed macOS system-proxy routing and rolls back enabled profile setup before stopping the daemon so disconnected AI traffic is not left pointing at a dead local port.
 
-When `DAM_WEB_SHELL=tray`, `dam-web` renders a compact tray shell with a navbar power-icon Quit DAM button and routes the `[R:]` brand link through the native tray bridge so `https://rpblc.com` opens in the default browser. Browser mode remains the default.
+Without enabled apps, the visible default is Protect Everything and Connect uses the default OpenAI-compatible target. With one or more enabled apps, the same Connect action applies each app profile before connecting and `dam connect --apply` starts one daemon with the required provider targets. The Apps toggle shows enabled apps inline, with the chevron at the far right. App profiles are shown as compact two-line rows with an ellipsis details control for settings and inspection status. `/settings` exposes the same app enable/disable controls in a dedicated configuration view. `dam-tray` hosts this route in a native desktop shell.
+
+When `DAM_WEB_SHELL=tray`, `dam-web` renders a compact tray shell with a navbar power-icon Quit DAM button and routes the `[R:]` brand link through the native tray bridge so `https://rpblc.com` opens in the default browser. The tray-hosted Connect button is routed through native IPC so system trust prompts originate from `dam-tray`, not from the hosted web child. If `DAM_WEB_TRAY_POST_TOKEN` is set, tray-mode pages attach that token to same-origin POST form actions so embedded WebView submits do not depend on `Origin` / `Referer` headers. Browser mode remains the default and keeps the normal local-origin POST guard.
 
 The Connect action shells out to the local `dam` binary from `PATH`. Set `DAM_BIN=/path/to/dam` for source-tree runs or custom installs.
 
@@ -81,7 +84,7 @@ Remote vault/consent/log views are not implemented yet.
 
 This UI displays vault values in clear text and can allow/protect exact values. Treat it as a local development/admin tool, not a public-facing service.
 
-Connect/profile mutation routes are POST-only and use the same local Host and Origin/Referer guardrails as consent mutation routes.
+Connect/settings mutation routes are POST-only and use the same local Host and Origin/Referer guardrails as consent mutation routes.
 
 ## Branding
 
@@ -91,7 +94,7 @@ The UI follows the RPBLC public site direction:
 - Warm gold accent.
 - `[R:]` brand mark.
 - Top-clipped navigation with RPBLC.Public-compatible brand hover behavior.
-- Primary nav shows Connect, Vault, and Allowed; diagnostic/activity views live under an icon-only chevron menu.
+- Primary nav shows Connect, Settings, Vault, and Allowed; diagnostic/activity views live under an icon-only chevron menu.
 - `/favicon.svg` served from the same SVG as `RPBLC.public/public/favicon.svg`.
 - External link to `https://rpblc.com`.
 

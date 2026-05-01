@@ -9,6 +9,8 @@ enum Command {
     Bypass(BypassArgs),
     Daemon(DaemonArgs),
     Trust(TrustArgs),
+    Network(NetworkArgs),
+    Setup(SetupArgs),
     Integrations(IntegrationsArgs),
     ConfigCheck(ConfigCheckArgs),
     McpConfig(McpConfigArgs),
@@ -30,6 +32,7 @@ struct StatusArgs {
 struct DoctorArgs {
     common: CommonArgs,
     proxy_url: Option<String>,
+    state_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -103,6 +106,66 @@ struct TrustInspectArgs {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct NetworkArgs {
+    command: NetworkCommand,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NetworkCommand {
+    Inspect(NetworkInspectArgs),
+}
+
+impl Default for NetworkCommand {
+    fn default() -> Self {
+        Self::Inspect(NetworkInspectArgs::default())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct NetworkInspectArgs {
+    json: bool,
+    state_dir: Option<PathBuf>,
+    config_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SetupArgs {
+    command: SetupCommand,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SetupCommand {
+    Plan(SetupPlanArgs),
+}
+
+impl Default for SetupCommand {
+    fn default() -> Self {
+        Self::Plan(SetupPlanArgs::default())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SetupPlanArgs {
+    common: CommonArgs,
+    state_dir: Option<PathBuf>,
+    proxy_url: Option<String>,
+    network_mode: dam_net::CaptureMode,
+    trust_mode: dam_trust::TrustMode,
+}
+
+impl Default for SetupPlanArgs {
+    fn default() -> Self {
+        Self {
+            common: CommonArgs::default(),
+            state_dir: None,
+            proxy_url: None,
+            network_mode: dam_net::CaptureMode::ExplicitProxy,
+            trust_mode: dam_trust::TrustMode::Disabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct IntegrationsArgs {
     command: IntegrationsCommand,
 }
@@ -156,7 +219,22 @@ struct TrustInspectReport {
     state_dir: PathBuf,
     state_file: PathBuf,
     trust: dam_trust::TrustState,
+    local_ca_artifact: Option<dam_trust::LocalCaArtifact>,
+    route_readiness: Vec<dam_trust::RouteTrustReadiness>,
     actions: Vec<dam_trust::TrustActionPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct NetworkInspectReport {
+    state: &'static str,
+    message: String,
+    state_dir: PathBuf,
+    rollback_path: PathBuf,
+    pac_path: PathBuf,
+    support: &'static str,
+    system_proxy_installed: bool,
+    known_ai_hosts: Vec<String>,
+    route_readiness: Vec<dam_net::TransparentRouteCaptureReadiness>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -218,6 +296,8 @@ async fn run(command: Command) -> CommandOutput {
         Command::Bypass(args) => bypass(args),
         Command::Daemon(args) => daemon(args),
         Command::Trust(args) => trust(args),
+        Command::Network(args) => network(args),
+        Command::Setup(args) => setup(args),
         Command::Integrations(args) => integrations(args),
         Command::ConfigCheck(args) => config_check(args),
         Command::McpConfig(args) => mcp_config(args),
@@ -301,11 +381,13 @@ async fn doctor(args: DoctorArgs) -> CommandOutput {
     let mut report = dam_diagnostics::doctor_report(
         &config,
         &dam_diagnostics::DoctorOptions {
-            proxy_url: args.proxy_url,
+            proxy_url: args.proxy_url.clone(),
+            state_dir: args.state_dir.clone(),
+            config_path: args.common.config.config_path.clone(),
         },
     )
     .await;
-    add_integration_doctor_summary(&mut report);
+    add_integration_doctor_summary(&mut report, args.state_dir, args.proxy_url);
     let code = if report.state == dam_api::HealthState::Unhealthy {
         1
     } else {
@@ -434,6 +516,73 @@ fn trust_inspect(args: TrustInspectArgs) -> CommandOutput {
     }
 }
 
+fn network(args: NetworkArgs) -> CommandOutput {
+    match args.command {
+        NetworkCommand::Inspect(args) => network_inspect(args),
+    }
+}
+
+fn network_inspect(args: NetworkInspectArgs) -> CommandOutput {
+    let report = match network_inspect_report(&args) {
+        Ok(report) => report,
+        Err(error) => return CommandOutput::fail(2, format!("{error}\n")),
+    };
+    let stdout = if args.json {
+        json(&report)
+    } else {
+        render_network_inspect_report(&report)
+    };
+
+    CommandOutput {
+        code: 0,
+        stdout,
+        stderr: String::new(),
+    }
+}
+
+fn setup(args: SetupArgs) -> CommandOutput {
+    match args.command {
+        SetupCommand::Plan(args) => setup_plan(args),
+    }
+}
+
+fn setup_plan(args: SetupPlanArgs) -> CommandOutput {
+    let config_path = args.common.config.config_path.clone();
+    let config = match dam_config::load(&args.common.config) {
+        Ok(config) => config,
+        Err(error) => return CommandOutput::fail(2, format!("config load failed: {error}\n")),
+    };
+    let report = match dam_diagnostics::setup_plan(
+        &config,
+        &dam_diagnostics::SetupPlanOptions {
+            state_dir: args.state_dir,
+            config_path,
+            proxy_url: args.proxy_url,
+            network_mode: args.network_mode,
+            trust_mode: args.trust_mode,
+        },
+    ) {
+        Ok(report) => report,
+        Err(error) => return CommandOutput::fail(2, format!("setup plan failed: {error}\n")),
+    };
+    let code = if report.state == dam_diagnostics::SetupPlanState::Ready {
+        0
+    } else {
+        1
+    };
+    let stdout = if args.common.json {
+        json(&report)
+    } else {
+        render_setup_plan(&report)
+    };
+
+    CommandOutput {
+        code,
+        stdout,
+        stderr: String::new(),
+    }
+}
+
 fn integrations(args: IntegrationsArgs) -> CommandOutput {
     match args.command {
         IntegrationsCommand::Check(args) => integrations_check(args),
@@ -482,8 +631,16 @@ fn mcp_config(args: McpConfigArgs) -> CommandOutput {
     }
 }
 
-fn add_integration_doctor_summary(report: &mut dam_api::HealthReport) {
-    let args = IntegrationsCheckArgs::default();
+fn add_integration_doctor_summary(
+    report: &mut dam_api::HealthReport,
+    state_dir: Option<PathBuf>,
+    proxy_url: Option<String>,
+) {
+    let args = IntegrationsCheckArgs {
+        state_dir,
+        proxy_url,
+        ..IntegrationsCheckArgs::default()
+    };
     let check = match integrations_check_report(&args) {
         Ok(report) => report,
         Err(error) => {
@@ -647,8 +804,18 @@ fn trust_inspect_report(args: &TrustInspectArgs) -> Result<TrustInspectReport, S
     let (source, trust) = match status {
         dam_daemon::DaemonStatus::Connected(state) => ("daemon", state.trust),
         dam_daemon::DaemonStatus::Stale(state) => ("stale_daemon", state.trust),
-        dam_daemon::DaemonStatus::Disconnected => ("default", dam_trust::TrustState::default()),
+        dam_daemon::DaemonStatus::Disconnected => (
+            "default",
+            dam_trust::trust_state_for_state_dir(dam_trust::TrustMode::Disabled, &paths.state_dir)
+                .map_err(|error| error.to_string())?,
+        ),
     };
+    let local_ca_artifact = dam_trust::inspect_local_ca_artifact(&paths.state_dir)
+        .map_err(|error| error.to_string())?;
+    let route_readiness = dam_trust::readiness_for_known_ai_routes(
+        &trust,
+        trust.mode == dam_trust::TrustMode::LocalCa,
+    );
     let actions = [
         dam_trust::TrustAction::Inspect,
         dam_trust::TrustAction::InstallLocalCa,
@@ -660,13 +827,80 @@ fn trust_inspect_report(args: &TrustInspectArgs) -> Result<TrustInspectReport, S
 
     Ok(TrustInspectReport {
         state: "inspectable",
-        message: "trust inspection is read-only; local CA install/remove are planned".to_string(),
+        message: "trust inspection is read-only; install/remove require explicit approval"
+            .to_string(),
         source,
         state_dir: paths.state_dir,
         state_file: paths.state_file,
         trust,
+        local_ca_artifact,
+        route_readiness,
         actions,
     })
+}
+
+fn network_inspect_report(args: &NetworkInspectArgs) -> Result<NetworkInspectReport, String> {
+    let paths = daemon_state_paths(args.state_dir.clone())?;
+    let network_paths = dam_net_macos::MacosNetworkPaths::for_state_dir(&paths.state_dir);
+    let system_proxy_installed = dam_net_macos::system_proxy_installed(&paths.state_dir);
+    let ai_routes = network_inspect_ai_routes(args.config_path.clone())?;
+    let route_readiness = dam_net::transparent_capture_readiness_for_ai_routes(
+        &ai_routes,
+        dam_net::CaptureMode::SystemProxy,
+        system_proxy_installed,
+        false,
+    );
+    let known_ai_hosts = ai_routes
+        .iter()
+        .map(|route| route.host.clone())
+        .collect::<Vec<_>>();
+
+    Ok(NetworkInspectReport {
+        state: if system_proxy_installed {
+            "installed"
+        } else {
+            "not_installed"
+        },
+        message: if system_proxy_installed {
+            "macOS system proxy routing rollback state is present".to_string()
+        } else {
+            "macOS system proxy routing is not installed by DAM".to_string()
+        },
+        state_dir: paths.state_dir,
+        rollback_path: network_paths.rollback_path,
+        pac_path: network_paths.pac_path,
+        support: if cfg!(target_os = "macos") {
+            "implemented"
+        } else {
+            "planned"
+        },
+        system_proxy_installed,
+        known_ai_hosts,
+        route_readiness,
+    })
+}
+
+fn network_inspect_ai_routes(
+    config_path: Option<PathBuf>,
+) -> Result<Vec<dam_net::AiRoute>, String> {
+    let Some(config_path) = config_path else {
+        return Ok(dam_net::known_ai_routes());
+    };
+    let config = dam_config::load(&dam_config::ConfigOverrides {
+        config_path: Some(config_path),
+        ..dam_config::ConfigOverrides::default()
+    })
+    .map_err(|error| error.to_string())?;
+    Ok(dam_net::ai_routes_with_overlays(
+        config.network.ai_routes.iter().map(|route| {
+            dam_net::AiRoute::custom(
+                &route.host,
+                route.provider.clone(),
+                route.target_name.clone(),
+                route.upstream.clone(),
+            )
+        }),
+    ))
 }
 
 fn integrations_check_report(
@@ -971,6 +1205,16 @@ fn render_daemon_inspect_report(report: &DaemonInspectReport) -> String {
             "transparent_ai_routes: {}\n",
             state.transparent_ai_routes.len()
         ));
+        output.push_str(&format!(
+            "routing_routes: {}\n",
+            state.transparent_ai_routing_readiness.len()
+        ));
+        for route in &state.transparent_ai_routing_readiness {
+            output.push_str(&format!(
+                "routing_route {}: {} - {}\n",
+                route.route.target_name, route.readiness, route.message
+            ));
+        }
         output.push_str(&format!("trust_mode: {}\n", state.trust.mode));
         output.push_str(&format!("trust_store: {}\n", state.trust.platform_store));
         output.push_str(&format!(
@@ -981,6 +1225,26 @@ fn render_daemon_inspect_report(report: &DaemonInspectReport) -> String {
             "trusted_ai_hosts: {}\n",
             state.trust.allowed_hosts.len()
         ));
+        output.push_str(&format!(
+            "trust_routes: {}\n",
+            state.transparent_ai_trust_readiness.len()
+        ));
+        for route in &state.transparent_ai_trust_readiness {
+            output.push_str(&format!(
+                "trust_route {}: {} - {}\n",
+                route.route.target_name, route.readiness, route.message
+            ));
+        }
+        output.push_str(&format!(
+            "interception_routes: {}\n",
+            state.transparent_ai_interception_readiness.len()
+        ));
+        for route in &state.transparent_ai_interception_readiness {
+            output.push_str(&format!(
+                "interception_route {}: {} - {}\n",
+                route.route.target_name, route.readiness, route.message
+            ));
+        }
         if let Some(target) = &state.target_name {
             output.push_str(&format!("target: {target}\n"));
         }
@@ -1024,9 +1288,34 @@ fn render_trust_inspect_report(report: &TrustInspectReport) -> String {
         "trusted_ai_hosts: {}\n",
         report.trust.allowed_hosts.len()
     ));
+    match &report.local_ca_artifact {
+        Some(artifact) => {
+            output.push_str("local_ca_artifact: present\n");
+            output.push_str(&format!(
+                "local_ca_manifest: {}\n",
+                artifact.paths.manifest_path.display()
+            ));
+            output.push_str(&format!(
+                "local_ca_certificate: {}\n",
+                artifact.paths.certificate_path.display()
+            ));
+            output.push_str(&format!(
+                "local_ca_private_key: {}\n",
+                artifact.paths.private_key_path.display()
+            ));
+        }
+        None => output.push_str("local_ca_artifact: missing\n"),
+    }
+    output.push_str(&format!("trust_routes: {}\n", report.route_readiness.len()));
+    for route in &report.route_readiness {
+        output.push_str(&format!(
+            "trust_route {}: {} - {}\n",
+            route.route.target_name, route.readiness, route.message
+        ));
+    }
     for action in &report.actions {
         output.push_str(&format!(
-            "action {}: {} admin={} system_trust={} user_consent={} rollback={}\n",
+            "action {}: {} admin={} local_trust={} user_consent={} rollback={}\n",
             trust_action_tag(action.action),
             trust_support_tag(action.support),
             action.requires_admin,
@@ -1034,6 +1323,80 @@ fn render_trust_inspect_report(report: &TrustInspectReport) -> String {
             action.requires_user_consent,
             action.rollback_required
         ));
+    }
+    output
+}
+
+fn render_network_inspect_report(report: &NetworkInspectReport) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("state: {}\n", report.state));
+    output.push_str(&format!("message: {}\n", report.message));
+    output.push_str(&format!("state_dir: {}\n", report.state_dir.display()));
+    output.push_str(&format!("support: {}\n", report.support));
+    output.push_str(&format!(
+        "system_proxy_installed: {}\n",
+        report.system_proxy_installed
+    ));
+    output.push_str(&format!(
+        "rollback_record: {}\n",
+        report.rollback_path.display()
+    ));
+    output.push_str(&format!("pac_file: {}\n", report.pac_path.display()));
+    output.push_str(&format!(
+        "known_ai_hosts: {}\n",
+        report.known_ai_hosts.len()
+    ));
+    for host in &report.known_ai_hosts {
+        output.push_str(&format!("known_ai_host: {host}\n"));
+    }
+    output.push_str(&format!(
+        "routing_routes: {}\n",
+        report.route_readiness.len()
+    ));
+    for route in &report.route_readiness {
+        output.push_str(&format!(
+            "routing_route {}: {} - {}\n",
+            route.route.target_name, route.readiness, route.message
+        ));
+    }
+    output
+}
+
+fn render_setup_plan(report: &dam_diagnostics::SetupPlan) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("state: {}\n", report.state.tag()));
+    output.push_str(&format!("message: {}\n", report.message));
+    output.push_str(&format!("state_dir: {}\n", report.state_dir.display()));
+    output.push_str(&format!(
+        "integration_state_dir: {}\n",
+        report.integration_state_dir.display()
+    ));
+    output.push_str(&format!("proxy_url: {}\n", report.proxy_url));
+    output.push_str(&format!("network_mode: {}\n", report.network_mode));
+    output.push_str(&format!("trust_mode: {}\n", report.trust_mode));
+    output.push_str(&format!(
+        "active_profile: {}\n",
+        report
+            .active_profile
+            .as_ref()
+            .map(|profile| profile.profile_id.as_str())
+            .unwrap_or("none")
+    ));
+    for step in &report.steps {
+        output.push_str(&format!(
+            "step {}: {} - {}\n",
+            step.kind.tag(),
+            step.status.tag(),
+            step.message
+        ));
+        if let Some(command) = &step.command {
+            output.push_str(&format!("  command: {}\n", command.join(" ")));
+        }
+        output.push_str(&format!(
+            "  requires_confirmation: {}\n",
+            step.requires_confirmation
+        ));
+        output.push_str(&format!("  changes_system: {}\n", step.changes_system));
     }
     output
 }
@@ -1207,6 +1570,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
         "bypass" => parse_bypass_args(&args[1..]),
         "daemon" => parse_daemon_args(&args[1..]),
         "trust" => parse_trust_args(&args[1..]),
+        "network" => parse_network_args(&args[1..]),
+        "setup" => parse_setup_args(&args[1..]),
         "integrations" => parse_integrations_args(&args[1..]),
         "config" => parse_config_args(&args[1..]),
         "mcp" => parse_mcp_args(&args[1..]),
@@ -1308,6 +1673,104 @@ fn parse_trust_args(args: &[String]) -> Result<Command, String> {
 
     Ok(Command::Trust(TrustArgs {
         command: TrustCommand::Inspect(parsed),
+    }))
+}
+
+fn parse_network_args(args: &[String]) -> Result<Command, String> {
+    if args.first().map(String::as_str) != Some("inspect") {
+        return Err("expected network inspect".to_string());
+    }
+
+    let mut parsed = NetworkInspectArgs::default();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" => {
+                i += 1;
+                parsed.config_path = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| "--config requires a path".to_string())?,
+                ));
+            }
+            "--state-dir" => {
+                i += 1;
+                parsed.state_dir = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| "--state-dir requires a path".to_string())?,
+                ));
+            }
+            "--json" => parsed.json = true,
+            "-h" | "--help" => {
+                println!("{}", usage_network_inspect());
+                std::process::exit(0);
+            }
+            arg => return Err(format!("unknown network inspect argument: {arg}")),
+        }
+        i += 1;
+    }
+
+    Ok(Command::Network(NetworkArgs {
+        command: NetworkCommand::Inspect(parsed),
+    }))
+}
+
+fn parse_setup_args(args: &[String]) -> Result<Command, String> {
+    if args.first().map(String::as_str) != Some("plan") {
+        return Err("expected setup plan".to_string());
+    }
+
+    let mut parsed = SetupPlanArgs::default();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" => {
+                i += 1;
+                parsed.common.config.config_path = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| "--config requires a path".to_string())?,
+                ));
+            }
+            "--state-dir" => {
+                i += 1;
+                parsed.state_dir = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| "--state-dir requires a path".to_string())?,
+                ));
+            }
+            "--proxy-url" => {
+                i += 1;
+                parsed.proxy_url = Some(
+                    args.get(i)
+                        .ok_or_else(|| "--proxy-url requires a URL".to_string())?
+                        .clone(),
+                );
+            }
+            "--network-mode" => {
+                i += 1;
+                parsed.network_mode = args
+                    .get(i)
+                    .ok_or_else(|| "--network-mode requires a mode".to_string())?
+                    .parse::<dam_net::CaptureMode>()?;
+            }
+            "--trust-mode" => {
+                i += 1;
+                parsed.trust_mode = args
+                    .get(i)
+                    .ok_or_else(|| "--trust-mode requires a mode".to_string())?
+                    .parse::<dam_trust::TrustMode>()?;
+            }
+            "--json" => parsed.common.json = true,
+            "-h" | "--help" => {
+                println!("{}", usage_setup_plan());
+                std::process::exit(0);
+            }
+            arg => return Err(format!("unknown setup plan argument: {arg}")),
+        }
+        i += 1;
+    }
+
+    Ok(Command::Setup(SetupArgs {
+        command: SetupCommand::Plan(parsed),
     }))
 }
 
@@ -1434,6 +1897,13 @@ fn parse_doctor_args(args: &[String]) -> Result<Command, String> {
                         .clone(),
                 );
             }
+            "--state-dir" => {
+                i += 1;
+                parsed.state_dir = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| "--state-dir requires a path".to_string())?,
+                ));
+            }
             "--json" => parsed.common.json = true,
             "-h" | "--help" => {
                 println!("{}", usage_doctor());
@@ -1477,7 +1947,7 @@ fn parse_config_args(args: &[String]) -> Result<Command, String> {
 }
 
 fn usage() -> &'static str {
-    "Usage: damctl <command>\n\nCommands:\n  status              Check the local DAM proxy health endpoint\n  doctor              Run local readiness checks for the protected UX\n  bypass status       Show reduced-protection/bypass failure modes\n  daemon inspect      Inspect local daemon state without changing it\n  trust inspect       Inspect local TLS trust readiness without changing system trust\n  integrations check  Inspect integration profile apply state\n  config check        Validate local DAM config for the current implementation\n  mcp config          Print MCP server config for DAM"
+    "Usage: damctl <command>\n\nCommands:\n  status              Check the local DAM proxy health endpoint\n  doctor              Run local readiness checks for the protected UX\n  bypass status       Show reduced-protection/bypass failure modes\n  daemon inspect      Inspect local daemon state without changing it\n  trust inspect       Inspect local TLS trust readiness without changing local trust\n  network inspect     Inspect local network routing readiness without changing system routes\n  setup plan          Show the next read-only setup action for local protection\n  integrations check  Inspect integration profile apply state\n  config check        Validate local DAM config for the current implementation\n  mcp config          Print MCP server config for DAM"
 }
 
 fn usage_status() -> &'static str {
@@ -1485,7 +1955,7 @@ fn usage_status() -> &'static str {
 }
 
 fn usage_doctor() -> &'static str {
-    "Usage: damctl doctor [--config dam.toml] [--proxy-url http://127.0.0.1:7828] [--json]"
+    "Usage: damctl doctor [--config dam.toml] [--proxy-url http://127.0.0.1:7828] [--state-dir PATH] [--json]"
 }
 
 fn usage_bypass_status() -> &'static str {
@@ -1502,6 +1972,14 @@ fn usage_daemon_inspect() -> &'static str {
 
 fn usage_trust_inspect() -> &'static str {
     "Usage: damctl trust inspect [--state-dir PATH] [--json]"
+}
+
+fn usage_network_inspect() -> &'static str {
+    "Usage: damctl network inspect [--config dam.toml] [--state-dir PATH] [--json]"
+}
+
+fn usage_setup_plan() -> &'static str {
+    "Usage: damctl setup plan [--config dam.toml] [--state-dir PATH] [--proxy-url http://127.0.0.1:7828] [--network-mode explicit_proxy|system_proxy|tun] [--trust-mode disabled|local_ca] [--json]"
 }
 
 fn usage_integrations_check() -> &'static str {
@@ -1572,6 +2050,8 @@ mod tests {
             "/tmp/dam.toml".to_string(),
             "--proxy-url".to_string(),
             "http://127.0.0.1:7828".to_string(),
+            "--state-dir".to_string(),
+            "/tmp/dam-state".to_string(),
             "--json".to_string(),
         ])
         .unwrap();
@@ -1587,6 +2067,7 @@ mod tests {
                     json: true,
                 },
                 proxy_url: Some("http://127.0.0.1:7828".to_string()),
+                state_dir: Some(PathBuf::from("/tmp/dam-state")),
             })
         );
     }
@@ -1663,6 +2144,90 @@ mod tests {
     }
 
     #[test]
+    fn parse_network_inspect_accepts_state_dir_and_json() {
+        let command = parse_args([
+            "network".to_string(),
+            "inspect".to_string(),
+            "--state-dir".to_string(),
+            "/tmp/dam-state".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            Command::Network(NetworkArgs {
+                command: NetworkCommand::Inspect(NetworkInspectArgs {
+                    json: true,
+                    state_dir: Some(PathBuf::from("/tmp/dam-state")),
+                    config_path: None,
+                })
+            })
+        );
+    }
+
+    #[test]
+    fn parse_network_inspect_accepts_config() {
+        let command = parse_args([
+            "network".to_string(),
+            "inspect".to_string(),
+            "--config".to_string(),
+            "dam.enterprise.toml".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            Command::Network(NetworkArgs {
+                command: NetworkCommand::Inspect(NetworkInspectArgs {
+                    json: false,
+                    state_dir: None,
+                    config_path: Some(PathBuf::from("dam.enterprise.toml")),
+                })
+            })
+        );
+    }
+
+    #[test]
+    fn parse_setup_plan_accepts_modes_state_config_proxy_and_json() {
+        let command = parse_args([
+            "setup".to_string(),
+            "plan".to_string(),
+            "--config".to_string(),
+            "/tmp/dam.toml".to_string(),
+            "--state-dir".to_string(),
+            "/tmp/dam-state".to_string(),
+            "--proxy-url".to_string(),
+            "http://127.0.0.1:9000".to_string(),
+            "--network-mode".to_string(),
+            "system-proxy".to_string(),
+            "--trust-mode".to_string(),
+            "local-ca".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            command,
+            Command::Setup(SetupArgs {
+                command: SetupCommand::Plan(SetupPlanArgs {
+                    common: CommonArgs {
+                        config: dam_config::ConfigOverrides {
+                            config_path: Some(PathBuf::from("/tmp/dam.toml")),
+                            ..dam_config::ConfigOverrides::default()
+                        },
+                        json: true,
+                    },
+                    state_dir: Some(PathBuf::from("/tmp/dam-state")),
+                    proxy_url: Some("http://127.0.0.1:9000".to_string()),
+                    network_mode: dam_net::CaptureMode::SystemProxy,
+                    trust_mode: dam_trust::TrustMode::LocalCa,
+                })
+            })
+        );
+    }
+
+    #[test]
     fn parse_config_check_accepts_config() {
         let command = parse_args([
             "config".to_string(),
@@ -1730,6 +2295,44 @@ mod tests {
                 config_path: Some(PathBuf::from("/tmp/dam.toml")),
             })
         );
+    }
+
+    #[test]
+    fn setup_plan_reports_next_action_without_mutating_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_config(
+            dir.path(),
+            r#"
+            [proxy]
+            enabled = true
+            listen = "127.0.0.1:7828"
+
+            [[proxy.targets]]
+            name = "openai"
+            provider = "openai-compatible"
+            upstream = "https://api.openai.com"
+            "#,
+        );
+        let state_dir = dir.path().join("state");
+
+        let output = setup_plan(SetupPlanArgs {
+            common: CommonArgs {
+                config: dam_config::ConfigOverrides {
+                    config_path: Some(config_path),
+                    ..dam_config::ConfigOverrides::default()
+                },
+                json: true,
+            },
+            state_dir: Some(state_dir.clone()),
+            ..SetupPlanArgs::default()
+        });
+
+        assert_eq!(output.code, 1);
+        assert!(!state_dir.exists());
+        let report: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(report["state"], "needs_action");
+        assert_eq!(report["steps"].as_array().unwrap()[3]["kind"], "daemon");
+        assert_eq!(report["steps"].as_array().unwrap()[3]["status"], "needed");
     }
 
     #[test]
@@ -1917,9 +2520,23 @@ mod tests {
         assert!(output.stdout.contains("target: openai"));
         assert!(output.stdout.contains("network_mode: explicit_proxy"));
         assert!(output.stdout.contains("transparent_ai_routes: 4"));
+        assert!(output.stdout.contains("routing_routes: 4"));
+        assert!(output.stdout.contains(
+            "routing_route openai: not_transparent_mode - explicit proxy mode only protects clients configured to use DAM"
+        ));
         assert!(output.stdout.contains("trust_mode: disabled"));
         assert!(output.stdout.contains("local_ca_installed: false"));
         assert!(output.stdout.contains("trusted_ai_hosts: 4"));
+        assert!(output.stdout.contains("trust_routes: 4"));
+        assert!(
+            output
+                .stdout
+                .contains("trust_route openai: disabled - TLS interception is disabled")
+        );
+        assert!(output.stdout.contains("interception_routes: 4"));
+        assert!(output.stdout.contains(
+            "interception_route openai: not_transparent_mode - transparent interception is inactive in explicit proxy mode"
+        ));
         assert!(output.stdout.contains("provider: openai-compatible"));
         assert!(output.stdout.contains("upstream: https://api.openai.com"));
         assert!(output.stdout.contains("log: disabled"));
@@ -1941,8 +2558,44 @@ mod tests {
         assert!(output.stdout.contains("source: default"));
         assert!(output.stdout.contains("trust_mode: disabled"));
         assert!(output.stdout.contains("local_ca_installed: false"));
+        assert!(output.stdout.contains("local_ca_artifact: missing"));
+        assert!(output.stdout.contains("trust_routes: 4"));
         assert!(output.stdout.contains("action inspect: implemented"));
-        assert!(output.stdout.contains("action install_local_ca: planned"));
+        let expected_install_support = if dam_trust::PlatformTrustStore::current()
+            == dam_trust::PlatformTrustStore::MacosKeychain
+        {
+            "implemented"
+        } else {
+            "planned"
+        };
+        assert!(output.stdout.contains(&format!(
+            "action install_local_ca: {expected_install_support}"
+        )));
+    }
+
+    #[test]
+    fn trust_inspect_reports_local_ca_artifact_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let artifact = dam_trust::generate_local_ca_artifact_at(&state_dir, 1).unwrap();
+
+        let output = trust_inspect(TrustInspectArgs {
+            json: true,
+            state_dir: Some(state_dir),
+        });
+
+        assert_eq!(output.code, 0);
+        let report: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(report["source"], "default");
+        assert_eq!(
+            report["trust"]["local_ca"]["id"],
+            serde_json::Value::String(artifact.record.id)
+        );
+        assert_eq!(
+            report["local_ca_artifact"]["record"]["installed_at_unix"],
+            serde_json::Value::Null
+        );
+        assert_eq!(report["route_readiness"].as_array().unwrap().len(), 4);
     }
 
     #[test]
@@ -1963,7 +2616,100 @@ mod tests {
         let report: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
         assert_eq!(report["source"], "daemon");
         assert_eq!(report["trust"]["mode"], "local_ca");
+        assert_eq!(report["route_readiness"].as_array().unwrap().len(), 4);
         assert_eq!(report["actions"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn network_inspect_reports_not_installed_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+
+        let output = network_inspect(NetworkInspectArgs {
+            json: false,
+            state_dir: Some(state_dir.clone()),
+            config_path: None,
+        });
+
+        assert_eq!(output.code, 0);
+        assert!(output.stdout.contains("state: not_installed"));
+        assert!(output.stdout.contains("system_proxy_installed: false"));
+        assert!(output.stdout.contains("known_ai_hosts: 4"));
+        assert!(
+            output
+                .stdout
+                .contains("routing_route openai: needs_system_proxy_install")
+        );
+        assert!(
+            output
+                .stdout
+                .contains(&format!("state_dir: {}", state_dir.display()))
+        );
+    }
+
+    #[test]
+    fn network_inspect_reports_installed_state_from_rollback_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let network_paths = dam_net_macos::MacosNetworkPaths::for_state_dir(&state_dir);
+        std::fs::create_dir_all(&network_paths.directory).unwrap();
+        std::fs::write(&network_paths.rollback_path, "{}").unwrap();
+
+        let output = network_inspect(NetworkInspectArgs {
+            json: true,
+            state_dir: Some(state_dir),
+            config_path: None,
+        });
+
+        assert_eq!(output.code, 0);
+        let report: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(report["state"], "installed");
+        assert_eq!(report["system_proxy_installed"], true);
+        assert_eq!(report["known_ai_hosts"].as_array().unwrap().len(), 4);
+        assert_eq!(report["route_readiness"].as_array().unwrap().len(), 4);
+        assert_eq!(report["route_readiness"][0]["readiness"], "ready");
+    }
+
+    #[test]
+    fn network_inspect_uses_configured_ai_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let config_path = dir.path().join("dam.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+                [[network.ai_routes]]
+                host = "api.enterprise-ai.example"
+                provider = "openai-compatible"
+                target_name = "enterprise-ai"
+                upstream = "https://api.enterprise-ai.example"
+            "#,
+        )
+        .unwrap();
+
+        let output = network_inspect(NetworkInspectArgs {
+            json: true,
+            state_dir: Some(state_dir),
+            config_path: Some(config_path),
+        });
+
+        assert_eq!(output.code, 0);
+        let report: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(report["known_ai_hosts"].as_array().unwrap().len(), 5);
+        assert!(
+            report["known_ai_hosts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|host| host == "api.enterprise-ai.example")
+        );
+        assert!(
+            report["route_readiness"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|route| route["route"]["target_name"] == "enterprise-ai")
+        );
     }
 
     #[test]
@@ -2079,6 +2825,7 @@ mod tests {
         })
         .await;
         let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
         let path = write_config(
             dir.path(),
             &format!(
@@ -2117,6 +2864,7 @@ mod tests {
                 json: true,
             },
             proxy_url: Some(proxy_url),
+            state_dir: Some(state_dir),
         })
         .await;
 
@@ -2251,7 +2999,25 @@ mod tests {
             started_at_unix: 1_700_000_000,
             network_mode: dam_net::CaptureMode::ExplicitProxy,
             transparent_ai_routes: dam_net::known_ai_routes(),
+            transparent_ai_routing_readiness:
+                dam_net::transparent_capture_readiness_for_known_ai_routes(
+                    dam_net::CaptureMode::ExplicitProxy,
+                    false,
+                    false,
+                ),
             trust: dam_trust::TrustState::default(),
+            transparent_ai_trust_readiness: dam_trust::readiness_for_known_ai_routes(
+                &dam_trust::TrustState::default(),
+                false,
+            ),
+            transparent_ai_interception_readiness: dam_intercept::readiness_for_known_ai_routes(
+                dam_net::CaptureMode::ExplicitProxy,
+                false,
+                false,
+                &dam_trust::TrustState::default(),
+                false,
+                dam_intercept::TlsInterceptionAdapter::unavailable(),
+            ),
         }
     }
 }

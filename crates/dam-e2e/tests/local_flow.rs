@@ -97,14 +97,28 @@ struct ChildGuard {
 
 impl ChildGuard {
     fn spawn(name: &str, args: &[&str], current_dir: &Path) -> Self {
+        Self::spawn_with_env(name, args, current_dir, &[])
+    }
+
+    fn spawn_with_env(
+        name: &str,
+        args: &[&str],
+        current_dir: &Path,
+        envs: &[(&str, &Path)],
+    ) -> Self {
         ensure_binaries();
 
-        let child = Command::new(binary(name))
+        let mut command = Command::new(binary(name));
+        command
             .args(args)
             .current_dir(current_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let child = command
             .spawn()
             .unwrap_or_else(|error| panic!("spawn {name}: {error}"));
 
@@ -721,6 +735,7 @@ async fn web_reads_vault_and_logs_populated_by_filter() {
     let dir = tempfile::tempdir().unwrap();
     let vault_path = dir.path().join("vault.db");
     let log_path = dir.path().join("log.db");
+    let state_dir = dir.path().join("state");
     let addr = unused_addr();
 
     let filter_output = run_binary_with_input(
@@ -740,7 +755,7 @@ async fn web_reads_vault_and_logs_populated_by_filter() {
         utf8(&filter_output.stderr)
     );
 
-    let _web = ChildGuard::spawn(
+    let _web = ChildGuard::spawn_with_env(
         "dam-web",
         &[
             "--db",
@@ -751,6 +766,7 @@ async fn web_reads_vault_and_logs_populated_by_filter() {
             &addr.to_string(),
         ],
         dir.path(),
+        &[("DAM_STATE_DIR", state_dir.as_path())],
     );
 
     let base = format!("http://{addr}");

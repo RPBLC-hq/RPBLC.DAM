@@ -49,6 +49,8 @@ enum CommandKind {
     Disconnect,
     Status(StatusArgs),
     Profile(ProfileArgs),
+    Trust(TrustArgs),
+    Network(NetworkArgs),
     Integrations(IntegrationArgs),
     DaemonRun(dam_daemon::ProxyOptions),
     Help(Option<Tool>),
@@ -62,7 +64,7 @@ struct StatusArgs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ConnectArgs {
     proxy: dam_daemon::ProxyOptions,
-    apply_profile_id: Option<String>,
+    apply_profile_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +72,27 @@ enum ProfileArgs {
     Status { json: bool },
     Set { profile_id: String, json: bool },
     Clear { json: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TrustArgs {
+    GenerateArtifact { json: bool },
+    DeleteArtifact { json: bool },
+    InstallTrust { json: bool, yes: bool },
+    RemoveTrust { json: bool, yes: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NetworkArgs {
+    InstallProxy {
+        config_path: Option<PathBuf>,
+        json: bool,
+        yes: bool,
+    },
+    RemoveProxy {
+        json: bool,
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,9 +132,23 @@ struct StatusView {
 #[derive(Debug, Clone, Serialize)]
 struct ProfileStatusView {
     active_profile: Option<dam_integrations::ActiveProfileState>,
+    enabled_profiles: Vec<dam_integrations::EnabledIntegrationState>,
     proxy_url: String,
-    apply: Option<dam_integrations::IntegrationApplyInspection>,
-    inspection_error: Option<String>,
+    applies: Vec<dam_integrations::IntegrationApplyInspection>,
+    inspection_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LocalCaGenerateView {
+    state: &'static str,
+    artifact: dam_trust::LocalCaArtifact,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LocalCaDeleteView {
+    state: &'static str,
+    deleted: bool,
+    state_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,7 +197,7 @@ struct ToolCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ConnectProfileExpansion {
     args: Vec<String>,
-    profile_id: Option<String>,
+    profile_ids: Vec<String>,
     apply: bool,
 }
 
@@ -185,8 +222,8 @@ async fn main() {
 
 async fn run() -> Result<i32, String> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let active_connect_profile = active_profile_for_connect_parse(&args)?;
-    match parse_cli_with_active_profile(args, active_connect_profile)? {
+    let enabled_connect_profiles = enabled_profiles_for_connect_parse(&args)?;
+    match parse_cli_with_active_profiles(args, enabled_connect_profiles)? {
         Cli {
             command: CommandKind::Help(tool),
         } => {
@@ -212,6 +249,12 @@ async fn run() -> Result<i32, String> {
             command: CommandKind::Profile(args),
         } => profile_command(args),
         Cli {
+            command: CommandKind::Trust(args),
+        } => trust_command(args),
+        Cli {
+            command: CommandKind::Network(args),
+        } => network_command(args),
+        Cli {
             command: CommandKind::Integrations(args),
         } => integrations(args).await,
         Cli {
@@ -221,11 +264,19 @@ async fn run() -> Result<i32, String> {
 }
 
 async fn connect(args: ConnectArgs) -> Result<i32, String> {
-    dam_daemon::proxy_config(&args.proxy)?;
+    let config = dam_daemon::proxy_config(&args.proxy)?;
 
     match dam_daemon::daemon_status().map_err(|error| error.to_string())? {
         dam_daemon::DaemonStatus::Connected(state) => {
-            if let Some(profile_id) = args.apply_profile_id.as_deref() {
+            if state.network_mode != args.proxy.network_mode
+                || state.trust.mode != args.proxy.trust_mode
+            {
+                return Err(format!(
+                    "DAM is already connected with network mode {} and trust mode {}; run `dam disconnect` before changing setup",
+                    state.network_mode, state.trust.mode
+                ));
+            }
+            for profile_id in &args.apply_profile_ids {
                 let outcome = apply_connect_profile(profile_id, &state.proxy_url)?;
                 print!("{}", render_connect_apply_outcome(&outcome));
             }
@@ -238,7 +289,9 @@ async fn connect(args: ConnectArgs) -> Result<i32, String> {
         dam_daemon::DaemonStatus::Disconnected => {}
     }
 
-    if let Some(profile_id) = args.apply_profile_id.as_deref() {
+    ensure_connect_transparent_prerequisites(&args.proxy, &config, None)?;
+
+    for profile_id in &args.apply_profile_ids {
         let proxy_url = proxy_url_for_connect_apply(&args.proxy)?;
         let outcome = apply_connect_profile(profile_id, &proxy_url)?;
         print!("{}", render_connect_apply_outcome(&outcome));
@@ -371,6 +424,85 @@ fn profile_command(args: ProfileArgs) -> Result<i32, String> {
         }
     }
     Ok(0)
+}
+
+fn trust_command(args: TrustArgs) -> Result<i32, String> {
+    let state_dir = dam_daemon::state_paths()
+        .map(|paths| paths.state_dir)
+        .map_err(|error| error.to_string())?;
+    match args {
+        TrustArgs::GenerateArtifact { json } => {
+            let output = generate_local_ca_output(&state_dir, json)?;
+            print!("{output}");
+        }
+        TrustArgs::DeleteArtifact { json } => {
+            let output = delete_local_ca_output(&state_dir, json)?;
+            print!("{output}");
+        }
+        TrustArgs::InstallTrust { json, yes } => {
+            let output = install_local_ca_output(&state_dir, json, yes)?;
+            print!("{output}");
+        }
+        TrustArgs::RemoveTrust { json, yes } => {
+            let output = remove_local_ca_output(&state_dir, json, yes)?;
+            print!("{output}");
+        }
+    }
+    Ok(0)
+}
+
+fn network_command(args: NetworkArgs) -> Result<i32, String> {
+    let state_dir = dam_daemon::state_paths()
+        .map(|paths| paths.state_dir)
+        .map_err(|error| error.to_string())?;
+    let proxy_url = format!("http://{DEFAULT_LISTEN}");
+    match args {
+        NetworkArgs::InstallProxy {
+            config_path,
+            json,
+            yes,
+        } => {
+            let config = dam_config::load(&dam_config::ConfigOverrides {
+                config_path,
+                ..dam_config::ConfigOverrides::default()
+            })
+            .map_err(|error| error.to_string())?;
+            let hosts = configured_ai_hosts(&config);
+            let result = if yes {
+                dam_net_macos::install_system_proxy_for_hosts(&state_dir, &proxy_url, &hosts)
+            } else {
+                dam_net_macos::preview_install_system_proxy_for_hosts(
+                    &state_dir, &proxy_url, &hosts,
+                )
+            }
+            .map_err(|error| error.to_string())?;
+            print_network_result(&result, json, yes)?;
+        }
+        NetworkArgs::RemoveProxy { json, yes } => {
+            let result = if yes {
+                dam_net_macos::remove_system_proxy(&state_dir, &proxy_url)
+            } else {
+                dam_net_macos::preview_remove_system_proxy(&state_dir, &proxy_url)
+            }
+            .map_err(|error| error.to_string())?;
+            print_network_result(&result, json, yes)?;
+        }
+    }
+    Ok(0)
+}
+
+fn configured_ai_hosts(config: &dam_config::DamConfig) -> Vec<String> {
+    dam_net::ai_routes_with_overlays(config.network.ai_routes.iter().map(|route| {
+        dam_net::AiRoute::custom(
+            &route.host,
+            route.provider.clone(),
+            route.target_name.clone(),
+            route.upstream.clone(),
+        )
+    }))
+    .into_iter()
+    .map(|route| route.host)
+    .collect()
 }
 
 async fn integrations(args: IntegrationArgs) -> Result<i32, String> {
@@ -550,12 +682,12 @@ fn ensure_codex_api_key_available() -> Result<(), String> {
 
 #[cfg(test)]
 fn parse_cli(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-    parse_cli_with_active_profile(args, None)
+    parse_cli_with_active_profiles(args, Vec::new())
 }
 
-fn parse_cli_with_active_profile(
+fn parse_cli_with_active_profiles(
     args: impl IntoIterator<Item = String>,
-    active_profile_id: Option<String>,
+    active_profile_ids: Vec<String>,
 ) -> Result<Cli, String> {
     let args = args.into_iter().collect::<Vec<_>>();
     let Some(command) = args.first() else {
@@ -568,10 +700,12 @@ fn parse_cli_with_active_profile(
         "-h" | "--help" | "help" => Ok(Cli {
             command: CommandKind::Help(None),
         }),
-        "connect" => parse_connect_command(&args[1..], active_profile_id.as_deref()),
+        "connect" => parse_connect_command(&args[1..], &active_profile_ids),
         "disconnect" => parse_disconnect_command(&args[1..]),
         "status" => parse_status_command(&args[1..]),
         "profile" => parse_profile_command(&args[1..]),
+        "trust" => parse_trust_command(&args[1..]),
+        "network" => parse_network_command(&args[1..]),
         "integrations" => parse_integrations_command(&args[1..]),
         "daemon-run" => parse_daemon_run_command(&args[1..]),
         "codex" => parse_tool_command(Tool::Codex, &args[1..]),
@@ -580,29 +714,35 @@ fn parse_cli_with_active_profile(
     }
 }
 
-fn parse_connect_command(args: &[String], active_profile_id: Option<&str>) -> Result<Cli, String> {
+fn parse_connect_command(args: &[String], active_profile_ids: &[String]) -> Result<Cli, String> {
     if matches!(args.first().map(String::as_str), Some("-h" | "--help")) {
         println!("{}", usage_connect());
         std::process::exit(0);
     }
 
-    let expanded = expand_connect_profile_args(args, active_profile_id)?;
-    let apply_profile_id = if expanded.apply {
-        Some(expanded.profile_id.clone().ok_or_else(|| {
-            "--apply requires --profile <id> or an active profile set by `dam profile set <id>`"
-                .to_string()
-        })?)
+    let expanded = expand_connect_profile_args(args, active_profile_ids)?;
+    let apply_profile_ids = if expanded.apply {
+        if expanded.profile_ids.is_empty() {
+            return Err(
+                "--apply requires --profile <id> or enabled profiles in `dam profile status`"
+                    .to_string(),
+            );
+        }
+        expanded.profile_ids.clone()
     } else {
-        None
+        Vec::new()
     };
-    let proxy = dam_daemon::parse_proxy_options(expanded.args)?;
-    if let Some(profile_id) = apply_profile_id.as_deref() {
+    let mut proxy = dam_daemon::parse_proxy_options(expanded.args)?;
+    if apply_profile_ids.len() > 1 && proxy.targets.is_none() {
+        proxy.targets = Some(proxy_targets_for_profiles(&apply_profile_ids)?);
+    }
+    for profile_id in &apply_profile_ids {
         validate_connect_apply_profile_matches_proxy(profile_id, &proxy)?;
     }
     Ok(Cli {
         command: CommandKind::Connect(ConnectArgs {
             proxy,
-            apply_profile_id,
+            apply_profile_ids,
         }),
     })
 }
@@ -717,6 +857,168 @@ fn parse_profile_clear(args: &[String]) -> Result<Cli, String> {
 
     Ok(Cli {
         command: CommandKind::Profile(ProfileArgs::Clear { json }),
+    })
+}
+
+fn parse_trust_command(args: &[String]) -> Result<Cli, String> {
+    if args.is_empty() || matches!(args[0].as_str(), "-h" | "--help") {
+        println!("{}", usage_trust());
+        std::process::exit(0);
+    }
+    match args[0].as_str() {
+        "generate-local-ca" => parse_trust_generate_local_ca(&args[1..]),
+        "delete-local-ca" => parse_trust_delete_local_ca(&args[1..]),
+        "install-local-ca" => parse_trust_install_local_ca(&args[1..]),
+        "remove-local-ca" => parse_trust_remove_local_ca(&args[1..]),
+        command => Err(format!("unknown trust command: {command}")),
+    }
+}
+
+fn parse_trust_generate_local_ca(args: &[String]) -> Result<Cli, String> {
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "-h" | "--help" => {
+                println!("{}", usage_trust_generate_local_ca());
+                std::process::exit(0);
+            }
+            arg => return Err(format!("unknown trust generate-local-ca argument: {arg}")),
+        }
+    }
+    Ok(Cli {
+        command: CommandKind::Trust(TrustArgs::GenerateArtifact { json }),
+    })
+}
+
+fn parse_trust_delete_local_ca(args: &[String]) -> Result<Cli, String> {
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "-h" | "--help" => {
+                println!("{}", usage_trust_delete_local_ca());
+                std::process::exit(0);
+            }
+            arg => return Err(format!("unknown trust delete-local-ca argument: {arg}")),
+        }
+    }
+    Ok(Cli {
+        command: CommandKind::Trust(TrustArgs::DeleteArtifact { json }),
+    })
+}
+
+fn parse_trust_install_local_ca(args: &[String]) -> Result<Cli, String> {
+    let mut json = false;
+    let mut yes = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--yes" => yes = true,
+            "--dry-run" => yes = false,
+            "-h" | "--help" => {
+                println!("{}", usage_trust_install_local_ca());
+                std::process::exit(0);
+            }
+            arg => return Err(format!("unknown trust install-local-ca argument: {arg}")),
+        }
+    }
+    Ok(Cli {
+        command: CommandKind::Trust(TrustArgs::InstallTrust { json, yes }),
+    })
+}
+
+fn parse_trust_remove_local_ca(args: &[String]) -> Result<Cli, String> {
+    let mut json = false;
+    let mut yes = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--yes" => yes = true,
+            "--dry-run" => yes = false,
+            "-h" | "--help" => {
+                println!("{}", usage_trust_remove_local_ca());
+                std::process::exit(0);
+            }
+            arg => return Err(format!("unknown trust remove-local-ca argument: {arg}")),
+        }
+    }
+    Ok(Cli {
+        command: CommandKind::Trust(TrustArgs::RemoveTrust { json, yes }),
+    })
+}
+
+fn parse_network_command(args: &[String]) -> Result<Cli, String> {
+    if args.is_empty() || matches!(args[0].as_str(), "-h" | "--help") {
+        println!("{}", usage_network());
+        std::process::exit(0);
+    }
+    match args[0].as_str() {
+        "install-system-proxy" => parse_network_install_system_proxy(&args[1..]),
+        "remove-system-proxy" => parse_network_remove_system_proxy(&args[1..]),
+        command => Err(format!("unknown network command: {command}")),
+    }
+}
+
+fn parse_network_install_system_proxy(args: &[String]) -> Result<Cli, String> {
+    let mut config_path = None;
+    let mut json = false;
+    let mut yes = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" => {
+                i += 1;
+                config_path = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| "--config requires a path".to_string())?,
+                ));
+            }
+            "--json" => json = true,
+            "--yes" => yes = true,
+            "--dry-run" => yes = false,
+            "-h" | "--help" => {
+                println!("{}", usage_network_install_system_proxy());
+                std::process::exit(0);
+            }
+            arg => {
+                return Err(format!(
+                    "unknown network install-system-proxy argument: {arg}"
+                ));
+            }
+        }
+        i += 1;
+    }
+    Ok(Cli {
+        command: CommandKind::Network(NetworkArgs::InstallProxy {
+            config_path,
+            json,
+            yes,
+        }),
+    })
+}
+
+fn parse_network_remove_system_proxy(args: &[String]) -> Result<Cli, String> {
+    let mut json = false;
+    let mut yes = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--yes" => yes = true,
+            "--dry-run" => yes = false,
+            "-h" | "--help" => {
+                println!("{}", usage_network_remove_system_proxy());
+                std::process::exit(0);
+            }
+            arg => {
+                return Err(format!(
+                    "unknown network remove-system-proxy argument: {arg}"
+                ));
+            }
+        }
+    }
+    Ok(Cli {
+        command: CommandKind::Network(NetworkArgs::RemoveProxy { json, yes }),
     })
 }
 
@@ -873,11 +1175,11 @@ fn parse_integrations_rollback(args: &[String]) -> Result<Cli, String> {
 
 fn expand_connect_profile_args(
     args: &[String],
-    active_profile_id: Option<&str>,
+    active_profile_ids: &[String],
 ) -> Result<ConnectProfileExpansion, String> {
     let mut expanded = Vec::new();
     let mut remaining = Vec::new();
-    let mut profile_id = None;
+    let mut profile_ids = Vec::new();
     let mut apply = false;
     let mut i = 0;
     while i < args.len() {
@@ -885,7 +1187,7 @@ fn expand_connect_profile_args(
             "--profile" => {
                 i += 1;
                 let id = required_value(args, i, "--profile")?;
-                if profile_id.replace(id.to_string()).is_some() {
+                if !profile_ids.is_empty() {
                     return Err("--profile can only be supplied once".to_string());
                 }
                 let profile = dam_integrations::profile(id, dam_integrations::DEFAULT_PROXY_URL)
@@ -896,6 +1198,7 @@ fn expand_connect_profile_args(
                         )
                     })?;
                 expanded.extend(profile.connect_args);
+                profile_ids.push(id.to_string());
             }
             "--apply" => apply = true,
             arg => remaining.push(arg.to_string()),
@@ -903,26 +1206,31 @@ fn expand_connect_profile_args(
         i += 1;
     }
 
-    if apply && profile_id.is_none() {
-        let id = active_profile_id.ok_or_else(|| {
-            "--apply requires --profile <id> or an active profile set by `dam profile set <id>`"
-                .to_string()
-        })?;
-        let profile = dam_integrations::profile(id, dam_integrations::DEFAULT_PROXY_URL)
-            .ok_or_else(|| {
-                format!(
-                    "unknown active integration profile: {id}\nknown profiles: {}",
-                    dam_integrations::profile_ids().join(", ")
-                )
-            })?;
-        profile_id = Some(id.to_string());
-        expanded.extend(profile.connect_args);
+    if apply && profile_ids.is_empty() {
+        if active_profile_ids.is_empty() {
+            return Err(
+                "--apply requires --profile <id> or enabled profiles in `dam profile status`"
+                    .to_string(),
+            );
+        }
+        profile_ids = active_profile_ids.to_vec();
+        if profile_ids.len() == 1 {
+            let id = &profile_ids[0];
+            let profile = dam_integrations::profile(id, dam_integrations::DEFAULT_PROXY_URL)
+                .ok_or_else(|| {
+                    format!(
+                        "unknown enabled integration profile: {id}\nknown profiles: {}",
+                        dam_integrations::profile_ids().join(", ")
+                    )
+                })?;
+            expanded.extend(profile.connect_args);
+        }
     }
 
     expanded.extend(remaining);
     Ok(ConnectProfileExpansion {
         args: expanded,
-        profile_id,
+        profile_ids,
         apply,
     })
 }
@@ -1161,7 +1469,37 @@ fn render_status_view(view: &StatusView) -> String {
         output.push_str(&format!("pid: {}\n", state.pid));
         output.push_str(&format!("proxy: {}\n", state.proxy_url));
         output.push_str(&format!("network_mode: {}\n", state.network_mode));
+        output.push_str(&format!(
+            "routing_routes: {}\n",
+            state.transparent_ai_routing_readiness.len()
+        ));
+        for route in &state.transparent_ai_routing_readiness {
+            output.push_str(&format!(
+                "routing_route {}: {} - {}\n",
+                route.route.target_name, route.readiness, route.message
+            ));
+        }
         output.push_str(&format!("trust_mode: {}\n", state.trust.mode));
+        output.push_str(&format!(
+            "trust_routes: {}\n",
+            state.transparent_ai_trust_readiness.len()
+        ));
+        for route in &state.transparent_ai_trust_readiness {
+            output.push_str(&format!(
+                "trust_route {}: {} - {}\n",
+                route.route.target_name, route.readiness, route.message
+            ));
+        }
+        output.push_str(&format!(
+            "interception_routes: {}\n",
+            state.transparent_ai_interception_readiness.len()
+        ));
+        for route in &state.transparent_ai_interception_readiness {
+            output.push_str(&format!(
+                "interception_route {}: {} - {}\n",
+                route.route.target_name, route.readiness, route.message
+            ));
+        }
         if let Some(target) = &state.target_name {
             output.push_str(&format!("target: {target}\n"));
         }
@@ -1199,6 +1537,23 @@ fn print_profile_status_view(view: &ProfileStatusView, json: bool) -> Result<(),
     Ok(())
 }
 
+fn print_network_result(
+    result: &dam_net_macos::MacosSystemProxyResult,
+    json: bool,
+    approved: bool,
+) -> Result<(), String> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(result)
+                .map_err(|error| format!("failed to serialize network result: {error}"))?
+        );
+    } else {
+        print!("{}", render_network_result(result, approved));
+    }
+    Ok(())
+}
+
 fn render_profile_status_view(view: &ProfileStatusView) -> String {
     let mut output = String::new();
     match &view.active_profile {
@@ -1208,8 +1563,48 @@ fn render_profile_status_view(view: &ProfileStatusView) -> String {
         }
         None => output.push_str("active_profile: none\n"),
     }
+    if view.enabled_profiles.is_empty() {
+        output.push_str("enabled_profiles: none\n");
+    } else {
+        output.push_str(&format!(
+            "enabled_profiles: {}\n",
+            view.enabled_profiles
+                .iter()
+                .map(|profile| profile.profile_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     output.push_str(&format!("proxy_url: {}\n", view.proxy_url));
-    if let Some(apply) = &view.apply {
+    for apply in &view.applies {
+        output.push_str(&format!(
+            "profile {} apply_state: {}\n",
+            apply.profile_id,
+            integration_apply_status_tag(apply.status)
+        ));
+        output.push_str(&format!(
+            "profile {} target: {}\n",
+            apply.profile_id,
+            apply.target_path.display()
+        ));
+        output.push_str(&format!(
+            "profile {} rollback: {}\n",
+            apply.profile_id,
+            if apply.rollback_available {
+                "available"
+            } else {
+                "not_available"
+            }
+        ));
+        if apply.rollback_available {
+            output.push_str(&format!("rollback_profile: {}\n", apply.profile_id));
+        }
+        output.push_str(&format!(
+            "profile {} message: {}\n",
+            apply.profile_id, apply.message
+        ));
+    }
+    if let Some(apply) = view.applies.first() {
         output.push_str(&format!(
             "apply_state: {}\n",
             integration_apply_status_tag(apply.status)
@@ -1225,18 +1620,214 @@ fn render_profile_status_view(view: &ProfileStatusView) -> String {
         ));
         output.push_str(&format!("message: {}\n", apply.message));
     }
-    if let Some(error) = &view.inspection_error {
+    for error in &view.inspection_errors {
         output.push_str(&format!("warning inspection: {error}\n"));
     }
     output
 }
 
+fn render_local_ca_generate_view(view: &LocalCaGenerateView) -> String {
+    let artifact = &view.artifact;
+    let mut output = String::new();
+    output.push_str(&format!("state: {}\n", view.state));
+    output.push_str(&format!("id: {}\n", artifact.record.id));
+    output.push_str(&format!("label: {}\n", artifact.record.label));
+    output.push_str(&format!(
+        "fingerprint_sha256: {}\n",
+        artifact.record.fingerprint_sha256
+    ));
+    if let Some(fingerprint_sha1) = &artifact.record.fingerprint_sha1 {
+        output.push_str(&format!("fingerprint_sha1: {fingerprint_sha1}\n"));
+    }
+    output.push_str(&format!(
+        "created_at_unix: {}\n",
+        artifact.record.created_at_unix
+    ));
+    output.push_str("installed_at_unix: none\n");
+    output.push_str(&format!(
+        "manifest: {}\n",
+        artifact.paths.manifest_path.display()
+    ));
+    output.push_str(&format!(
+        "certificate: {}\n",
+        artifact.paths.certificate_path.display()
+    ));
+    output.push_str(&format!(
+        "private_key: {}\n",
+        artifact.paths.private_key_path.display()
+    ));
+    output.push_str("local_trust: unchanged\n");
+    output
+}
+
+fn render_local_ca_delete_view(view: &LocalCaDeleteView) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("state: {}\n", view.state));
+    output.push_str(&format!("deleted: {}\n", view.deleted));
+    output.push_str(&format!("state_dir: {}\n", view.state_dir.display()));
+    output.push_str("local_trust: unchanged\n");
+    output
+}
+
+fn render_local_ca_system_trust_result(
+    result: &dam_trust::LocalCaSystemTrustResult,
+    approved: bool,
+) -> String {
+    let plan = &result.plan;
+    let mut output = String::new();
+    output.push_str(&format!("state: {}\n", result.state));
+    output.push_str(&format!("action: {}\n", trust_action_tag(plan.action)));
+    output.push_str(&format!("message: {}\n", plan.message));
+    output.push_str(&format!("support: {}\n", trust_support_tag(plan.support)));
+    output.push_str(&format!("platform_store: {}\n", plan.platform_store));
+    output.push_str(&format!("requires_admin: {}\n", plan.requires_admin));
+    output.push_str(&format!(
+        "changes_local_trust: {}\n",
+        plan.changes_system_trust
+    ));
+    output.push_str(&format!(
+        "requires_user_consent: {}\n",
+        plan.requires_user_consent
+    ));
+    output.push_str(&format!(
+        "will_generate_artifact: {}\n",
+        plan.will_generate_artifact
+    ));
+    output.push_str(&format!("can_execute: {}\n", plan.can_execute));
+    output.push_str(&format!("system_store: {}\n", plan.system_store));
+    output.push_str(&format!(
+        "certificate: {}\n",
+        plan.certificate_path.display()
+    ));
+    if let Some(artifact) = &result.artifact {
+        output.push_str(&format!("id: {}\n", artifact.record.id));
+        output.push_str(&format!(
+            "fingerprint_sha256: {}\n",
+            artifact.record.fingerprint_sha256
+        ));
+        if let Some(fingerprint_sha1) = &artifact.record.fingerprint_sha1 {
+            output.push_str(&format!("fingerprint_sha1: {fingerprint_sha1}\n"));
+        }
+        output.push_str(&format!(
+            "installed_at_unix: {}\n",
+            artifact
+                .record
+                .installed_at_unix
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        ));
+    }
+    for command in &plan.commands {
+        output.push_str(&format!(
+            "command: {} {}\n",
+            command.program,
+            command.args.join(" ")
+        ));
+    }
+    output.push_str(&format!(
+        "local_trust: {}\n",
+        if result.system_trust_changed {
+            "changed"
+        } else {
+            "unchanged"
+        }
+    ));
+    if !approved && plan.can_execute {
+        output.push_str("approval: rerun with --yes to apply this local trust change\n");
+    }
+    output
+}
+
+fn render_network_result(result: &dam_net_macos::MacosSystemProxyResult, approved: bool) -> String {
+    let plan = &result.plan;
+    let mut output = String::new();
+    output.push_str(&format!(
+        "state: {}\n",
+        network_result_state_tag(result.state)
+    ));
+    output.push_str(&format!("action: {}\n", network_action_tag(plan.action)));
+    output.push_str(&format!("message: {}\n", plan.message));
+    output.push_str(&format!("support: {}\n", network_support_tag(plan.support)));
+    output.push_str(&format!("proxy_url: {}\n", plan.proxy_url));
+    output.push_str(&format!("pac_url: {}\n", plan.pac_url));
+    output.push_str(&format!("pac_path: {}\n", plan.paths.pac_path.display()));
+    output.push_str(&format!("services: {}\n", plan.services.len()));
+    for service in &plan.services {
+        output.push_str(&format!(
+            "service {}: auto_proxy={} url={}\n",
+            service.service_name,
+            service.auto_proxy_enabled,
+            service.auto_proxy_url.as_deref().unwrap_or("none")
+        ));
+    }
+    for command in &plan.commands {
+        output.push_str(&format!(
+            "command: {} {}\n",
+            command.program,
+            command.args.join(" ")
+        ));
+    }
+    output.push_str(&format!("can_execute: {}\n", plan.can_execute));
+    output.push_str(&format!(
+        "system_routes: {}\n",
+        if result.system_routes_changed {
+            "changed"
+        } else {
+            "unchanged"
+        }
+    ));
+    if !approved && plan.can_execute {
+        output.push_str("approval: rerun with --yes to apply this network change\n");
+    }
+    output
+}
+
+fn network_result_state_tag(state: dam_net_macos::MacosSystemProxyResultState) -> &'static str {
+    match state {
+        dam_net_macos::MacosSystemProxyResultState::Preview => "preview",
+        dam_net_macos::MacosSystemProxyResultState::Installed => "installed",
+        dam_net_macos::MacosSystemProxyResultState::AlreadyInstalled => "already_installed",
+        dam_net_macos::MacosSystemProxyResultState::Removed => "removed",
+        dam_net_macos::MacosSystemProxyResultState::NotInstalled => "not_installed",
+    }
+}
+
+fn network_action_tag(action: dam_net_macos::MacosSystemProxyAction) -> &'static str {
+    match action {
+        dam_net_macos::MacosSystemProxyAction::Install => "install",
+        dam_net_macos::MacosSystemProxyAction::Remove => "remove",
+    }
+}
+
+fn network_support_tag(support: dam_net_macos::MacosSystemProxySupport) -> &'static str {
+    match support {
+        dam_net_macos::MacosSystemProxySupport::Implemented => "implemented",
+        dam_net_macos::MacosSystemProxySupport::Planned => "planned",
+    }
+}
+
+fn trust_action_tag(action: dam_trust::TrustAction) -> &'static str {
+    match action {
+        dam_trust::TrustAction::Inspect => "inspect",
+        dam_trust::TrustAction::InstallLocalCa => "install_local_ca",
+        dam_trust::TrustAction::RemoveLocalCa => "remove_local_ca",
+    }
+}
+
+fn trust_support_tag(support: dam_trust::TrustSupport) -> &'static str {
+    match support {
+        dam_trust::TrustSupport::Implemented => "implemented",
+        dam_trust::TrustSupport::Planned => "planned",
+    }
+}
+
 fn profile_status_view(state_dir: &std::path::Path) -> Result<ProfileStatusView, String> {
     let active_profile = dam_integrations::read_active_profile(state_dir)?;
+    let enabled_profiles = dam_integrations::read_effective_enabled_integrations(state_dir)?;
     let proxy_url = integration_proxy_url(None);
-    let mut apply = None;
-    let mut inspection_error = None;
-    if let Some(profile) = &active_profile {
+    let mut applies = Vec::new();
+    let mut inspection_errors = Vec::new();
+    for profile in &enabled_profiles {
         match default_integration_target_path(&profile.profile_id, state_dir).and_then(
             |target_path| {
                 dam_integrations::inspect_apply(
@@ -1247,17 +1838,91 @@ fn profile_status_view(state_dir: &std::path::Path) -> Result<ProfileStatusView,
                 )
             },
         ) {
-            Ok(inspection) => apply = Some(inspection),
-            Err(error) => inspection_error = Some(error),
+            Ok(inspection) => applies.push(inspection),
+            Err(error) => inspection_errors.push(format!("{}: {error}", profile.profile_id)),
         }
     }
 
     Ok(ProfileStatusView {
         active_profile,
+        enabled_profiles,
         proxy_url,
-        apply,
-        inspection_error,
+        applies,
+        inspection_errors,
     })
+}
+
+fn generate_local_ca_output(state_dir: &std::path::Path, json: bool) -> Result<String, String> {
+    let artifact =
+        dam_trust::generate_local_ca_artifact(state_dir).map_err(|error| error.to_string())?;
+    let view = LocalCaGenerateView {
+        state: "generated",
+        artifact,
+    };
+    if json {
+        serde_json::to_string_pretty(&view)
+            .map(|value| format!("{value}\n"))
+            .map_err(|error| format!("failed to serialize local CA result: {error}"))
+    } else {
+        Ok(render_local_ca_generate_view(&view))
+    }
+}
+
+fn delete_local_ca_output(state_dir: &std::path::Path, json: bool) -> Result<String, String> {
+    let deleted =
+        dam_trust::delete_local_ca_artifact(state_dir).map_err(|error| error.to_string())?;
+    let view = LocalCaDeleteView {
+        state: if deleted { "deleted" } else { "missing" },
+        deleted,
+        state_dir: state_dir.to_path_buf(),
+    };
+    if json {
+        serde_json::to_string_pretty(&view)
+            .map(|value| format!("{value}\n"))
+            .map_err(|error| format!("failed to serialize local CA delete result: {error}"))
+    } else {
+        Ok(render_local_ca_delete_view(&view))
+    }
+}
+
+fn install_local_ca_output(
+    state_dir: &std::path::Path,
+    json: bool,
+    yes: bool,
+) -> Result<String, String> {
+    let result = if yes {
+        dam_trust::install_local_ca_system_trust(state_dir)
+    } else {
+        dam_trust::preview_local_ca_install(state_dir)
+    }
+    .map_err(|error| error.to_string())?;
+    if json {
+        serde_json::to_string_pretty(&result)
+            .map(|value| format!("{value}\n"))
+            .map_err(|error| format!("failed to serialize local CA install result: {error}"))
+    } else {
+        Ok(render_local_ca_system_trust_result(&result, yes))
+    }
+}
+
+fn remove_local_ca_output(
+    state_dir: &std::path::Path,
+    json: bool,
+    yes: bool,
+) -> Result<String, String> {
+    let result = if yes {
+        dam_trust::remove_local_ca_system_trust(state_dir)
+    } else {
+        dam_trust::preview_local_ca_remove(state_dir)
+    }
+    .map_err(|error| error.to_string())?;
+    if json {
+        serde_json::to_string_pretty(&result)
+            .map(|value| format!("{value}\n"))
+            .map_err(|error| format!("failed to serialize local CA remove result: {error}"))
+    } else {
+        Ok(render_local_ca_system_trust_result(&result, yes))
+    }
 }
 
 fn active_profile_for_status() -> (Option<dam_integrations::ActiveProfileState>, Option<String>) {
@@ -1271,30 +1936,32 @@ fn active_profile_for_status() -> (Option<dam_integrations::ActiveProfileState>,
     }
 }
 
-fn active_profile_for_connect_parse(args: &[String]) -> Result<Option<String>, String> {
+fn enabled_profiles_for_connect_parse(args: &[String]) -> Result<Vec<String>, String> {
     if !matches!(args.first().map(String::as_str), Some("connect")) {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let connect_args = &args[1..];
     if matches!(
         connect_args.first().map(String::as_str),
         Some("-h" | "--help")
     ) {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     if !connect_args.iter().any(|arg| arg == "--apply")
         || connect_args.iter().any(|arg| arg == "--profile")
     {
-        return Ok(None);
+        return Ok(Vec::new());
     }
 
     let state_dir = integration_state_dir()?;
-    match dam_integrations::read_active_profile(&state_dir)? {
-        Some(state) => Ok(Some(state.profile_id)),
-        None => Err(
-            "--apply requires --profile <id> or an active profile set by `dam profile set <id>`"
+    let profiles = dam_integrations::enabled_profile_ids(&state_dir)?;
+    if profiles.is_empty() {
+        Err(
+            "--apply requires --profile <id> or enabled profiles in `dam profile status`"
                 .to_string(),
-        ),
+        )
+    } else {
+        Ok(profiles)
     }
 }
 
@@ -1424,6 +2091,57 @@ fn apply_connect_profile(profile_id: &str, proxy_url: &str) -> Result<ConnectApp
     })
 }
 
+fn ensure_connect_transparent_prerequisites(
+    proxy: &dam_daemon::ProxyOptions,
+    config: &dam_config::DamConfig,
+    state_dir: Option<PathBuf>,
+) -> Result<(), String> {
+    if proxy.network_mode == dam_net::CaptureMode::ExplicitProxy
+        && proxy.trust_mode == dam_trust::TrustMode::Disabled
+    {
+        return Ok(());
+    }
+
+    let plan = dam_diagnostics::setup_plan(
+        config,
+        &dam_diagnostics::SetupPlanOptions {
+            state_dir,
+            config_path: proxy.config_path.clone(),
+            proxy_url: Some(proxy_url_for_connect_apply(proxy)?),
+            network_mode: proxy.network_mode,
+            trust_mode: proxy.trust_mode,
+        },
+    )?;
+    for step in &plan.steps {
+        let enforced = matches!(
+            step.kind,
+            dam_diagnostics::SetupStepKind::SystemProxy | dam_diagnostics::SetupStepKind::LocalCa
+        );
+        if enforced
+            && matches!(
+                step.status,
+                dam_diagnostics::SetupStepStatus::Needed
+                    | dam_diagnostics::SetupStepStatus::Blocked
+            )
+        {
+            return Err(render_connect_prerequisite_error(step));
+        }
+    }
+
+    Ok(())
+}
+
+fn render_connect_prerequisite_error(step: &dam_diagnostics::SetupStep) -> String {
+    let mut message = format!(
+        "DAM cannot start this transparent setup yet: {}",
+        step.message
+    );
+    if let Some(command) = &step.command {
+        message.push_str(&format!("\nRun `{}` first.", command.join(" ")));
+    }
+    message
+}
+
 fn validate_connect_apply_profile_matches_proxy(
     profile_id: &str,
     proxy: &dam_daemon::ProxyOptions,
@@ -1435,13 +2153,57 @@ fn validate_connect_apply_profile_matches_proxy(
                 dam_integrations::profile_ids().join(", ")
             )
         })?;
-    if profile.provider != proxy.provider {
+    let matches_proxy = proxy
+        .targets
+        .as_ref()
+        .map(|targets| {
+            targets
+                .iter()
+                .any(|target| target.provider == profile.provider)
+        })
+        .unwrap_or_else(|| profile.provider == proxy.provider);
+    if !matches_proxy {
         return Err(format!(
-            "profile {profile_id} uses provider {}, but connect is configured for provider {}",
-            profile.provider, proxy.provider
+            "profile {profile_id} uses provider {}, but connect is not configured for that provider",
+            profile.provider
         ));
     }
     Ok(())
+}
+
+fn proxy_targets_for_profiles(
+    profile_ids: &[String],
+) -> Result<Vec<dam_config::ProxyTargetConfig>, String> {
+    let mut targets = Vec::new();
+    for profile_id in profile_ids {
+        let profile = dam_integrations::profile(profile_id, dam_integrations::DEFAULT_PROXY_URL)
+            .ok_or_else(|| {
+                format!(
+                    "unknown enabled integration profile: {profile_id}\nknown profiles: {}",
+                    dam_integrations::profile_ids().join(", ")
+                )
+            })?;
+        let options = dam_daemon::parse_proxy_options(profile.connect_args)?;
+        let target = dam_config::ProxyTargetConfig {
+            name: options.target_name,
+            provider: options.provider,
+            upstream: options.upstream,
+            failure_mode: None,
+            api_key_env: None,
+            api_key: None,
+        };
+        if !targets
+            .iter()
+            .any(|existing: &dam_config::ProxyTargetConfig| {
+                existing.name == target.name
+                    && existing.provider == target.provider
+                    && existing.upstream == target.upstream
+            })
+        {
+            targets.push(target);
+        }
+    }
+    Ok(targets)
 }
 
 fn proxy_url_for_connect_apply(options: &dam_daemon::ProxyOptions) -> Result<String, String> {
@@ -1672,7 +2434,7 @@ fn spawn_tool(command: &ToolCommand) -> Result<tokio::process::Child, String> {
 }
 
 fn usage() -> &'static str {
-    "Usage: dam <command>\n\nCommands:\n  connect       Start the background DAM proxy daemon\n  status        Show background DAM protection status\n  profile       Select and inspect the active harness profile\n  disconnect    Stop the background DAM proxy daemon\n  integrations  List and inspect known harness integration profiles\n  codex         Start Codex through DAM in explicit API-key mode, or fail closed for ChatGPT-login mode\n  claude        Start a local DAM proxy and launch Claude Code through it\n\nRun `dam connect --help`, `dam profile --help`, `dam integrations --help`, `dam codex --help`, or `dam claude --help` for command options."
+    "Usage: dam <command>\n\nCommands:\n  connect       Start the background DAM proxy daemon\n  status        Show background DAM protection status\n  profile       Select and inspect the active harness profile\n  trust         Manage local trust artifacts and approved local trust changes\n  network       Manage local network routing plans and approved changes\n  disconnect    Stop the background DAM proxy daemon\n  integrations  List and inspect known harness integration profiles\n  codex         Start Codex through DAM in explicit API-key mode, or fail closed for ChatGPT-login mode\n  claude        Start a local DAM proxy and launch Claude Code through it\n\nRun `dam connect --help`, `dam profile --help`, `dam trust --help`, `dam network --help`, `dam integrations --help`, `dam codex --help`, or `dam claude --help` for command options."
 }
 
 fn usage_connect() -> &'static str {
@@ -1701,6 +2463,38 @@ fn usage_profile_set() -> &'static str {
 
 fn usage_profile_clear() -> &'static str {
     "Usage: dam profile clear [--json]"
+}
+
+fn usage_trust() -> &'static str {
+    "Usage: dam trust <command>\n\nCommands:\n  generate-local-ca  Generate local CA certificate/key artifacts without installing trust\n  delete-local-ca    Delete uninstalled local CA artifacts\n  install-local-ca   Preview or install the DAM local CA in local trust\n  remove-local-ca    Preview or remove the DAM local CA from local trust"
+}
+
+fn usage_trust_generate_local_ca() -> &'static str {
+    "Usage: dam trust generate-local-ca [--json]\n\nCreates local CA certificate/key artifacts under the DAM state directory. This does not install a CA or change local trust."
+}
+
+fn usage_trust_delete_local_ca() -> &'static str {
+    "Usage: dam trust delete-local-ca [--json]\n\nDeletes DAM-managed local CA artifacts only when they are not marked installed. This does not change local trust."
+}
+
+fn usage_trust_install_local_ca() -> &'static str {
+    "Usage: dam trust install-local-ca [--dry-run|--yes] [--json]\n\nPreviews the local trust change by default. Use --yes to install the DAM local CA into the macOS user login keychain."
+}
+
+fn usage_trust_remove_local_ca() -> &'static str {
+    "Usage: dam trust remove-local-ca [--dry-run|--yes] [--json]\n\nPreviews the local trust removal by default. Use --yes to remove the recorded DAM local CA from the macOS user login keychain."
+}
+
+fn usage_network() -> &'static str {
+    "Usage: dam network <command>\n\nCommands:\n  install-system-proxy  Preview or install macOS PAC routing for known AI hosts\n  remove-system-proxy   Preview or remove DAM macOS PAC routing and restore prior settings"
+}
+
+fn usage_network_install_system_proxy() -> &'static str {
+    "Usage: dam network install-system-proxy [--config PATH] [--dry-run|--yes] [--json]\n\nPreviews macOS PAC system proxy routing by default. Use --yes to route built-in and configured AI hosts to DAM and leave non-AI traffic direct. HTTPS AI traffic is protected only when routing, trust, consent, and the TLS adapter are all ready."
+}
+
+fn usage_network_remove_system_proxy() -> &'static str {
+    "Usage: dam network remove-system-proxy [--dry-run|--yes] [--json]\n\nPreviews macOS PAC system proxy rollback by default. Use --yes to restore the prior auto-proxy settings recorded before DAM changed them."
 }
 
 fn usage_integrations() -> &'static str {
@@ -1848,7 +2642,7 @@ mod tests {
         let CommandKind::Connect(args) = cli.command else {
             panic!("expected connect");
         };
-        assert_eq!(args.apply_profile_id, None);
+        assert_eq!(args.apply_profile_ids, Vec::<String>::new());
         assert_eq!(args.proxy.listen, "127.0.0.1:9000");
         assert_eq!(args.proxy.target_name, "anthropic");
         assert_eq!(args.proxy.provider, "anthropic");
@@ -1869,7 +2663,7 @@ mod tests {
         let CommandKind::Connect(args) = cli.command else {
             panic!("expected connect");
         };
-        assert_eq!(args.apply_profile_id, None);
+        assert_eq!(args.apply_profile_ids, Vec::<String>::new());
         assert_eq!(args.proxy.listen, "127.0.0.1:9000");
         assert_eq!(args.proxy.target_name, "xai");
         assert_eq!(args.proxy.provider, "openai-compatible");
@@ -1891,7 +2685,7 @@ mod tests {
         let CommandKind::Connect(args) = cli.command else {
             panic!("expected connect");
         };
-        assert_eq!(args.apply_profile_id, Some("claude-code".to_string()));
+        assert_eq!(args.apply_profile_ids, vec!["claude-code".to_string()]);
         assert_eq!(args.proxy.listen, "127.0.0.1:9000");
         assert_eq!(args.proxy.target_name, "anthropic");
         assert_eq!(args.proxy.provider, "anthropic");
@@ -1899,32 +2693,62 @@ mod tests {
     }
 
     #[test]
-    fn parses_connect_apply_with_active_profile() {
-        let cli = parse_cli_with_active_profile(
+    fn parses_connect_apply_with_enabled_profile() {
+        let cli = parse_cli_with_active_profiles(
             [
                 "connect".to_string(),
                 "--apply".to_string(),
                 "--listen".to_string(),
                 "127.0.0.1:9000".to_string(),
             ],
-            Some("claude-code".to_string()),
+            vec!["claude-code".to_string()],
         )
         .unwrap();
 
         let CommandKind::Connect(args) = cli.command else {
             panic!("expected connect");
         };
-        assert_eq!(args.apply_profile_id, Some("claude-code".to_string()));
+        assert_eq!(args.apply_profile_ids, vec!["claude-code".to_string()]);
         assert_eq!(args.proxy.listen, "127.0.0.1:9000");
         assert_eq!(args.proxy.provider, "anthropic");
         assert_eq!(args.proxy.upstream, ANTHROPIC_UPSTREAM);
     }
 
     #[test]
-    fn connect_apply_requires_profile_or_active_profile() {
+    fn parses_connect_apply_with_multiple_enabled_profiles() {
+        let cli = parse_cli_with_active_profiles(
+            [
+                "connect".to_string(),
+                "--apply".to_string(),
+                "--listen".to_string(),
+                "127.0.0.1:9000".to_string(),
+            ],
+            vec!["codex-api".to_string(), "claude-code".to_string()],
+        )
+        .unwrap();
+
+        let CommandKind::Connect(args) = cli.command else {
+            panic!("expected connect");
+        };
+        assert_eq!(
+            args.apply_profile_ids,
+            vec!["codex-api".to_string(), "claude-code".to_string()]
+        );
+        let targets = args.proxy.targets.unwrap();
+        assert_eq!(targets.len(), 2);
+        assert!(
+            targets
+                .iter()
+                .any(|target| target.provider == "openai-compatible")
+        );
+        assert!(targets.iter().any(|target| target.provider == "anthropic"));
+    }
+
+    #[test]
+    fn connect_apply_requires_profile_or_enabled_profiles() {
         let error = parse_cli(["connect".to_string(), "--apply".to_string()]).unwrap_err();
 
-        assert!(error.contains("active profile"));
+        assert!(error.contains("enabled profiles"));
     }
 
     #[test]
@@ -1938,7 +2762,7 @@ mod tests {
         ])
         .unwrap_err();
 
-        assert!(error.contains("connect is configured for provider openai-compatible"));
+        assert!(error.contains("connect is not configured for that provider"));
     }
 
     #[test]
@@ -1951,6 +2775,65 @@ mod tests {
         let error = proxy_url_for_connect_apply(&options).unwrap_err();
 
         assert!(error.contains("fixed --listen port"));
+    }
+
+    #[test]
+    fn connect_preflight_allows_default_explicit_proxy_setup() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = dam_daemon::ProxyOptions::default();
+        let config = dam_daemon::proxy_config(&options).unwrap();
+
+        ensure_connect_transparent_prerequisites(&options, &config, Some(dir.path().join("state")))
+            .unwrap();
+    }
+
+    #[test]
+    fn connect_preflight_blocks_missing_system_proxy_setup() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("dam.toml");
+        std::fs::write(&config_path, "").unwrap();
+        let options = dam_daemon::ProxyOptions {
+            network_mode: dam_net::CaptureMode::SystemProxy,
+            config_path: Some(config_path),
+            ..dam_daemon::ProxyOptions::default()
+        };
+        let config = dam_daemon::proxy_config(&options).unwrap();
+
+        let error = ensure_connect_transparent_prerequisites(
+            &options,
+            &config,
+            Some(dir.path().join("state")),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("system proxy routing needs to be installed"));
+        assert!(error.contains("dam network install-system-proxy"));
+        assert!(error.contains("--config"));
+    }
+
+    #[test]
+    fn connect_preflight_blocks_missing_local_ca_setup() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = dam_daemon::ProxyOptions {
+            trust_mode: dam_trust::TrustMode::LocalCa,
+            ..dam_daemon::ProxyOptions::default()
+        };
+        let config = dam_daemon::proxy_config(&options).unwrap();
+
+        let error = ensure_connect_transparent_prerequisites(
+            &options,
+            &config,
+            Some(dir.path().join("state")),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("local CA"));
+        if dam_trust::PlatformTrustStore::current() == dam_trust::PlatformTrustStore::MacosKeychain
+        {
+            assert!(error.contains("dam trust install-local-ca"));
+        } else {
+            assert!(error.contains("not implemented"));
+        }
     }
 
     #[test]
@@ -2152,6 +3035,163 @@ mod tests {
             cli.command,
             CommandKind::Profile(ProfileArgs::Clear { json: true })
         );
+    }
+
+    #[test]
+    fn parses_trust_generate_local_ca_json() {
+        let cli = parse_cli([
+            "trust".to_string(),
+            "generate-local-ca".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.command,
+            CommandKind::Trust(TrustArgs::GenerateArtifact { json: true })
+        );
+    }
+
+    #[test]
+    fn parses_trust_delete_local_ca_json() {
+        let cli = parse_cli([
+            "trust".to_string(),
+            "delete-local-ca".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.command,
+            CommandKind::Trust(TrustArgs::DeleteArtifact { json: true })
+        );
+    }
+
+    #[test]
+    fn parses_trust_install_and_remove_local_ca_approval() {
+        let install = parse_cli([
+            "trust".to_string(),
+            "install-local-ca".to_string(),
+            "--yes".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+        let remove = parse_cli([
+            "trust".to_string(),
+            "remove-local-ca".to_string(),
+            "--yes".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            install.command,
+            CommandKind::Trust(TrustArgs::InstallTrust {
+                json: true,
+                yes: true
+            })
+        );
+        assert_eq!(
+            remove.command,
+            CommandKind::Trust(TrustArgs::RemoveTrust {
+                json: true,
+                yes: true
+            })
+        );
+    }
+
+    #[test]
+    fn parses_network_install_and_remove_system_proxy_approval() {
+        let install = parse_cli([
+            "network".to_string(),
+            "install-system-proxy".to_string(),
+            "--yes".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+        let remove = parse_cli([
+            "network".to_string(),
+            "remove-system-proxy".to_string(),
+            "--yes".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            install.command,
+            CommandKind::Network(NetworkArgs::InstallProxy {
+                config_path: None,
+                json: true,
+                yes: true
+            })
+        );
+        assert_eq!(
+            remove.command,
+            CommandKind::Network(NetworkArgs::RemoveProxy {
+                json: true,
+                yes: true
+            })
+        );
+    }
+
+    #[test]
+    fn parses_network_install_config_path() {
+        let cli = parse_cli([
+            "network".to_string(),
+            "install-system-proxy".to_string(),
+            "--config".to_string(),
+            "dam.enterprise.toml".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.command,
+            CommandKind::Network(NetworkArgs::InstallProxy {
+                config_path: Some(PathBuf::from("dam.enterprise.toml")),
+                json: true,
+                yes: false
+            })
+        );
+    }
+
+    #[test]
+    fn local_ca_generate_and_delete_outputs_do_not_install_local_trust() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let generated = generate_local_ca_output(dir.path(), false).unwrap();
+        assert!(generated.contains("state: generated"));
+        assert!(generated.contains("local_trust: unchanged"));
+        assert!(generated.contains("fingerprint_sha256: "));
+
+        let deleted = delete_local_ca_output(dir.path(), false).unwrap();
+        assert!(deleted.contains("state: deleted"));
+        assert!(deleted.contains("local_trust: unchanged"));
+
+        let missing = delete_local_ca_output(dir.path(), true).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&missing).unwrap();
+        assert_eq!(report["state"], "missing");
+        assert_eq!(report["deleted"], false);
+    }
+
+    #[test]
+    fn local_ca_install_and_remove_preview_require_approval() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let install = install_local_ca_output(dir.path(), false, false).unwrap();
+        assert!(install.contains("state: preview"));
+        assert!(install.contains("will_generate_artifact: true"));
+        assert!(install.contains("local_trust: unchanged"));
+        assert!(install.contains("approval: rerun with --yes"));
+
+        let generated = generate_local_ca_output(dir.path(), false).unwrap();
+        assert!(generated.contains("state: generated"));
+
+        let remove = remove_local_ca_output(dir.path(), true, false).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&remove).unwrap();
+        assert_eq!(report["state"], "preview");
+        assert_eq!(report["system_trust_changed"], false);
+        assert_eq!(report["plan"]["can_execute"], false);
     }
 
     #[test]

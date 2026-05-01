@@ -38,6 +38,16 @@ action = "tokenize"
 vault_write = "redact_only"
 log_write = "warn_continue"
 
+# DAM includes built-in transparent AI routes for api.openai.com,
+# api.anthropic.com, api.x.ai, and chatgpt.com. Add private or
+# provider-compatible endpoints here when system proxy/TLS interception
+# should treat them as AI traffic too.
+# [[network.ai_routes]]
+# host = "api.enterprise-ai.example"
+# provider = "openai-compatible"
+# target_name = "enterprise-ai"
+# upstream = "https://api.enterprise-ai.example"
+
 [web]
 addr = "127.0.0.1:2896"
 

@@ -8,10 +8,16 @@ version.workspace = true
 dam-api.workspace = true
 dam-config.workspace = true
 dam-consent.workspace = true
+dam-daemon.workspace = true
+dam-integrations.workspace = true
 dam-log.workspace = true
+dam-net.workspace = true
+dam-net-macos.workspace = true
 dam-router.workspace = true
+dam-trust.workspace = true
 dam-vault.workspace = true
 reqwest.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 axum.workspace = true

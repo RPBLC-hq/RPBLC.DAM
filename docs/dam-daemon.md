@@ -2,7 +2,7 @@
 
 `dam-daemon` owns the first background lifecycle slice for local DAM.
 
-It is not a protection engine. The daemon opens the same `dam-proxy` app used by the launcher, writes local process state, waits for shutdown, and removes its state file when it exits cleanly.
+It is not a protection engine. The daemon opens `dam-proxy`, writes local process state, waits for shutdown, and removes its state file when it exits cleanly. In `explicit_proxy` mode it serves the normal app-layer proxy. In transparent modes it supplies the routing/trust/consent state that allows `dam-proxy` to activate its guarded CONNECT/TLS runtime.
 
 ## UX Surface
 
@@ -74,8 +74,11 @@ The state file contains non-sensitive local lifecycle information:
 - inbound reference resolution setting;
 - target name, provider, and upstream URL;
 - network mode (`explicit_proxy`, `system_proxy`, or `tun`);
-- known transparent AI routes from `dam-net`;
+- transparent AI routes from `dam-net` defaults plus configured `[network.ai_routes]`;
+- per-route transparent AI routing readiness from `dam-net`;
 - trust mode and non-sensitive `dam-trust` readiness metadata;
+- per-route transparent AI trust readiness for built-in and configured AI routes;
+- per-route guarded TLS interception readiness from `dam-intercept`;
 - daemon start time as a Unix timestamp.
 
 It must not contain raw sensitive values, vault values, provider API keys, or auth headers.
@@ -102,6 +105,7 @@ Daemon options:
 --target-name <name> Proxy target name
 --provider <name>    Provider adapter: openai-compatible or anthropic
 --upstream <url>     Provider upstream URL
+--target <spec>      Internal repeated target spec: name|provider|upstream
 --db <path>          Local SQLite vault path
 --log <path>         Local SQLite log path
 --consent-db <path>  Local SQLite consent path
@@ -110,21 +114,26 @@ Daemon options:
 --resolve-inbound    Restore DAM references in inbound responses
 ```
 
-`--profile` and `--apply` are `dam connect` front-end options. They are resolved before daemon startup and are not accepted by the standalone `dam-daemon run` parser.
+`--profile` and `--apply` are `dam connect` front-end options. They are resolved before daemon startup and are not accepted by the standalone `dam-daemon run` parser. When multiple app profiles are enabled, `dam connect --apply` expands them to repeated daemon `--target name|provider|upstream` specs so one daemon can expose OpenAI-compatible and Anthropic provider routes at the same local endpoint.
+
+`dam connect` preflights transparent setup before daemon startup. `system_proxy` mode requires DAM-managed macOS PAC routing to already be installed. `local_ca` trust mode requires local CA trust readiness. Missing prerequisites are reported with the next explicit `dam network ...` or `dam trust ...` command instead of starting a partially transparent daemon.
 
 `dam status --json` emits a local status envelope containing daemon state and, when reachable, the `dam-api` `ProxyReport` returned by `/health`.
 
-`network_mode` is currently a control-plane/status field. `explicit_proxy` is the implemented mode. `system_proxy` and `tun` are reserved for future OS routing modules and do not install routes or create a TUN device yet.
+`network_mode` records the routing mode. `explicit_proxy` serves the normal app-layer proxy. `system_proxy` can report macOS PAC routing installed by `dam-net-macos` and uses the transparent CONNECT/TLS runtime only when route capture, local CA trust, and consent are all ready. `tun` is reserved for future OS routing modules and does not create a TUN device yet.
 
-`trust_mode` is also currently a control-plane/status field. `disabled` is the only mode with current behavior. `local_ca` records the intended future TLS trust mode, but it does not install a local CA, change OS trust settings, or intercept TLS yet.
+`trust_mode` is a control-plane/status field and a transparent-runtime gate. `disabled` is the default. `local_ca` records the intended TLS trust mode and may report local CA artifact metadata and macOS installation state. It does not itself install a local CA or change OS trust settings; those actions remain explicit `dam trust ... --yes` commands.
 
-`damctl daemon inspect` is the read-only support/debug view over the same state file. It reports `connected`, `stale`, or `disconnected`, state file paths, process status, selected proxy target, local database paths, and inbound resolution settings without starting or stopping the daemon.
+`dam-intercept` readiness is recorded for the merged AI route registry. It only reports `ready` when transparent routing, explicit consent, local TLS trust, and the TLS adapter runtime are all ready. The daemon reports the adapter as available because the first HTTP/1.1 CONNECT runtime exists; readiness still fails closed when route capture or trust is incomplete.
+
+`damctl daemon inspect` is the read-only support/debug view over the same state file. It reports `connected`, `stale`, or `disconnected`, state file paths, process status, selected proxy target, local database paths, inbound resolution settings, and trust readiness without starting or stopping the daemon.
 
 ## Current Limits
 
-- The daemon runs one proxy target at a time.
+- The daemon runs one local proxy endpoint and can expose multiple configured provider targets from enabled app profiles.
+- Configured `[network.ai_routes]` extend transparent AI host recognition; they do not add extra active proxy targets. The selected proxy target still determines which provider adapter/upstream receives protected traffic.
 - It does not install system proxy settings, mutate harness configs, or start at login. The first tray/menu-bar shell lives in `dam-tray` and hosts `dam-web /connect`; it does not change daemon lifecycle behavior.
-- It records future `system_proxy` and `tun` modes but does not activate OS routing for them yet.
-- It records future `local_ca` trust mode but does not install certificates or intercept TLS yet.
+- It records `system_proxy` and `tun` modes and routing readiness. macOS PAC routing is installed/removed by `dam network`; the daemon only reports and consumes its state.
+- Transparent interception is first-slice HTTP/1.1 only: built-in and configured AI hosts, configured OpenAI-compatible and Anthropic targets, one request per CONNECT tunnel, no HTTP/2, no WebSockets, and no chunked request bodies. Intercepted `text/event-stream` responses are forwarded as chunked pass-through without inbound reference resolution.
 - It does not add WebSocket handling.
 - `dam disconnect` terminates the daemon process by PID, escalates if the process ignores the first termination signal, and removes stale state when the process is no longer running.

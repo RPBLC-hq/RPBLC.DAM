@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::fs;
 use std::net::SocketAddr;
@@ -18,6 +18,7 @@ pub struct DamConfig {
     pub consent: ConsentConfig,
     pub policy: PolicyConfig,
     pub failure: FailureConfig,
+    pub network: NetworkConfig,
     pub web: WebConfig,
     pub proxy: ProxyConfig,
 }
@@ -270,6 +271,19 @@ impl FromStr for LogWriteFailureMode {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetworkConfig {
+    pub ai_routes: Vec<AiRouteConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiRouteConfig {
+    pub host: String,
+    pub provider: String,
+    pub target_name: String,
+    pub upstream: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebConfig {
     pub addr: String,
@@ -444,6 +458,7 @@ pub struct ConfigOverrides {
     pub proxy_target_upstream: Option<String>,
     pub proxy_target_failure_mode: Option<ProxyFailureMode>,
     pub proxy_target_api_key_env: Option<String>,
+    pub proxy_targets: Option<Vec<ProxyTargetConfig>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -620,6 +635,15 @@ fn merge_raw(config: &mut DamConfig, raw: RawDamConfig) -> Result<(), ConfigErro
         if let Some(log_write) = failure.log_write {
             config.failure.log_write = log_write.parse()?;
         }
+    }
+
+    if let Some(network) = raw.network
+        && let Some(ai_routes) = network.ai_routes
+    {
+        config.network.ai_routes = ai_routes
+            .into_iter()
+            .map(parse_ai_route)
+            .collect::<Vec<_>>();
     }
 
     if let Some(web) = raw.web
@@ -819,7 +843,9 @@ fn merge_overrides(config: &mut DamConfig, overrides: &ConfigOverrides) {
     if let Some(resolve_inbound) = overrides.proxy_resolve_inbound {
         config.proxy.resolve_inbound = resolve_inbound;
     }
-    if proxy_target_override_is_present(overrides) {
+    if let Some(targets) = &overrides.proxy_targets {
+        config.proxy.targets = targets.clone();
+    } else if proxy_target_override_is_present(overrides) {
         let target = ensure_first_proxy_target(&mut config.proxy);
         if let Some(name) = &overrides.proxy_target_name {
             target.name = name.clone();
@@ -890,6 +916,8 @@ fn validate(config: &DamConfig) -> Result<(), ConfigError> {
         )?;
     }
 
+    validate_network_ai_routes(&config.network.ai_routes)?;
+
     if config.web.addr.trim().is_empty() {
         return Err(ConfigError::MissingRequired { field: "web.addr" });
     }
@@ -906,13 +934,6 @@ fn validate(config: &DamConfig) -> Result<(), ConfigError> {
             return Err(ConfigError::MissingRequired {
                 field: "proxy.targets",
             });
-        }
-        if config.proxy.targets.len() > 1 {
-            return Err(ConfigError::invalid_value(
-                "proxy.targets",
-                config.proxy.targets.len().to_string(),
-                "expected exactly one target in this local proxy slice",
-            ));
         }
         for target in &config.proxy.targets {
             if target.name.trim().is_empty() {
@@ -946,6 +967,58 @@ fn validate(config: &DamConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_network_ai_routes(routes: &[AiRouteConfig]) -> Result<(), ConfigError> {
+    let mut hosts = BTreeSet::new();
+    for route in routes {
+        if route.host.trim().is_empty() {
+            return Err(ConfigError::MissingRequired {
+                field: "network.ai_routes.host",
+            });
+        }
+        let normalized = normalize_host(&route.host);
+        if normalized.is_empty() {
+            return Err(ConfigError::invalid_value(
+                "network.ai_routes.host",
+                route.host.clone(),
+                "expected a hostname",
+            ));
+        }
+        if !hosts.insert(normalized) {
+            return Err(ConfigError::invalid_value(
+                "network.ai_routes.host",
+                route.host.clone(),
+                "duplicate AI route host",
+            ));
+        }
+        if route.provider.trim().is_empty() {
+            return Err(ConfigError::MissingRequired {
+                field: "network.ai_routes.provider",
+            });
+        }
+        if !matches!(
+            route.provider.as_str(),
+            OPENAI_COMPATIBLE_PROVIDER | ANTHROPIC_PROVIDER
+        ) {
+            return Err(ConfigError::invalid_value(
+                "network.ai_routes.provider",
+                route.provider.clone(),
+                "expected openai-compatible or anthropic",
+            ));
+        }
+        if route.target_name.trim().is_empty() {
+            return Err(ConfigError::MissingRequired {
+                field: "network.ai_routes.target_name",
+            });
+        }
+        if route.upstream.trim().is_empty() {
+            return Err(ConfigError::MissingRequired {
+                field: "network.ai_routes.upstream",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn require_loopback_socket(field: &'static str, value: &str) -> Result<(), ConfigError> {
     let addr = value
         .parse::<SocketAddr>()
@@ -971,6 +1044,15 @@ fn parse_proxy_target(raw: RawProxyTargetConfig) -> Result<ProxyTargetConfig, Co
         api_key_env: raw.api_key_env.and_then(non_empty),
         api_key: None,
     })
+}
+
+fn parse_ai_route(raw: RawAiRouteConfig) -> AiRouteConfig {
+    AiRouteConfig {
+        host: raw.host.unwrap_or_default(),
+        provider: raw.provider.unwrap_or_default(),
+        target_name: raw.target_name.unwrap_or_default(),
+        upstream: raw.upstream.unwrap_or_default(),
+    }
 }
 
 fn proxy_target_env_is_present(env: &BTreeMap<String, String>) -> bool {
@@ -1012,6 +1094,27 @@ fn non_empty(value: String) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn normalize_host(host: &str) -> String {
+    let trimmed = host.trim().trim_end_matches('.');
+    let without_scheme = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .or_else(|| trimmed.strip_prefix("wss://"))
+        .or_else(|| trimmed.strip_prefix("ws://"))
+        .unwrap_or(trimmed);
+    let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
+    let host_only = host_port
+        .strip_prefix('[')
+        .and_then(|value| value.split_once(']').map(|(host, _)| host))
+        .unwrap_or_else(|| {
+            host_port
+                .split_once(':')
+                .map(|(host, _)| host)
+                .unwrap_or(host_port)
+        });
+    host_only.to_ascii_lowercase()
 }
 
 fn parse_bool(field: &'static str, value: &str) -> Result<bool, ConfigError> {
@@ -1086,6 +1189,7 @@ struct RawDamConfig {
     consent: Option<RawConsentConfig>,
     policy: Option<RawPolicyConfig>,
     failure: Option<RawFailureConfig>,
+    network: Option<RawNetworkConfig>,
     web: Option<RawWebConfig>,
     proxy: Option<RawProxyConfig>,
 }
@@ -1144,6 +1248,21 @@ struct RawFailureConfig {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RawNetworkConfig {
+    ai_routes: Option<Vec<RawAiRouteConfig>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAiRouteConfig {
+    host: Option<String>,
+    provider: Option<String>,
+    target_name: Option<String>,
+    upstream: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawWebConfig {
     addr: Option<String>,
 }
@@ -1196,6 +1315,7 @@ mod tests {
         assert_eq!(config.consent.sqlite_path, PathBuf::from("consent.db"));
         assert_eq!(config.consent.default_ttl_seconds, 86_400);
         assert!(config.consent.mcp_write_enabled);
+        assert!(config.network.ai_routes.is_empty());
         assert_eq!(config.web.addr, "127.0.0.1:2896");
         assert!(!config.proxy.enabled);
         assert_eq!(config.proxy.listen, "127.0.0.1:7828");
@@ -1259,6 +1379,12 @@ mod tests {
                 vault_write = "redact_only"
                 log_write = "warn_continue"
 
+                [[network.ai_routes]]
+                host = "api.enterprise-ai.example"
+                provider = "openai-compatible"
+                target_name = "enterprise-ai"
+                upstream = "https://api.enterprise-ai.example"
+
                 [web]
                 addr = "127.0.0.1:9000"
 
@@ -1303,6 +1429,16 @@ mod tests {
         assert_eq!(
             config.policy.kind_actions.get(&SensitiveType::CreditCard),
             Some(&PolicyAction::Block)
+        );
+        assert_eq!(config.network.ai_routes.len(), 1);
+        assert_eq!(
+            config.network.ai_routes[0],
+            AiRouteConfig {
+                host: "api.enterprise-ai.example".to_string(),
+                provider: "openai-compatible".to_string(),
+                target_name: "enterprise-ai".to_string(),
+                upstream: "https://api.enterprise-ai.example".to_string(),
+            }
         );
         assert_eq!(config.web.addr, "127.0.0.1:9000");
         assert!(config.proxy.enabled);
@@ -1466,7 +1602,7 @@ mod tests {
     }
 
     #[test]
-    fn enabled_proxy_rejects_multiple_targets_and_unknown_provider() {
+    fn enabled_proxy_accepts_multiple_targets_and_rejects_unknown_provider() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("dam.toml");
         fs::write(
@@ -1488,21 +1624,17 @@ mod tests {
             "#,
         )
         .unwrap();
-        let error = load_with_env(
+        let config = load_with_env(
             &ConfigOverrides {
                 config_path: Some(config_path),
                 ..ConfigOverrides::default()
             },
             env(&[]),
         )
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            ConfigError::InvalidValue {
-                field: "proxy.targets",
-                ..
-            }
-        ));
+        .unwrap();
+        assert_eq!(config.proxy.targets.len(), 2);
+        assert_eq!(config.proxy.targets[0].name, "one");
+        assert_eq!(config.proxy.targets[1].provider, "anthropic");
 
         let error = load_with_env(
             &ConfigOverrides::default(),
@@ -1517,6 +1649,72 @@ mod tests {
             error,
             ConfigError::InvalidValue {
                 field: "proxy.targets.provider",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn network_ai_routes_reject_duplicate_hosts_and_unknown_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let duplicate_path = dir.path().join("duplicate.toml");
+        fs::write(
+            &duplicate_path,
+            r#"
+                [[network.ai_routes]]
+                host = "https://api.enterprise-ai.example/v1"
+                provider = "openai-compatible"
+                target_name = "enterprise-ai"
+                upstream = "https://api.enterprise-ai.example"
+
+                [[network.ai_routes]]
+                host = "API.ENTERPRISE-AI.EXAMPLE:443"
+                provider = "anthropic"
+                target_name = "enterprise-ai-alt"
+                upstream = "https://api.enterprise-ai.example"
+            "#,
+        )
+        .unwrap();
+        let error = load_with_env(
+            &ConfigOverrides {
+                config_path: Some(duplicate_path),
+                ..ConfigOverrides::default()
+            },
+            env(&[]),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::InvalidValue {
+                field: "network.ai_routes.host",
+                ..
+            }
+        ));
+
+        let provider_path = dir.path().join("provider.toml");
+        fs::write(
+            &provider_path,
+            r#"
+                [[network.ai_routes]]
+                host = "api.enterprise-ai.example"
+                provider = "openai-compat"
+                target_name = "enterprise-ai"
+                upstream = "https://api.enterprise-ai.example"
+            "#,
+        )
+        .unwrap();
+        let error = load_with_env(
+            &ConfigOverrides {
+                config_path: Some(provider_path),
+                ..ConfigOverrides::default()
+            },
+            env(&[]),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigError::InvalidValue {
+                field: "network.ai_routes.provider",
                 ..
             }
         ));

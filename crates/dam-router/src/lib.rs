@@ -116,6 +116,104 @@ impl RoutePlan {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteTable {
+    routes: Vec<RoutePlan>,
+}
+
+impl RouteTable {
+    pub fn from_proxy_config(config: &dam_config::ProxyConfig) -> Result<Self, RouteError> {
+        if config.targets.is_empty() {
+            return Err(RouteError::MissingTarget);
+        }
+        let routes = config
+            .targets
+            .iter()
+            .cloned()
+            .map(|target| RoutePlan::new(target, config.default_failure_mode))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { routes })
+    }
+
+    pub fn routes(&self) -> &[RoutePlan] {
+        &self.routes
+    }
+
+    pub fn first(&self) -> &RoutePlan {
+        &self.routes[0]
+    }
+
+    pub fn decide<'a>(&'a self, headers: &HeaderMap, uri: Option<&http::Uri>) -> RouteDecision<'a> {
+        let route = provider_hint(headers, uri)
+            .and_then(|provider| self.routes.iter().find(|route| route.provider == provider))
+            .unwrap_or_else(|| self.first());
+        route.decide(headers)
+    }
+
+    pub fn decide_for_ai_route<'a>(
+        &'a self,
+        headers: &HeaderMap,
+        ai_route: &dam_net::AiRoute,
+    ) -> RouteDecision<'a> {
+        let route = self
+            .routes
+            .iter()
+            .find(|route| {
+                route.provider.id() == ai_route.provider && target_matches(route.target(), ai_route)
+            })
+            .or_else(|| {
+                self.routes
+                    .iter()
+                    .find(|route| route.provider.id() == ai_route.provider)
+            })
+            .unwrap_or_else(|| self.first());
+        route.decide(headers)
+    }
+}
+
+fn provider_hint(headers: &HeaderMap, uri: Option<&http::Uri>) -> Option<ProviderKind> {
+    if headers.contains_key(ANTHROPIC_API_KEY_HEADER)
+        || headers.contains_key("anthropic-version")
+        || headers.contains_key("anthropic-beta")
+    {
+        return Some(ProviderKind::Anthropic);
+    }
+
+    let path = uri.map(|uri| uri.path()).unwrap_or_default();
+    if path.starts_with("/v1/messages") || path.starts_with("/v1/complete") {
+        return Some(ProviderKind::Anthropic);
+    }
+    if path.starts_with("/v1/responses")
+        || path.starts_with("/v1/chat/completions")
+        || path.starts_with("/v1/models")
+        || path.starts_with("/v1/embeddings")
+        || path.starts_with("/v1/completions")
+    {
+        return Some(ProviderKind::OpenAiCompatible);
+    }
+
+    None
+}
+
+fn target_matches(target: &dam_config::ProxyTargetConfig, ai_route: &dam_net::AiRoute) -> bool {
+    target.name == ai_route.target_name
+        || normalize_host(&target.upstream) == normalize_host(&ai_route.upstream)
+}
+
+fn normalize_host(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RouteDecision<'a> {
     target: &'a dam_config::ProxyTargetConfig,
@@ -227,6 +325,53 @@ mod tests {
         assert_eq!(
             RoutePlan::from_proxy_config(&config).unwrap_err(),
             RouteError::UnsupportedProvider("unknown".to_string())
+        );
+    }
+
+    #[test]
+    fn route_table_selects_provider_from_request_shape() {
+        let mut openai = target(OPENAI_COMPATIBLE_PROVIDER);
+        openai.name = "openai".to_string();
+        let mut anthropic = target(ANTHROPIC_PROVIDER);
+        anthropic.name = "anthropic".to_string();
+        let mut config = proxy_config(openai);
+        config.targets.push(anthropic);
+        let table = RouteTable::from_proxy_config(&config).unwrap();
+
+        let openai_uri = "/v1/responses".parse::<http::Uri>().unwrap();
+        let anthropic_uri = "/v1/messages".parse::<http::Uri>().unwrap();
+
+        assert_eq!(
+            table
+                .decide(&HeaderMap::new(), Some(&openai_uri))
+                .target()
+                .name,
+            "openai"
+        );
+        assert_eq!(
+            table
+                .decide(&HeaderMap::new(), Some(&anthropic_uri))
+                .target()
+                .name,
+            "anthropic"
+        );
+    }
+
+    #[test]
+    fn route_table_selects_anthropic_from_headers() {
+        let mut openai = target(OPENAI_COMPATIBLE_PROVIDER);
+        openai.name = "openai".to_string();
+        let mut anthropic = target(ANTHROPIC_PROVIDER);
+        anthropic.name = "anthropic".to_string();
+        let mut config = proxy_config(openai);
+        config.targets.push(anthropic);
+        let table = RouteTable::from_proxy_config(&config).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+
+        assert_eq!(
+            table.decide(&headers, None).provider_kind(),
+            ProviderKind::Anthropic
         );
     }
 

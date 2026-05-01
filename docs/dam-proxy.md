@@ -2,7 +2,7 @@
 
 Status: implemented first slice.
 
-`dam-proxy` is the first hot-path proxy module. It is an application-layer LLM endpoint / reverse proxy for selected OpenAI-compatible and Anthropic traffic. It does not do TLS interception, local CA installation, WebSockets, VPN/TUN routing, or arbitrary web traffic rewriting.
+`dam-proxy` is the first hot-path proxy module. It is an application-layer LLM endpoint / reverse proxy for selected OpenAI-compatible and Anthropic traffic. In daemon transparent mode, it also owns the first guarded HTTP/1.1 `CONNECT` TLS interception runtime for AI hosts from the merged default/config route registry when routing, trust, and consent are all ready. It does not install local CAs, install routes, create TUN devices, handle WebSockets, or rewrite arbitrary web traffic.
 
 ## Architecture
 
@@ -42,6 +42,10 @@ Repeated equal outbound values reuse one tokenized reference by default within a
 Active consent grants let exact detected values pass through unredacted until expiry or revocation. Consent overrides `tokenize` and `redact`; it does not override `block`.
 
 The current implementation keeps HTTP serving, backend opening, provider adapter dispatch, and DAM-owned status responses inside `dam-proxy`. Shared text processing orchestration lives in `dam-pipeline`, OpenAI-compatible forwarding lives in `dam-provider-openai`, Anthropic forwarding lives in `dam-provider-anthropic`, and first-slice route decisions live in `dam-router`.
+
+Transparent system-proxy traffic reaches DAM as HTTP `CONNECT`. The standalone app-layer `dam-proxy` path still fails closed for `CONNECT`. When `dam-daemon` starts `dam-proxy` in transparent mode, `dam-proxy` uses a raw TCP CONNECT loop instead of the Axum app-layer server. That loop activates only when `dam-net` routing readiness, `dam-trust` local CA readiness, explicit consent, and `dam-intercept` adapter readiness are all `ready`.
+
+The first transparent runtime slice is intentionally narrow: one HTTP/1.1 request per CONNECT tunnel, AI hosts from the merged default/config route registry only, configured OpenAI-compatible and Anthropic targets only, no chunked request bodies, no WebSockets, and no HTTP/2. Intercepted `text/event-stream` responses pass through as HTTP/1.1 chunked responses without inbound reference resolution. Unsupported or not-ready traffic fails closed rather than becoming an opaque tunnel.
 
 Supported provider IDs are:
 
@@ -96,6 +100,7 @@ cargo run -p damctl -- status
 ## Failure Behavior
 
 - Protection precondition failures fail closed before provider egress. This includes unsupported content encodings, non-UTF-8 request bodies in the current text pipeline, consent backend errors, and invariant failures where the pipeline does not produce protected output.
+- Transparent `CONNECT` requests fail closed unless the daemon supplied the transparent runtime config and routing, trust, consent, and adapter readiness are all ready.
 - `bypass_on_error`: retained as a visible failure-mode state for reduced-protection configurations, but it is not allowed to forward request bytes that DAM failed to inspect/protect.
 - `redact_only`: supported for vault failures. If a tokenized vault write fails, the value becomes `[kind]`.
 - `block_on_error`: strict proxy/protection failure behavior. The proxy returns a clear `blocked` response instead of forwarding unprotected traffic.
@@ -137,6 +142,18 @@ failure_mode = "bypass_on_error"
 api_key_env = "ANTHROPIC_API_KEY"
 ```
 
+Transparent AI route example:
+
+```toml
+[[network.ai_routes]]
+host = "api.enterprise-ai.example"
+provider = "openai-compatible"
+target_name = "enterprise-ai"
+upstream = "https://api.enterprise-ai.example"
+```
+
+These routes control transparent host recognition and PAC routing scope. Active forwarding targets are configured separately through `[[proxy.targets]]`. The local proxy can host multiple targets in one process and selects the OpenAI-compatible or Anthropic route from request path/header shape or the transparent AI route match.
+
 Secrets must be supplied through environment variables or deployment secret stores, not plaintext config files. For local launcher flows, omit `api_key_env` so DAM forwards caller-owned auth headers instead of injecting a provider key.
 
 ## Testing
@@ -156,6 +173,9 @@ Covered cases:
 - missing API key producing `config_required`;
 - configured upstream API key replacing inbound `Authorization`;
 - Anthropic `x-api-key` passthrough and configured key replacement;
+- transparent `CONNECT` requests failing closed without provider egress;
+- transparent HTTP/1.1 CONNECT/TLS requests completing a local-CA TLS handshake and forwarding only protected request bodies to the fake upstream;
+- transparent raw HTTP `text/event-stream` responses forwarded as chunked pass-through without inbound resolution;
 - hop-by-hop and `Connection`-listed header stripping;
 - upstream connection failure producing `provider_down`;
 - `dam-api` `ProxyReport` JSON for health and DAM-owned failure responses;
@@ -169,7 +189,8 @@ cargo test -p dam-proxy
 
 ## Parked
 
-- TLS interception and local CA management.
+- HTTP/2, WebSocket, and multi-request transparent tunnel handling.
+- Local CA management and OS route installation.
 - VPN/TUN/network-extension routing.
 - WebSocket adapters.
 - Arbitrary web traffic adapters.

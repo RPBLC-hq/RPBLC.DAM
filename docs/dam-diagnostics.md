@@ -16,7 +16,23 @@ Status: implemented first extraction.
 - SQLite runtime open checks for local vault, consent, and log stores;
 - router target/provider/auth/failure-mode decisions;
 - proxy runtime `/health` reachability when proxy is enabled;
+- a read-only setup plan summary for the default local explicit-proxy path;
 - launcher readiness notes for `dam claude`, `dam codex --api`, and fail-closed Codex ChatGPT-login mode.
+
+`setup_plan` emits a side-effect-free setup checklist for the local "connect" UX. It evaluates:
+
+- active integration profile apply state;
+- system-proxy routing readiness when requested;
+- local CA trust readiness when requested;
+- daemon lifecycle readiness for the requested network/trust modes.
+
+The plan states are:
+
+- `ready`: no setup action is needed.
+- `needs_action`: DAM can continue after the listed next command or user confirmation.
+- `blocked`: setup needs review before the local connect flow should continue.
+
+Each setup step reports `kind`, `status`, `message`, optional `command`, `requires_confirmation`, and `changes_system`.
 
 ## Boundaries
 
@@ -30,12 +46,13 @@ The crate does not:
 
 Those concerns stay in `damctl`, `dam-web`, `dam-proxy`, and future daemon/integration modules.
 
-`damctl doctor` may add CLI-local integration profile summaries after consuming `doctor_report`. Those summaries use `dam-integrations` inspection data and are not currently part of the shared web `/doctor` report.
+`damctl doctor` may add CLI-local integration profile summaries after consuming `doctor_report`. Those summaries use `dam-integrations` inspection data and are not currently part of the shared web `/doctor` report. The CLI can pass a non-default state directory so tests and support sessions do not accidentally read the live user daemon/integration state.
 
 ## Current Consumers
 
 - `damctl config check`
 - `damctl doctor`
+- `damctl setup plan`
 - `dam-web /doctor`
 
 ## Testing

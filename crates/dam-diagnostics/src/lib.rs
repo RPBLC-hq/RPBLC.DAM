@@ -1,9 +1,116 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
+
+use serde::Serialize;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DoctorOptions {
     pub proxy_url: Option<String>,
+    pub state_dir: Option<PathBuf>,
+    pub config_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetupPlanOptions {
+    pub state_dir: Option<PathBuf>,
+    pub config_path: Option<PathBuf>,
+    pub proxy_url: Option<String>,
+    pub network_mode: dam_net::CaptureMode,
+    pub trust_mode: dam_trust::TrustMode,
+}
+
+impl Default for SetupPlanOptions {
+    fn default() -> Self {
+        Self {
+            state_dir: None,
+            config_path: None,
+            proxy_url: None,
+            network_mode: dam_net::CaptureMode::ExplicitProxy,
+            trust_mode: dam_trust::TrustMode::Disabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupPlanState {
+    Ready,
+    NeedsAction,
+    Blocked,
+}
+
+impl SetupPlanState {
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::NeedsAction => "needs_action",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupStepKind {
+    ProfileApply,
+    SystemProxy,
+    LocalCa,
+    Daemon,
+}
+
+impl SetupStepKind {
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::ProfileApply => "profile_apply",
+            Self::SystemProxy => "system_proxy",
+            Self::LocalCa => "local_ca",
+            Self::Daemon => "daemon",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupStepStatus {
+    Done,
+    Needed,
+    Blocked,
+    Skipped,
+}
+
+impl SetupStepStatus {
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Done => "done",
+            Self::Needed => "needed",
+            Self::Blocked => "blocked",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SetupStep {
+    pub kind: SetupStepKind,
+    pub status: SetupStepStatus,
+    pub message: String,
+    pub command: Option<Vec<String>>,
+    pub requires_confirmation: bool,
+    pub changes_system: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SetupPlan {
+    pub state: SetupPlanState,
+    pub message: String,
+    pub state_dir: PathBuf,
+    pub integration_state_dir: PathBuf,
+    pub proxy_url: String,
+    pub network_mode: dam_net::CaptureMode,
+    pub trust_mode: dam_trust::TrustMode,
+    pub active_profile: Option<dam_integrations::ActiveProfileState>,
+    pub steps: Vec<SetupStep>,
 }
 
 pub async fn doctor_report(
@@ -27,6 +134,7 @@ pub async fn doctor_report(
     report
         .components
         .push(proxy_runtime_component(config, options, &mut report.diagnostics).await);
+    add_setup_plan_component(config, options, &mut report);
     report.components.push(claude_launcher_component());
     report.components.push(codex_api_launcher_component());
     report.components.push(codex_chatgpt_component());
@@ -65,6 +173,454 @@ pub fn proxy_health_url(
         return append_health(proxy_url);
     }
     append_health(&format!("http://{}", config.proxy.listen))
+}
+
+pub fn setup_plan(
+    config: &dam_config::DamConfig,
+    options: &SetupPlanOptions,
+) -> Result<SetupPlan, String> {
+    let state_dir = match &options.state_dir {
+        Some(state_dir) => state_dir.clone(),
+        None => {
+            dam_daemon::state_paths()
+                .map_err(|error| error.to_string())?
+                .state_dir
+        }
+    };
+    let integration_state_dir = state_dir.join("integrations");
+    let proxy_url = options
+        .proxy_url
+        .clone()
+        .unwrap_or_else(|| format!("http://{}", config.proxy.listen));
+    let active_profile = dam_integrations::read_active_profile(&integration_state_dir)?;
+    let enabled_profiles =
+        dam_integrations::read_effective_enabled_integrations(&integration_state_dir)?;
+    let steps = vec![
+        profile_setup_step(&enabled_profiles, &integration_state_dir, &proxy_url),
+        system_proxy_setup_step(
+            options.network_mode,
+            &state_dir,
+            options.config_path.as_ref(),
+        ),
+        local_ca_setup_step(options.trust_mode, &state_dir),
+        daemon_setup_step(options.network_mode, options.trust_mode, &state_dir),
+    ];
+
+    let state = if steps
+        .iter()
+        .any(|step| step.status == SetupStepStatus::Blocked)
+    {
+        SetupPlanState::Blocked
+    } else if steps
+        .iter()
+        .any(|step| step.status == SetupStepStatus::Needed)
+    {
+        SetupPlanState::NeedsAction
+    } else {
+        SetupPlanState::Ready
+    };
+    let message = setup_plan_message(state, &steps);
+
+    Ok(SetupPlan {
+        state,
+        message,
+        state_dir,
+        integration_state_dir,
+        proxy_url,
+        network_mode: options.network_mode,
+        trust_mode: options.trust_mode,
+        active_profile,
+        steps,
+    })
+}
+
+fn profile_setup_step(
+    enabled_profiles: &[dam_integrations::EnabledIntegrationState],
+    integration_state_dir: &std::path::Path,
+    proxy_url: &str,
+) -> SetupStep {
+    if enabled_profiles.is_empty() {
+        return SetupStep {
+            kind: SetupStepKind::ProfileApply,
+            status: SetupStepStatus::Skipped,
+            message: "no enabled profiles; default endpoint can be used".to_string(),
+            command: None,
+            requires_confirmation: false,
+            changes_system: false,
+        };
+    }
+
+    let mut any_needs_apply = false;
+    let profile_ids = enabled_profiles
+        .iter()
+        .map(|profile| profile.profile_id.as_str())
+        .collect::<Vec<_>>();
+    for enabled_profile in enabled_profiles {
+        let target_path = match dam_integrations::default_apply_path(
+            &enabled_profile.profile_id,
+            integration_state_dir,
+            std::env::var_os("CODEX_HOME").map(PathBuf::from),
+            std::env::var_os("HOME").map(PathBuf::from),
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                return SetupStep {
+                    kind: SetupStepKind::ProfileApply,
+                    status: SetupStepStatus::Blocked,
+                    message: format!(
+                        "enabled profile {} cannot be inspected: {error}",
+                        enabled_profile.profile_id
+                    ),
+                    command: Some(vec![
+                        "damctl".to_string(),
+                        "integrations".to_string(),
+                        "check".to_string(),
+                        enabled_profile.profile_id.clone(),
+                    ]),
+                    requires_confirmation: false,
+                    changes_system: false,
+                };
+            }
+        };
+        let inspection = match dam_integrations::inspect_apply(
+            &enabled_profile.profile_id,
+            proxy_url,
+            target_path,
+            integration_state_dir,
+        ) {
+            Ok(inspection) => inspection,
+            Err(error) => {
+                return SetupStep {
+                    kind: SetupStepKind::ProfileApply,
+                    status: SetupStepStatus::Blocked,
+                    message: format!(
+                        "enabled profile {} cannot be inspected: {error}",
+                        enabled_profile.profile_id
+                    ),
+                    command: Some(vec![
+                        "damctl".to_string(),
+                        "integrations".to_string(),
+                        "check".to_string(),
+                        enabled_profile.profile_id.clone(),
+                    ]),
+                    requires_confirmation: false,
+                    changes_system: false,
+                };
+            }
+        };
+        if inspection.record_error.is_some()
+            || inspection.status == dam_integrations::IntegrationApplyStatus::Modified
+        {
+            return SetupStep {
+                kind: SetupStepKind::ProfileApply,
+                status: SetupStepStatus::Blocked,
+                message: format!(
+                    "enabled profile {} needs review: {}",
+                    enabled_profile.profile_id, inspection.message
+                ),
+                command: Some(vec![
+                    "damctl".to_string(),
+                    "integrations".to_string(),
+                    "check".to_string(),
+                    enabled_profile.profile_id.clone(),
+                ]),
+                requires_confirmation: false,
+                changes_system: false,
+            };
+        }
+        if inspection.status == dam_integrations::IntegrationApplyStatus::NeedsApply {
+            any_needs_apply = true;
+        }
+    }
+
+    if any_needs_apply {
+        SetupStep {
+            kind: SetupStepKind::ProfileApply,
+            status: SetupStepStatus::Needed,
+            message: format!("enabled profiles need setup: {}", profile_ids.join(", ")),
+            command: Some(vec![
+                "dam".to_string(),
+                "connect".to_string(),
+                "--apply".to_string(),
+            ]),
+            requires_confirmation: true,
+            changes_system: false,
+        }
+    } else {
+        SetupStep {
+            kind: SetupStepKind::ProfileApply,
+            status: SetupStepStatus::Done,
+            message: format!("enabled profiles are applied: {}", profile_ids.join(", ")),
+            command: None,
+            requires_confirmation: false,
+            changes_system: false,
+        }
+    }
+}
+
+fn system_proxy_setup_step(
+    network_mode: dam_net::CaptureMode,
+    state_dir: &std::path::Path,
+    config_path: Option<&PathBuf>,
+) -> SetupStep {
+    match network_mode {
+        dam_net::CaptureMode::ExplicitProxy => SetupStep {
+            kind: SetupStepKind::SystemProxy,
+            status: SetupStepStatus::Skipped,
+            message: "system proxy routing is not required in explicit proxy mode".to_string(),
+            command: None,
+            requires_confirmation: false,
+            changes_system: false,
+        },
+        dam_net::CaptureMode::Tun => SetupStep {
+            kind: SetupStepKind::SystemProxy,
+            status: SetupStepStatus::Blocked,
+            message: "TUN routing is not implemented in this local build".to_string(),
+            command: None,
+            requires_confirmation: false,
+            changes_system: true,
+        },
+        dam_net::CaptureMode::SystemProxy => {
+            if dam_net_macos::system_proxy_installed(state_dir) {
+                return SetupStep {
+                    kind: SetupStepKind::SystemProxy,
+                    status: SetupStepStatus::Done,
+                    message: "macOS PAC system proxy routing is installed".to_string(),
+                    command: None,
+                    requires_confirmation: false,
+                    changes_system: false,
+                };
+            }
+            let mut command = vec![
+                "dam".to_string(),
+                "network".to_string(),
+                "install-system-proxy".to_string(),
+            ];
+            if let Some(config_path) = config_path {
+                command.push("--config".to_string());
+                command.push(config_path.display().to_string());
+            }
+            command.push("--yes".to_string());
+            SetupStep {
+                kind: SetupStepKind::SystemProxy,
+                status: SetupStepStatus::Needed,
+                message: "macOS PAC system proxy routing needs to be installed".to_string(),
+                command: Some(command),
+                requires_confirmation: true,
+                changes_system: true,
+            }
+        }
+    }
+}
+
+fn local_ca_setup_step(trust_mode: dam_trust::TrustMode, state_dir: &std::path::Path) -> SetupStep {
+    match trust_mode {
+        dam_trust::TrustMode::Disabled => SetupStep {
+            kind: SetupStepKind::LocalCa,
+            status: SetupStepStatus::Skipped,
+            message: "local CA trust is not required while trust mode is disabled".to_string(),
+            command: None,
+            requires_confirmation: false,
+            changes_system: false,
+        },
+        dam_trust::TrustMode::LocalCa => {
+            let plan = match dam_trust::local_ca_install_plan(state_dir) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    return SetupStep {
+                        kind: SetupStepKind::LocalCa,
+                        status: SetupStepStatus::Blocked,
+                        message: format!("local CA trust cannot be inspected: {error}"),
+                        command: Some(vec![
+                            "damctl".to_string(),
+                            "trust".to_string(),
+                            "inspect".to_string(),
+                        ]),
+                        requires_confirmation: false,
+                        changes_system: true,
+                    };
+                }
+            };
+            if plan
+                .artifact
+                .as_ref()
+                .map(dam_trust::LocalCaRecord::installed)
+                .unwrap_or(false)
+            {
+                return SetupStep {
+                    kind: SetupStepKind::LocalCa,
+                    status: SetupStepStatus::Done,
+                    message: "DAM local CA is installed in system trust".to_string(),
+                    command: None,
+                    requires_confirmation: false,
+                    changes_system: false,
+                };
+            }
+            if plan.support == dam_trust::TrustSupport::Planned {
+                return SetupStep {
+                    kind: SetupStepKind::LocalCa,
+                    status: SetupStepStatus::Blocked,
+                    message: plan.message,
+                    command: None,
+                    requires_confirmation: false,
+                    changes_system: true,
+                };
+            }
+            SetupStep {
+                kind: SetupStepKind::LocalCa,
+                status: SetupStepStatus::Needed,
+                message: plan.message,
+                command: Some(vec![
+                    "dam".to_string(),
+                    "trust".to_string(),
+                    "install-local-ca".to_string(),
+                    "--yes".to_string(),
+                ]),
+                requires_confirmation: true,
+                changes_system: true,
+            }
+        }
+    }
+}
+
+fn daemon_setup_step(
+    network_mode: dam_net::CaptureMode,
+    trust_mode: dam_trust::TrustMode,
+    state_dir: &std::path::Path,
+) -> SetupStep {
+    let state_file = state_dir.join("daemon.json");
+    let status = match dam_daemon::read_state_from(&state_file) {
+        Ok(Some(state)) if dam_daemon::process_is_running(state.pid) => {
+            if state.network_mode == network_mode && state.trust.mode == trust_mode {
+                return SetupStep {
+                    kind: SetupStepKind::Daemon,
+                    status: SetupStepStatus::Done,
+                    message: format!("daemon is connected at {}", state.proxy_url),
+                    command: None,
+                    requires_confirmation: false,
+                    changes_system: false,
+                };
+            }
+            return SetupStep {
+                kind: SetupStepKind::Daemon,
+                status: SetupStepStatus::Blocked,
+                message: format!(
+                    "daemon is already running with network mode {} and trust mode {}; disconnect before changing setup",
+                    state.network_mode, state.trust.mode
+                ),
+                command: Some(vec!["dam".to_string(), "disconnect".to_string()]),
+                requires_confirmation: true,
+                changes_system: false,
+            };
+        }
+        Ok(Some(_)) => "stale",
+        Ok(None) => "disconnected",
+        Err(_) => {
+            return SetupStep {
+                kind: SetupStepKind::Daemon,
+                status: SetupStepStatus::Blocked,
+                message: "daemon state is unreadable".to_string(),
+                command: Some(vec![
+                    "damctl".to_string(),
+                    "daemon".to_string(),
+                    "inspect".to_string(),
+                ]),
+                requires_confirmation: false,
+                changes_system: false,
+            };
+        }
+    };
+
+    let mut command = vec!["dam".to_string(), "connect".to_string()];
+    if network_mode != dam_net::CaptureMode::ExplicitProxy {
+        command.push("--network-mode".to_string());
+        command.push(network_mode.tag().to_string());
+    }
+    if trust_mode != dam_trust::TrustMode::Disabled {
+        command.push("--trust-mode".to_string());
+        command.push(trust_mode.tag().to_string());
+    }
+    SetupStep {
+        kind: SetupStepKind::Daemon,
+        status: SetupStepStatus::Needed,
+        message: format!("daemon is {status}; start DAM"),
+        command: Some(command),
+        requires_confirmation: false,
+        changes_system: false,
+    }
+}
+
+fn setup_plan_message(state: SetupPlanState, steps: &[SetupStep]) -> String {
+    match state {
+        SetupPlanState::Ready => "local AI protection is ready".to_string(),
+        SetupPlanState::Blocked => steps
+            .iter()
+            .find(|step| step.status == SetupStepStatus::Blocked)
+            .map(|step| format!("setup is blocked: {}", step.message))
+            .unwrap_or_else(|| "setup is blocked".to_string()),
+        SetupPlanState::NeedsAction => steps
+            .iter()
+            .find(|step| step.status == SetupStepStatus::Needed)
+            .map(|step| format!("next setup action: {}", step.message))
+            .unwrap_or_else(|| "setup needs action".to_string()),
+    }
+}
+
+fn add_setup_plan_component(
+    config: &dam_config::DamConfig,
+    options: &DoctorOptions,
+    report: &mut dam_api::HealthReport,
+) {
+    let plan = match setup_plan(
+        config,
+        &SetupPlanOptions {
+            state_dir: options.state_dir.clone(),
+            config_path: options.config_path.clone(),
+            proxy_url: options.proxy_url.clone(),
+            ..SetupPlanOptions::default()
+        },
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            report.components.push(dam_api::ComponentHealth {
+                component: "setup_plan".to_string(),
+                state: dam_api::HealthState::Degraded,
+                message: format!("setup plan unavailable: {error}"),
+            });
+            report.diagnostics.push(dam_api::Diagnostic::new(
+                dam_api::DiagnosticSeverity::Warning,
+                "setup_plan_unavailable",
+                error,
+            ));
+            return;
+        }
+    };
+    let state = match plan.state {
+        SetupPlanState::Ready => dam_api::HealthState::Healthy,
+        SetupPlanState::NeedsAction => dam_api::HealthState::Degraded,
+        SetupPlanState::Blocked => dam_api::HealthState::Unhealthy,
+    };
+    report.components.push(dam_api::ComponentHealth {
+        component: "setup_plan".to_string(),
+        state,
+        message: plan.message.clone(),
+    });
+    for step in plan.steps.iter().filter(|step| {
+        matches!(
+            step.status,
+            SetupStepStatus::Needed | SetupStepStatus::Blocked
+        )
+    }) {
+        report.diagnostics.push(dam_api::Diagnostic::new(
+            if step.status == SetupStepStatus::Blocked {
+                dam_api::DiagnosticSeverity::Error
+            } else {
+                dam_api::DiagnosticSeverity::Warning
+            },
+            format!("setup_{}", step.kind.tag()),
+            step.message.clone(),
+        ));
+    }
 }
 
 fn append_health(value: &str) -> Result<String, String> {
@@ -845,6 +1401,109 @@ mod tests {
         );
     }
 
+    #[test]
+    fn setup_plan_defaults_to_daemon_start_when_disconnected() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = proxy_config("https://api.openai.com", "openai-compatible");
+
+        let plan = setup_plan(
+            &config,
+            &SetupPlanOptions {
+                state_dir: Some(dir.path().join("state")),
+                ..SetupPlanOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.state, SetupPlanState::NeedsAction);
+        assert!(plan.message.contains("daemon is disconnected"));
+        assert!(plan.steps.iter().any(|step| {
+            step.kind == SetupStepKind::ProfileApply && step.status == SetupStepStatus::Skipped
+        }));
+        assert!(plan.steps.iter().any(|step| {
+            step.kind == SetupStepKind::SystemProxy && step.status == SetupStepStatus::Skipped
+        }));
+        assert!(plan.steps.iter().any(|step| {
+            step.kind == SetupStepKind::LocalCa && step.status == SetupStepStatus::Skipped
+        }));
+        assert!(plan.steps.iter().any(|step| {
+            step.kind == SetupStepKind::Daemon
+                && step.status == SetupStepStatus::Needed
+                && step.command == Some(vec!["dam".to_string(), "connect".to_string()])
+        }));
+    }
+
+    #[test]
+    fn setup_plan_reports_active_profile_needs_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let integration_state_dir = state_dir.join("integrations");
+        dam_integrations::set_active_profile("openai-compatible", &integration_state_dir).unwrap();
+        let config = proxy_config("https://api.openai.com", "openai-compatible");
+
+        let plan = setup_plan(
+            &config,
+            &SetupPlanOptions {
+                state_dir: Some(state_dir),
+                ..SetupPlanOptions::default()
+            },
+        )
+        .unwrap();
+
+        let step = plan
+            .steps
+            .iter()
+            .find(|step| step.kind == SetupStepKind::ProfileApply)
+            .unwrap();
+        assert_eq!(step.status, SetupStepStatus::Needed);
+        assert_eq!(
+            step.command,
+            Some(vec![
+                "dam".to_string(),
+                "connect".to_string(),
+                "--apply".to_string()
+            ])
+        );
+        assert!(step.requires_confirmation);
+    }
+
+    #[test]
+    fn setup_plan_reports_system_proxy_setup_when_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = proxy_config("https://api.openai.com", "openai-compatible");
+
+        let plan = setup_plan(
+            &config,
+            &SetupPlanOptions {
+                state_dir: Some(dir.path().join("state")),
+                config_path: Some(PathBuf::from("dam.example.toml")),
+                network_mode: dam_net::CaptureMode::SystemProxy,
+                ..SetupPlanOptions::default()
+            },
+        )
+        .unwrap();
+
+        let step = plan
+            .steps
+            .iter()
+            .find(|step| step.kind == SetupStepKind::SystemProxy)
+            .unwrap();
+        assert_eq!(step.status, SetupStepStatus::Needed);
+        assert_eq!(
+            step.command,
+            Some(vec![
+                "dam".to_string(),
+                "network".to_string(),
+                "install-system-proxy".to_string(),
+                "--config".to_string(),
+                "dam.example.toml".to_string(),
+                "--yes".to_string()
+            ])
+        );
+        assert!(step.requires_confirmation);
+        assert!(step.changes_system);
+    }
+
     #[tokio::test]
     async fn doctor_uses_router_and_proxy_runtime_status() {
         let proxy_url = spawn_health(dam_api::ProxyReport {
@@ -862,6 +1521,7 @@ mod tests {
             &config,
             &DoctorOptions {
                 proxy_url: Some(proxy_url),
+                ..DoctorOptions::default()
             },
         )
         .await;
@@ -886,6 +1546,7 @@ mod tests {
             &config,
             &DoctorOptions {
                 proxy_url: Some("http://127.0.0.1:1".to_string()),
+                ..DoctorOptions::default()
             },
         )
         .await;

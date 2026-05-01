@@ -43,6 +43,12 @@ dam status [--json]
 dam profile status [--json]
 dam profile set <profile> [--json]
 dam profile clear [--json]
+dam trust generate-local-ca [--json]
+dam trust delete-local-ca [--json]
+dam trust install-local-ca [--dry-run|--yes] [--json]
+dam trust remove-local-ca [--dry-run|--yes] [--json]
+dam network install-system-proxy [--dry-run|--yes] [--json]
+dam network remove-system-proxy [--dry-run|--yes] [--json]
 dam disconnect
 dam integrations list [--json]
 dam integrations show <profile> [--json]
@@ -56,7 +62,7 @@ DAM options:
 
 ```text
 --profile <id>       Apply integration profile daemon defaults (connect only)
---apply              Apply the selected or active integration profile before connecting
+--apply              Apply the selected profile or enabled app profiles before connecting
 --openai             Use the OpenAI-compatible daemon preset (default for connect)
 --anthropic          Use the Anthropic daemon preset (connect only)
 --api                Use Codex API-key mode through DAM (Codex only)
@@ -67,6 +73,7 @@ DAM options:
 --target-name <name> Proxy target name (connect only)
 --provider <name>    Provider adapter: openai-compatible or anthropic (connect only)
 --upstream <url>     Provider upstream
+--target <spec>      Internal daemon target spec: name|provider|upstream
 --db <path>          Vault SQLite path (default: vault.db)
 --log <path>         Log SQLite path (default: log.db)
 --consent-db <path>  Consent SQLite path (default: consent.db)
@@ -83,9 +90,12 @@ dam connect --profile xai-compatible
 dam connect --profile claude-code --apply
 dam profile set claude-code
 dam connect --apply
+dam profile status
 dam connect --anthropic
 dam status
-dam profile status
+dam trust generate-local-ca
+dam trust install-local-ca
+dam network install-system-proxy
 dam integrations show codex-api
 dam integrations apply codex-api
 dam integrations apply codex-api --write
@@ -108,14 +118,21 @@ When invoked from `npx`, `claude` and `codex` run in trial mode by default. Tria
 
 ## Current Limits
 
-- `dam connect` runs one background proxy target at a time. `--profile <id> --apply` can configure known harness profiles with rollback records, but DAM does not install system proxy settings yet.
-- `dam profile set <id>` persists the active local harness profile. `dam connect --apply` uses that active profile when `--profile` is omitted.
+- `dam connect` can start one daemon with multiple proxy targets when multiple app profiles are enabled. `--profile <id> --apply` still configures one explicit profile. `dam connect --apply` without `--profile` applies all enabled app profiles, falling back to the legacy active profile only when no enabled profile state exists.
+- `dam profile set <id>` persists the legacy active local harness profile. The tray/web Settings flow persists enabled app profiles for simultaneous Codex API and Claude Code protection.
+- `dam connect --network-mode system_proxy` refuses to start until DAM sees macOS PAC routing installed. Run `dam network install-system-proxy --yes` first after reviewing the preview.
+- `dam connect --trust-mode local_ca` refuses to start until local CA trust is ready. Run `dam trust install-local-ca --yes` first after reviewing the preview.
+- `dam trust generate-local-ca` creates local CA certificate/key artifacts only. It does not install them into system trust.
+- `dam trust delete-local-ca` deletes uninstalled DAM-managed local CA artifacts only.
+- `dam trust install-local-ca` and `dam trust remove-local-ca` preview by default. On macOS only, `--yes` applies the System keychain change and may require administrator approval.
+- `dam network install-system-proxy` and `dam network remove-system-proxy` preview by default. On macOS, `--yes` applies or removes PAC routing for built-in and configured AI hosts with rollback state.
 - `dam integrations apply <profile>` previews by default. Add `--write` to edit Codex config, Claude Code settings, or DAM-managed environment files with a rollback record.
-- One launcher command starts one single-target proxy.
+- One launcher command still starts one single-target proxy. The background `dam connect --apply` flow can run multiple provider targets in one daemon.
 - Codex API-key mode is protected through the public Responses API. Codex ChatGPT-login model turns are not protected by the current launcher and are blocked.
 - Codex WebSockets are disabled in the injected provider config until DAM has a WebSocket adapter.
-- This is explicit base-URL routing, not transparent HTTPS interception.
-- TLS interception and VPN/TUN routing are still parked. `--network-mode` and `--trust-mode` are control-plane/status fields only.
+- Explicit base-URL routing remains the default local protection path.
+- `--network-mode system_proxy` can report macOS PAC routing installed by `dam network install-system-proxy`. When system-proxy routing, local CA trust, and consent are ready, the daemon uses the first HTTP/1.1 CONNECT/TLS runtime for built-in and configured AI hosts. `dam connect` preflights routing/trust setup before starting transparent modes; transparent `CONNECT` traffic still fails closed if runtime readiness is lost after startup.
+- VPN/TUN routing, HTTP/2 transparent interception, WebSockets, and arbitrary web traffic rewriting remain parked.
 
 ## Tests
 

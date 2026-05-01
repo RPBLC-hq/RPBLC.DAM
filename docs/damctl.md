@@ -9,6 +9,8 @@ The current slice does not start or stop services. It answers these questions:
 - can configured failure modes reduce protection guarantees?
 - what daemon state file and process does the local lifecycle layer see?
 - what local TLS trust readiness state is visible without changing system trust?
+- is local macOS PAC routing state installed without changing system routes?
+- what is the next safe setup action for the local connect flow?
 - are known integration profiles applied, unapplied, or modified?
 - is the local config valid for the current implementation?
 - what MCP config should an agent use for DAM?
@@ -21,6 +23,8 @@ cargo run -p damctl -- doctor
 cargo run -p damctl -- bypass status
 cargo run -p damctl -- daemon inspect
 cargo run -p damctl -- trust inspect
+cargo run -p damctl -- network inspect
+cargo run -p damctl -- setup plan
 cargo run -p damctl -- integrations check
 cargo run -p damctl -- config check
 cargo run -p damctl -- mcp config
@@ -32,6 +36,7 @@ With an explicit config:
 cargo run -p damctl -- status --config dam.example.toml
 cargo run -p damctl -- doctor --config dam.example.toml
 cargo run -p damctl -- bypass status --config dam.example.toml
+cargo run -p damctl -- setup plan --config dam.example.toml
 cargo run -p damctl -- config check --config dam.example.toml
 cargo run -p damctl -- mcp config --config dam.example.toml
 ```
@@ -51,6 +56,8 @@ cargo run -p damctl -- doctor --json
 cargo run -p damctl -- bypass status --json
 cargo run -p damctl -- daemon inspect --json
 cargo run -p damctl -- trust inspect --json
+cargo run -p damctl -- network inspect --json
+cargo run -p damctl -- setup plan --json
 cargo run -p damctl -- integrations check --json
 cargo run -p damctl -- config check --json
 ```
@@ -83,6 +90,7 @@ It checks:
 - vault/log/consent compatibility and local SQLite openability;
 - router target selection, provider support, auth mode, and failure mode;
 - proxy runtime `/health` when proxy is enabled;
+- default setup-plan readiness for the local explicit-proxy connect flow;
 - integration profile apply state summary;
 - launcher readiness for `dam claude`, `dam codex --api`, and fail-closed Codex ChatGPT-login mode.
 
@@ -92,7 +100,7 @@ Exit codes:
 - `1`: doctor state is `unhealthy`.
 - `2`: command arguments or config loading failed.
 
-Use `--proxy-url` to check a specific running proxy endpoint instead of the configured `proxy.listen`.
+Use `--proxy-url` to check a specific running proxy endpoint instead of the configured `proxy.listen`. Use `--state-dir PATH` to evaluate setup-plan and integration readiness against a non-default daemon/integration state directory.
 
 ## `bypass status`
 
@@ -133,7 +141,7 @@ It reports:
 - lifecycle state: `connected`, `stale`, or `disconnected`;
 - state directory and state file path;
 - whether the recorded PID is running when a state file exists;
-- proxy URL, target, provider, upstream, network mode, transparent AI route count, trust mode, local CA installed state, local database paths, and inbound resolution setting from the state file.
+- proxy URL, target, provider, upstream, network mode, transparent AI route count, per-route routing readiness, trust mode, local CA installed state, per-route trust readiness, per-route interception readiness, local database paths, and inbound resolution setting from the state file.
 
 Use `--state-dir PATH` to inspect a non-default state directory, for example in tests or support sessions.
 
@@ -144,7 +152,7 @@ Exit codes:
 
 ## `trust inspect`
 
-`trust inspect` reports local TLS trust readiness metadata without installing certificates or changing system trust.
+`trust inspect` reports local TLS trust readiness metadata without installing certificates or changing system trust. Mutating trust commands live under `dam trust` and preview by default.
 
 ```bash
 cargo run -p damctl -- trust inspect
@@ -157,7 +165,9 @@ It reports:
 - trust mode;
 - platform trust-store tag;
 - whether a local CA record is installed;
+- local CA artifact paths when artifacts exist;
 - trusted AI host count;
+- per-route trust readiness for the built-in and configured AI routes recorded in daemon state;
 - trust actions and whether each is implemented or planned.
 
 Use `--state-dir PATH` to inspect a non-default daemon state directory.
@@ -166,6 +176,66 @@ Exit codes:
 
 - `0`: trust inspection completed.
 - `2`: state path resolution failed or the daemon state file was unreadable.
+
+## `network inspect`
+
+`network inspect` reports local network routing readiness without installing or removing system routes.
+
+```bash
+cargo run -p damctl -- network inspect
+cargo run -p damctl -- network inspect --json
+cargo run -p damctl -- network inspect --config dam.example.toml --json
+```
+
+It reports:
+
+- DAM state directory;
+- macOS PAC rollback record path;
+- generated PAC path;
+- whether DAM sees system-proxy routing installed;
+- built-in AI hosts plus configured `[network.ai_routes]` when `--config` is supplied;
+- per-route system-proxy readiness.
+
+Use `--state-dir PATH` to inspect a non-default daemon state directory. Use `--config PATH` to preview route readiness with configured AI route overlays before starting the daemon or applying system proxy routing.
+
+Exit codes:
+
+- `0`: network routing inspection completed.
+- `2`: state path resolution failed.
+
+## `setup plan`
+
+`setup plan` reports the next read-only setup action for the local connect flow. It does not apply profiles, install system proxy routing, install local CA trust, start the daemon, or repair state.
+
+```bash
+cargo run -p damctl -- setup plan
+cargo run -p damctl -- setup plan --json
+cargo run -p damctl -- setup plan --config dam.example.toml --network-mode system_proxy --trust-mode local_ca
+```
+
+It reports:
+
+- overall state: `ready`, `needs_action`, or `blocked`;
+- DAM state directory and integration state directory;
+- effective proxy URL;
+- requested network mode and trust mode;
+- active integration profile when one is selected;
+- setup steps for profile apply, system proxy routing, local CA trust, and daemon lifecycle.
+
+Each step reports:
+
+- `done`: already ready.
+- `needed`: a next action can continue setup.
+- `blocked`: review or rollback is needed first.
+- `skipped`: the step is not required for the selected mode.
+
+Use `--network-mode explicit_proxy|system_proxy|tun` and `--trust-mode disabled|local_ca` to preview a richer local setup path. `system_proxy` and `local_ca` steps are marked as system-changing when they require installation. `tun` currently reports blocked because full-device routing is parked.
+
+Exit codes:
+
+- `0`: setup plan is `ready`.
+- `1`: setup plan is `needs_action` or `blocked`.
+- `2`: command arguments, config loading, or setup inspection failed.
 
 ## `integrations check`
 

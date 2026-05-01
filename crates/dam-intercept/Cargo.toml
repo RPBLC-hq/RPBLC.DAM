@@ -1,11 +1,11 @@
 [package]
-name = "dam-router"
+name = "dam-intercept"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
-version.workspace = true
 
 [dependencies]
-dam-config.workspace = true
 dam-net.workspace = true
-http.workspace = true
+dam-trust.workspace = true
+serde.workspace = true
 thiserror.workspace = true

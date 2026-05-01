@@ -23,8 +23,11 @@ const RPBLC_FAVICON_SVG: &str = include_str!("../assets/favicon.svg");
 const DAM_BIN_ENV: &str = "DAM_BIN";
 const DAM_WEB_SHELL_ENV: &str = "DAM_WEB_SHELL";
 const DAM_WEB_SHELL_TRAY: &str = "tray";
+const DAM_WEB_TRAY_POST_TOKEN_ENV: &str = "DAM_WEB_TRAY_POST_TOKEN";
 const DAM_TRAY_OPEN_RPBLC_MESSAGE: &str = "dam-tray:open-rpblc";
+const DAM_TRAY_CONNECT_MESSAGE: &str = "dam-tray:connect";
 const DAM_TRAY_QUIT_MESSAGE: &str = "dam-tray:quit";
+const CONNECT_SYSTEM_CONFIRM_FIELD: &str = "confirm_system_changes";
 
 #[derive(Clone)]
 struct AppState {
@@ -116,8 +119,11 @@ struct ConnectDashboard {
     proxy_url: String,
     daemon: Option<dam_daemon::DaemonState>,
     proxy: Option<dam_api::ProxyReport>,
-    active_profile: Option<dam_integrations::ActiveProfileState>,
+    setup_plan: Option<dam_diagnostics::SetupPlan>,
+    setup_plan_error: Option<String>,
     active_profile_error: Option<String>,
+    enabled_profiles: Vec<dam_integrations::EnabledIntegrationState>,
+    enabled_profiles_error: Option<String>,
     active_profile_apply: Option<dam_integrations::IntegrationApplyInspection>,
     profiles: Vec<ProfileCard>,
     notice: Option<String>,
@@ -130,6 +136,15 @@ struct ProfileCard {
     apply: Option<dam_integrations::IntegrationApplyInspection>,
     inspection_error: Option<String>,
     active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectSetupAction<'a> {
+    Ready,
+    ApplyProfile,
+    RunSetupCommand(&'a dam_diagnostics::SetupStep),
+    RunDaemon,
+    Blocked(&'a dam_diagnostics::SetupStep),
 }
 
 #[tokio::main]
@@ -232,6 +247,8 @@ fn router(state: AppState) -> Router {
     Router::new()
         .route("/connect", get(connect_dashboard))
         .route("/connect/action", post(connect_action))
+        .route("/settings", get(settings_dashboard))
+        .route("/settings/integrations", post(settings_action))
         .route("/", get(home))
         .route("/vault", get(vault))
         .route("/vault/detail/:key", get(vault_detail))
@@ -255,7 +272,8 @@ async fn require_local_browser_context(request: Request, next: Next) -> Response
         return (StatusCode::FORBIDDEN, "invalid Host header").into_response();
     }
 
-    if request.method() == Method::POST && !post_origin_is_local(request.headers()) {
+    if request.method() == Method::POST && !post_context_is_local(request.headers(), request.uri())
+    {
         return (StatusCode::FORBIDDEN, "invalid request origin").into_response();
     }
 
@@ -276,6 +294,25 @@ fn post_origin_is_local(headers: &HeaderMap) -> bool {
         .and_then(|value| value.to_str().ok())
         .and_then(origin_host)
         .is_some_and(is_loopback_host)
+}
+
+fn post_context_is_local(headers: &HeaderMap, uri: &axum::http::Uri) -> bool {
+    post_origin_is_local(headers)
+        || tray_post_token_is_valid(
+            uri.query(),
+            env::var(DAM_WEB_TRAY_POST_TOKEN_ENV).ok().as_deref(),
+        )
+}
+
+fn tray_post_token_is_valid(query: Option<&str>, expected: Option<&str>) -> bool {
+    let Some(expected) = expected.filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    query
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .filter_map(|pair| pair.split_once('='))
+        .any(|(name, value)| name == "tray_token" && value == expected)
 }
 
 fn origin_host(value: &str) -> Option<&str> {
@@ -373,8 +410,9 @@ async fn connect_dashboard(
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let notice = params.get("notice").cloned();
+    let error = params.get("error").cloned();
     Html(render_connect_dashboard(
-        &build_connect_dashboard(&state, notice, None).await,
+        &build_connect_dashboard(&state, notice, error).await,
     ))
     .into_response()
 }
@@ -389,13 +427,30 @@ async fn connect_action(State(state): State<AppState>, body: Bytes) -> Response 
             };
             set_active_profile(profile_id).map(|_| "profile selected".to_string())
         }
+        "enable_profile" => {
+            let Some(profile_id) = form.get("profile_id") else {
+                return (StatusCode::BAD_REQUEST, "profile_id is required").into_response();
+            };
+            set_profile_enabled(profile_id, true).map(|_| "profile enabled".to_string())
+        }
+        "disable_profile" => {
+            let Some(profile_id) = form.get("profile_id") else {
+                return (StatusCode::BAD_REQUEST, "profile_id is required").into_response();
+            };
+            set_profile_enabled(profile_id, false).map(|_| "profile disabled".to_string())
+        }
         "clear_profile" => clear_active_profile().map(|_| "profile cleared".to_string()),
-        "apply_profile" => apply_active_profile(&state).map(|_| "setup applied".to_string()),
-        "rollback_profile" => rollback_active_profile().map(|_| "setup rolled back".to_string()),
-        "connect" => run_dam_connect(&state)
+        "apply_profile" => apply_enabled_profiles(&state).map(|_| "setup applied".to_string()),
+        "rollback_profile" => rollback_enabled_profiles().map(|_| "setup rolled back".to_string()),
+        "connect" => advance_connect_setup(
+            &state,
+            form.get(CONNECT_SYSTEM_CONFIRM_FIELD).map(String::as_str) == Some("yes"),
+        )
+        .await
+        .map(|_| "DAM connected".to_string()),
+        "disconnect" => disconnect_protection(&state)
             .await
-            .map(|_| "DAM connected".to_string()),
-        "disconnect" => disconnect_daemon().map(|_| "DAM disconnected".to_string()),
+            .map(|_| "DAM disconnected".to_string()),
         _ => Err(format!("unknown connect action: {action}")),
     };
 
@@ -413,6 +468,45 @@ async fn connect_action(State(state): State<AppState>, body: Bytes) -> Response 
             )
                 .into_response()
         }
+    }
+}
+
+async fn settings_dashboard(Query(params): Query<HashMap<String, String>>) -> Response {
+    let notice = params.get("notice").cloned();
+    let error = params.get("error").cloned();
+    Html(render_settings_dashboard(notice, error)).into_response()
+}
+
+async fn settings_action(body: Bytes) -> Response {
+    let form = parse_form(&body);
+    let action = form.get("action").map(String::as_str).unwrap_or("");
+    let result = match action {
+        "enable_profile" => {
+            let Some(profile_id) = form.get("profile_id") else {
+                return (StatusCode::BAD_REQUEST, "profile_id is required").into_response();
+            };
+            set_profile_enabled(profile_id, true).map(|_| "profile enabled".to_string())
+        }
+        "disable_profile" => {
+            let Some(profile_id) = form.get("profile_id") else {
+                return (StatusCode::BAD_REQUEST, "profile_id is required").into_response();
+            };
+            set_profile_enabled(profile_id, false).map(|_| "profile disabled".to_string())
+        }
+        _ => Err(format!("unknown settings action: {action}")),
+    };
+
+    match result {
+        Ok(message) => Redirect::to(&format!(
+            "/settings?notice={}",
+            form_url_encode_component(&message)
+        ))
+        .into_response(),
+        Err(error) => Redirect::to(&format!(
+            "/settings?error={}",
+            form_url_encode_component(&error)
+        ))
+        .into_response(),
     }
 }
 
@@ -953,7 +1047,8 @@ async fn build_connect_dashboard(
     notice: Option<String>,
     error: Option<String>,
 ) -> ConnectDashboard {
-    let (active_profile, active_profile_error) = read_active_profile_for_web();
+    let (_, active_profile_error) = read_active_profile_for_web();
+    let (enabled_profiles, enabled_profiles_error) = read_enabled_profiles_for_web();
     let daemon_status = dam_daemon::daemon_status();
     let (daemon, mut proxy, daemon_error) = match daemon_status {
         Ok(dam_daemon::DaemonStatus::Connected(daemon)) => {
@@ -983,35 +1078,52 @@ async fn build_connect_dashboard(
         .as_ref()
         .map(|daemon| daemon.proxy_url.clone())
         .unwrap_or_else(|| configured_proxy_url(&state.config));
-    let profiles = profile_cards(&proxy_url, active_profile.as_ref());
-    let active_profile_apply = active_profile.as_ref().and_then(|active| {
+    let profiles = profile_cards(&proxy_url, &enabled_profiles);
+    let primary_enabled_profile = enabled_profiles.first();
+    let active_profile_apply = primary_enabled_profile.and_then(|enabled| {
         profiles
             .iter()
-            .find(|card| card.profile.id == active.profile_id)
+            .find(|card| card.profile.id == enabled.profile_id)
             .and_then(|card| card.apply.clone())
     });
-    let active_profile_inspection_error = active_profile.as_ref().and_then(|active| {
+    let active_profile_inspection_error = primary_enabled_profile.and_then(|enabled| {
         profiles
             .iter()
-            .find(|card| card.profile.id == active.profile_id)
+            .find(|card| card.profile.id == enabled.profile_id)
             .and_then(|card| card.inspection_error.clone())
     });
-    let state_tag = if active_profile_inspection_error.is_some() {
+    let (setup_plan, setup_plan_error) = connect_setup_plan(state)
+        .map_or_else(|error| (None, Some(error)), |plan| (Some(plan), None));
+    let state_tag = if active_profile_inspection_error.is_some()
+        || enabled_profiles_error.is_some()
+        || setup_plan_error.is_some()
+    {
         DashboardState::Degraded
     } else {
-        dashboard_state(
-            daemon.as_ref(),
-            proxy.as_ref(),
-            active_profile.as_ref(),
-            active_profile_apply.as_ref(),
-        )
+        dashboard_state(daemon.as_ref(), proxy.as_ref(), setup_plan.as_ref())
     };
     let mut message = dashboard_message(state_tag).to_string();
     if let Some(error) = daemon_error
         .or(active_profile_error.clone())
+        .or(enabled_profiles_error.clone())
         .or(active_profile_inspection_error)
+        .or(setup_plan_error.clone())
     {
         message = error;
+    }
+    if matches!(state_tag, DashboardState::NeedsSetup)
+        && let Some(step) = first_non_daemon_setup_step(
+            setup_plan.as_ref(),
+            dam_diagnostics::SetupStepStatus::Blocked,
+        )
+        .or_else(|| {
+            first_non_daemon_setup_step(
+                setup_plan.as_ref(),
+                dam_diagnostics::SetupStepStatus::Needed,
+            )
+        })
+    {
+        message = step.message.clone();
     }
 
     ConnectDashboard {
@@ -1020,8 +1132,11 @@ async fn build_connect_dashboard(
         proxy_url,
         daemon,
         proxy,
-        active_profile,
+        setup_plan,
+        setup_plan_error,
         active_profile_error,
+        enabled_profiles,
+        enabled_profiles_error,
         active_profile_apply,
         profiles,
         notice,
@@ -1031,15 +1146,15 @@ async fn build_connect_dashboard(
 
 fn profile_cards(
     proxy_url: &str,
-    active_profile: Option<&dam_integrations::ActiveProfileState>,
+    enabled_profiles: &[dam_integrations::EnabledIntegrationState],
 ) -> Vec<ProfileCard> {
     let state_dir = integration_state_dir();
     dam_integrations::profiles(proxy_url)
         .into_iter()
         .map(|profile| {
-            let active = active_profile
-                .map(|active| active.profile_id == profile.id)
-                .unwrap_or(false);
+            let active = enabled_profiles
+                .iter()
+                .any(|enabled| enabled.profile_id == profile.id);
             let (apply, inspection_error) = match &state_dir {
                 Ok(state_dir) => match default_integration_target_path(&profile.id, state_dir)
                     .and_then(|target_path| {
@@ -1068,31 +1183,24 @@ fn profile_cards(
 fn dashboard_state(
     daemon: Option<&dam_daemon::DaemonState>,
     proxy: Option<&dam_api::ProxyReport>,
-    active_profile: Option<&dam_integrations::ActiveProfileState>,
-    active_profile_apply: Option<&dam_integrations::IntegrationApplyInspection>,
+    setup_plan: Option<&dam_diagnostics::SetupPlan>,
 ) -> DashboardState {
-    if active_profile.is_some()
-        && matches!(
-            active_profile_apply.map(|apply| apply.status),
-            Some(dam_integrations::IntegrationApplyStatus::NeedsApply)
-        )
-    {
-        return DashboardState::NeedsSetup;
-    }
-    if active_profile.is_some()
-        && matches!(
-            active_profile_apply.map(|apply| apply.status),
-            Some(dam_integrations::IntegrationApplyStatus::Modified)
-        )
-    {
-        return DashboardState::Degraded;
-    }
     match (daemon, proxy) {
         (Some(_), Some(report)) if report.state == dam_api::ProxyState::Protected => {
-            DashboardState::Protected
+            return DashboardState::Protected;
         }
-        (Some(_), _) => DashboardState::Degraded,
-        (None, _) => DashboardState::Disconnected,
+        (Some(_), _) => return DashboardState::Degraded,
+        (None, _) => {}
+    }
+    if first_non_daemon_setup_step(setup_plan, dam_diagnostics::SetupStepStatus::Blocked).is_some()
+    {
+        DashboardState::Degraded
+    } else if first_non_daemon_setup_step(setup_plan, dam_diagnostics::SetupStepStatus::Needed)
+        .is_some()
+    {
+        DashboardState::NeedsSetup
+    } else {
+        DashboardState::Disconnected
     }
 }
 
@@ -1105,12 +1213,71 @@ fn dashboard_message(state: DashboardState) -> &'static str {
     }
 }
 
+fn connect_network_mode() -> dam_net::CaptureMode {
+    dam_net::CaptureMode::SystemProxy
+}
+
+fn connect_trust_mode() -> dam_trust::TrustMode {
+    dam_trust::TrustMode::LocalCa
+}
+
+fn connect_setup_plan(state: &AppState) -> Result<dam_diagnostics::SetupPlan, String> {
+    let state_dir = dam_daemon::state_paths()
+        .map(|paths| paths.state_dir)
+        .map_err(|error| error.to_string())?;
+    dam_diagnostics::setup_plan(
+        &state.config,
+        &dam_diagnostics::SetupPlanOptions {
+            state_dir: Some(state_dir),
+            config_path: state.config_path.clone(),
+            proxy_url: Some(configured_proxy_url(&state.config)),
+            network_mode: connect_network_mode(),
+            trust_mode: connect_trust_mode(),
+        },
+    )
+}
+
+fn first_non_daemon_setup_step(
+    setup_plan: Option<&dam_diagnostics::SetupPlan>,
+    status: dam_diagnostics::SetupStepStatus,
+) -> Option<&dam_diagnostics::SetupStep> {
+    setup_plan
+        .into_iter()
+        .flat_map(|plan| plan.steps.iter())
+        .find(|step| step.kind != dam_diagnostics::SetupStepKind::Daemon && step.status == status)
+}
+
+fn connect_requires_system_confirmation(view: &ConnectDashboard) -> bool {
+    view.setup_plan
+        .as_ref()
+        .map(|plan| {
+            plan.steps.iter().any(|step| {
+                step.status == dam_diagnostics::SetupStepStatus::Needed
+                    && step.changes_system
+                    && step.requires_confirmation
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn read_active_profile_for_web() -> (Option<dam_integrations::ActiveProfileState>, Option<String>) {
     match integration_state_dir()
         .and_then(|state_dir| dam_integrations::read_active_profile(&state_dir))
     {
         Ok(profile) => (profile, None),
         Err(error) => (None, Some(error)),
+    }
+}
+
+fn read_enabled_profiles_for_web() -> (
+    Vec<dam_integrations::EnabledIntegrationState>,
+    Option<String>,
+) {
+    match integration_state_dir()
+        .and_then(|state_dir| dam_integrations::read_effective_enabled_integrations(&state_dir))
+    {
+        Ok(profiles) => (profiles, None),
+        Err(error) => (Vec::new(), Some(error)),
     }
 }
 
@@ -1135,24 +1302,35 @@ fn set_active_profile(profile_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn set_profile_enabled(profile_id: &str, enabled: bool) -> Result<(), String> {
+    let state_dir = integration_state_dir()?;
+    dam_integrations::set_integration_enabled(profile_id, enabled, &state_dir)?;
+    Ok(())
+}
+
 fn clear_active_profile() -> Result<(), String> {
     let state_dir = integration_state_dir()?;
     dam_integrations::clear_active_profile(&state_dir)?;
     Ok(())
 }
 
-fn apply_active_profile(state: &AppState) -> Result<(), String> {
+fn apply_enabled_profiles(state: &AppState) -> Result<(), String> {
     let state_dir = integration_state_dir()?;
-    let active = dam_integrations::read_active_profile(&state_dir)?
-        .ok_or_else(|| "select a profile before applying setup".to_string())?;
+    let profiles = dam_integrations::read_effective_enabled_integrations(&state_dir)?;
+    if profiles.is_empty() {
+        return Err("enable an app before applying setup".to_string());
+    }
     let proxy_url = connected_proxy_url().unwrap_or_else(|| configured_proxy_url(&state.config));
-    let target_path = default_integration_target_path(&active.profile_id, &state_dir)?;
-    let inspection = dam_integrations::inspect_apply(
-        &active.profile_id,
-        &proxy_url,
-        target_path.clone(),
-        &state_dir,
-    )?;
+    for profile in profiles {
+        apply_profile_by_id(&profile.profile_id, &proxy_url, &state_dir)?;
+    }
+    Ok(())
+}
+
+fn apply_profile_by_id(profile_id: &str, proxy_url: &str, state_dir: &Path) -> Result<(), String> {
+    let target_path = default_integration_target_path(profile_id, state_dir)?;
+    let inspection =
+        dam_integrations::inspect_apply(profile_id, proxy_url, target_path.clone(), state_dir)?;
     if let Some(error) = &inspection.record_error {
         return Err(format!(
             "setup cannot be applied safely because rollback state needs attention: {error}"
@@ -1164,23 +1342,108 @@ fn apply_active_profile(state: &AppState) -> Result<(), String> {
                 .to_string(),
         );
     }
-    let prepared = dam_integrations::prepare_apply(&active.profile_id, &proxy_url, target_path)?;
-    dam_integrations::run_apply(prepared, false, &state_dir)?;
+    let prepared = dam_integrations::prepare_apply(profile_id, proxy_url, target_path)?;
+    dam_integrations::run_apply(prepared, false, state_dir)?;
     Ok(())
 }
 
-fn rollback_active_profile() -> Result<(), String> {
+fn rollback_enabled_profiles() -> Result<(), String> {
     let state_dir = integration_state_dir()?;
-    let active = dam_integrations::read_active_profile(&state_dir)?
-        .ok_or_else(|| "select a profile before rolling back setup".to_string())?;
-    dam_integrations::rollback_profile(&active.profile_id, &state_dir)?;
+    let profiles = dam_integrations::read_effective_enabled_integrations(&state_dir)?;
+    if profiles.is_empty() {
+        return Err("enable an app before rolling back setup".to_string());
+    }
+    for profile in profiles {
+        dam_integrations::rollback_profile(&profile.profile_id, &state_dir)?;
+    }
     Ok(())
+}
+
+async fn advance_connect_setup(
+    state: &AppState,
+    system_changes_confirmed: bool,
+) -> Result<(), String> {
+    for _ in 0..8 {
+        let plan = connect_setup_plan(state)?;
+        match next_connect_setup_action(&plan) {
+            ConnectSetupAction::Ready => return Ok(()),
+            ConnectSetupAction::ApplyProfile => {
+                apply_enabled_profiles(state)?;
+            }
+            ConnectSetupAction::RunSetupCommand(step) => {
+                if step.changes_system && !system_changes_confirmed {
+                    return Err(system_confirmation_message(step.kind).to_string());
+                }
+                run_dam_setup_command(step, Duration::from_secs(180)).await?;
+            }
+            ConnectSetupAction::RunDaemon => return run_dam_connect(state).await,
+            ConnectSetupAction::Blocked(step) => return Err(step.message.clone()),
+        }
+    }
+
+    Err("setup did not settle after several actions".to_string())
+}
+
+fn next_connect_setup_action(plan: &dam_diagnostics::SetupPlan) -> ConnectSetupAction<'_> {
+    let step = plan
+        .steps
+        .iter()
+        .find(|step| step.status == dam_diagnostics::SetupStepStatus::Blocked)
+        .or_else(|| {
+            plan.steps
+                .iter()
+                .find(|step| step.status == dam_diagnostics::SetupStepStatus::Needed)
+        });
+    let Some(step) = step else {
+        return ConnectSetupAction::Ready;
+    };
+
+    match (step.kind, step.status) {
+        (_, dam_diagnostics::SetupStepStatus::Blocked) => ConnectSetupAction::Blocked(step),
+        (
+            dam_diagnostics::SetupStepKind::ProfileApply,
+            dam_diagnostics::SetupStepStatus::Needed,
+        ) => ConnectSetupAction::ApplyProfile,
+        (
+            dam_diagnostics::SetupStepKind::SystemProxy | dam_diagnostics::SetupStepKind::LocalCa,
+            dam_diagnostics::SetupStepStatus::Needed,
+        ) => ConnectSetupAction::RunSetupCommand(step),
+        (dam_diagnostics::SetupStepKind::Daemon, dam_diagnostics::SetupStepStatus::Needed) => {
+            ConnectSetupAction::RunDaemon
+        }
+        _ => ConnectSetupAction::Ready,
+    }
+}
+
+fn system_confirmation_message(kind: dam_diagnostics::SetupStepKind) -> &'static str {
+    match kind {
+        dam_diagnostics::SetupStepKind::SystemProxy => "confirm system routing before connecting",
+        dam_diagnostics::SetupStepKind::LocalCa => "confirm local trust setup before connecting",
+        _ => "confirm system changes before connecting",
+    }
+}
+
+async fn run_dam_setup_command(
+    step: &dam_diagnostics::SetupStep,
+    timeout: Duration,
+) -> Result<(), String> {
+    let command = step
+        .command
+        .as_ref()
+        .ok_or_else(|| format!("setup step {} has no command", step.kind.tag()))?;
+    if command.first().map(String::as_str) != Some("dam") {
+        return Err(format!(
+            "setup step {} uses an unsupported command",
+            step.kind.tag()
+        ));
+    }
+    run_dam_command_with_timeout(command[1..].to_vec(), timeout).await
 }
 
 async fn run_dam_connect(state: &AppState) -> Result<(), String> {
-    let has_active_profile = read_active_profile_for_web().0.is_some();
+    let has_enabled_profiles = !read_enabled_profiles_for_web().0.is_empty();
     let mut args = vec!["connect".to_string()];
-    if has_active_profile {
+    if has_enabled_profiles {
         args.push("--apply".to_string());
     }
     if let Some(config_path) = &state.config_path {
@@ -1205,11 +1468,29 @@ async fn run_dam_connect(state: &AppState) -> Result<(), String> {
             state.config.consent.sqlite_path.display().to_string(),
         ]);
     }
+    args.extend([
+        "--network-mode".to_string(),
+        connect_network_mode().tag().to_string(),
+        "--trust-mode".to_string(),
+        connect_trust_mode().tag().to_string(),
+    ]);
     run_dam_command(args).await
 }
 
 async fn run_dam_command(args: Vec<String>) -> Result<(), String> {
-    let output = tokio::time::timeout(Duration::from_secs(15), async {
+    run_dam_command_with_timeout(args, Duration::from_secs(30)).await
+}
+
+fn system_proxy_remove_args() -> Vec<String> {
+    vec![
+        "network".to_string(),
+        "remove-system-proxy".to_string(),
+        "--yes".to_string(),
+    ]
+}
+
+async fn run_dam_command_with_timeout(args: Vec<String>, timeout: Duration) -> Result<(), String> {
+    let output = tokio::time::timeout(timeout, async {
         TokioCommand::new(dam_binary()).args(&args).output().await
     })
     .await
@@ -1236,6 +1517,40 @@ async fn run_dam_command(args: Vec<String>) -> Result<(), String> {
 
 fn dam_binary() -> OsString {
     env::var_os(DAM_BIN_ENV).unwrap_or_else(|| OsString::from("dam"))
+}
+
+async fn disconnect_protection(state: &AppState) -> Result<(), String> {
+    run_dam_command_with_timeout(system_proxy_remove_args(), Duration::from_secs(180))
+        .await
+        .map_err(|error| format!("failed to restore system proxy routing: {error}"))?;
+    rollback_enabled_profiles_if_available(state)
+        .map_err(|error| format!("failed to restore enabled profile setup: {error}"))?;
+    disconnect_daemon()
+}
+
+fn rollback_enabled_profiles_if_available(state: &AppState) -> Result<(), String> {
+    let state_dir = integration_state_dir()?;
+    let profiles = dam_integrations::read_effective_enabled_integrations(&state_dir)?;
+    if profiles.is_empty() {
+        return Ok(());
+    }
+    let proxy_url = connected_proxy_url().unwrap_or_else(|| configured_proxy_url(&state.config));
+    for profile in profiles {
+        let target_path = default_integration_target_path(&profile.profile_id, &state_dir)?;
+        let inspection = dam_integrations::inspect_apply(
+            &profile.profile_id,
+            &proxy_url,
+            target_path,
+            &state_dir,
+        )?;
+        if let Some(error) = inspection.record_error {
+            return Err(format!("rollback state needs attention: {error}"));
+        }
+        if inspection.rollback_available {
+            dam_integrations::rollback_profile(&profile.profile_id, &state_dir)?;
+        }
+    }
+    Ok(())
 }
 
 fn disconnect_daemon() -> Result<(), String> {
@@ -1338,16 +1653,7 @@ fn render_logs_with_order(log_path: &Path, entries: &[LogEntry], order: LogOrder
 }
 
 fn render_connect_dashboard(view: &ConnectDashboard) -> String {
-    let active_profile_id = view
-        .active_profile
-        .as_ref()
-        .and_then(|active| {
-            view.profiles
-                .iter()
-                .find(|card| card.profile.id == active.profile_id)
-                .map(|card| profile_display_name(&card.profile))
-        })
-        .unwrap_or("Protect Everything");
+    let active_profile_id = enabled_profiles_display(view);
     let apply_state = view
         .active_profile_apply
         .as_ref()
@@ -1358,10 +1664,10 @@ fn render_connect_dashboard(view: &ConnectDashboard) -> String {
         .as_ref()
         .and_then(|daemon| daemon.target_provider.as_deref())
         .or_else(|| {
-            view.active_profile.as_ref().and_then(|active| {
+            view.enabled_profiles.first().and_then(|enabled| {
                 view.profiles
                     .iter()
-                    .find(|card| card.profile.id == active.profile_id)
+                    .find(|card| card.profile.id == enabled.profile_id)
                     .map(|card| card.profile.provider.as_str())
             })
         })
@@ -1392,6 +1698,7 @@ fn render_connect_dashboard(view: &ConnectDashboard) -> String {
     let active_profile_warning = view
         .active_profile_error
         .as_ref()
+        .or(view.enabled_profiles_error.as_ref())
         .map(|message| render_banner("error", message))
         .unwrap_or_default();
     let diagnostics = render_dashboard_diagnostics(view);
@@ -1401,7 +1708,7 @@ fn render_connect_dashboard(view: &ConnectDashboard) -> String {
         "Connect",
         "One-click protection.",
         1,
-        "profile",
+        "apps",
         &format!(
             r#"<section class="connect-hero status-{state_class}">
       {notice}
@@ -1417,14 +1724,14 @@ fn render_connect_dashboard(view: &ConnectDashboard) -> String {
       </div>
       <dl class="connect-facts">
         <dt>Mode</dt><dd>Protect Everything</dd>
-        <dt>Profile</dt><dd>{active_profile}</dd>
+        <dt>Apps</dt><dd>{active_profile}</dd>
       </dl>
       {setup_actions}
     </section>
     <section class="connect-grid">
       <details class="connect-section profile-panel">
         <summary>
-          <span class="toggle-title">Profiles</span>
+          <span class="toggle-title">Apps</span>
           <span class="toggle-value">{active_profile}</span>
           <span class="toggle-chevron" aria-hidden="true"></span>
         </summary>
@@ -1455,7 +1762,7 @@ fn render_connect_dashboard(view: &ConnectDashboard) -> String {
             state_label = escape_html(dashboard_state_label(view.state)),
             message = escape_html(&view.message),
             primary_action = primary_action,
-            active_profile = escape_html(active_profile_id),
+            active_profile = escape_html(&active_profile_id),
             proxy_url = escape_html(&view.proxy_url),
             provider = escape_html(target_provider),
             upstream = escape_html(upstream),
@@ -1471,6 +1778,110 @@ fn render_connect_dashboard(view: &ConnectDashboard) -> String {
     )
 }
 
+fn render_settings_dashboard(notice: Option<String>, error: Option<String>) -> String {
+    let (enabled_profiles, enabled_error) = read_enabled_profiles_for_web();
+    let proxy_url = dam_integrations::DEFAULT_PROXY_URL.to_string();
+    let profiles = profile_cards(&proxy_url, &enabled_profiles);
+    let rows = profiles
+        .iter()
+        .map(render_settings_profile)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let notice = notice
+        .as_ref()
+        .map(|message| render_banner("notice", message))
+        .unwrap_or_default();
+    let error = error
+        .as_ref()
+        .or(enabled_error.as_ref())
+        .map(|message| render_banner("error", message))
+        .unwrap_or_default();
+
+    render_shell(
+        "DAM Settings",
+        "Settings",
+        "App routing and harness configs.",
+        enabled_profiles.len(),
+        "enabled",
+        &format!(
+            r#"<section class="connect-section settings-panel">
+      {notice}
+      {error}
+      <div class="section-title">Apps</div>
+      <div class="profile-list">{rows}</div>
+    </section>"#,
+            notice = notice,
+            error = error,
+            rows = rows,
+        ),
+    )
+}
+
+fn render_settings_profile(card: &ProfileCard) -> String {
+    let apply_status = card
+        .apply
+        .as_ref()
+        .map(|apply| integration_apply_status_tag(apply.status))
+        .unwrap_or("unknown");
+    let action = if card.active {
+        ("disable_profile", "Disable", "enabled")
+    } else {
+        ("enable_profile", "Enable", "disabled")
+    };
+    let settings = card
+        .profile
+        .settings
+        .iter()
+        .map(|setting| {
+            format!(
+                "<div><span>{}</span><strong>{}</strong></div>",
+                escape_html(&setting.key),
+                escape_html(&setting.value)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let settings = if settings.is_empty() {
+        "<p class=\"quiet\">No app config is written by this profile.</p>".to_string()
+    } else {
+        format!("<div class=\"settings-list\">{settings}</div>")
+    };
+
+    format!(
+        r#"<article class="profile-option settings-profile{selected}">
+      <div class="profile-select-row">
+        <span class="profile-name">{name}</span>
+        <span class="profile-summary">{summary}</span>
+        <span class="profile-state">{state}</span>
+      </div>
+      <form class="settings-profile-action" method="post" action="/settings/integrations">
+        <input type="hidden" name="action" value="{action}">
+        <input type="hidden" name="profile_id" value="{profile_id}">
+        <button class="action-button" type="submit">{label}</button>
+      </form>
+      <div class="profile-more-panel settings-profile-detail">
+        <dl>
+          <dt>ID</dt><dd>{id}</dd>
+          <dt>Provider</dt><dd>{provider}</dd>
+          <dt>Setup</dt><dd>{apply_status}</dd>
+        </dl>
+        {settings}
+      </div>
+    </article>"#,
+        selected = if card.active { " selected" } else { "" },
+        name = escape_html(profile_display_name(&card.profile)),
+        summary = escape_html(profile_display_summary(&card.profile)),
+        state = action.2,
+        action = action.0,
+        label = action.1,
+        profile_id = escape_html(&card.profile.id),
+        id = escape_html(&card.profile.id),
+        provider = escape_html(&card.profile.provider),
+        apply_status = escape_html(apply_status),
+        settings = settings,
+    )
+}
+
 fn render_primary_connect_action(view: &ConnectDashboard) -> String {
     if view.daemon.is_some() {
         return concat!(
@@ -1480,42 +1891,44 @@ fn render_primary_connect_action(view: &ConnectDashboard) -> String {
         )
         .to_string();
     }
-    if view.active_profile.is_some() && view.active_profile_apply.is_none() {
+    if view.setup_plan_error.is_some()
+        || first_non_daemon_setup_step(
+            view.setup_plan.as_ref(),
+            dam_diagnostics::SetupStepStatus::Blocked,
+        )
+        .is_some()
+    {
         return r#"<button class="connect-button" type="button" disabled>Review Setup</button>"#
             .to_string();
     }
-    if matches!(
-        view.active_profile_apply.as_ref().map(|apply| apply.status),
-        Some(dam_integrations::IntegrationApplyStatus::Modified)
-    ) {
+    if !view.enabled_profiles.is_empty() && view.active_profile_apply.is_none() {
         return r#"<button class="connect-button" type="button" disabled>Review Setup</button>"#
             .to_string();
     }
+    let system_confirm = if connect_requires_system_confirmation(view) {
+        format!(
+            r#"<button class="connect-button" type="submit" name="{field}" value="yes" data-confirm="Allow DAM to update local network and trust settings?">Connect</button>"#,
+            field = CONNECT_SYSTEM_CONFIRM_FIELD
+        )
+    } else {
+        r#"<button class="connect-button" type="submit">Connect</button>"#.to_string()
+    };
     concat!(
         r#"<form method="post" action="/connect/action">"#,
-        r#"<input type="hidden" name="action" value="connect">"#,
-        r#"<button class="connect-button" type="submit">Connect</button></form>"#
+        r#"<input type="hidden" name="action" value="connect">"#
     )
     .to_string()
+        + &system_confirm
+        + "</form>"
 }
 
 fn render_setup_actions(view: &ConnectDashboard) -> String {
-    let Some(apply) = &view.active_profile_apply else {
-        return String::new();
-    };
-    let apply_button = if apply.status == dam_integrations::IntegrationApplyStatus::Modified
-        || apply.record_error.is_some()
+    let rollback_button = if view
+        .active_profile_apply
+        .as_ref()
+        .map(|apply| apply.rollback_available)
+        .unwrap_or(false)
     {
-        r#"<button class="action-button" type="button" disabled>Apply Setup</button>"#.to_string()
-    } else {
-        concat!(
-            r#"<form method="post" action="/connect/action">"#,
-            r#"<input type="hidden" name="action" value="apply_profile">"#,
-            r#"<button class="action-button" type="submit">Apply Setup</button></form>"#
-        )
-        .to_string()
-    };
-    let rollback_button = if apply.rollback_available {
         concat!(
             r#"<form method="post" action="/connect/action">"#,
             r#"<input type="hidden" name="action" value="rollback_profile">"#,
@@ -1525,12 +1938,42 @@ fn render_setup_actions(view: &ConnectDashboard) -> String {
     } else {
         String::new()
     };
-    format!(
-        r#"<div class="setup-actions">{apply_button}{rollback_button}<span>{target}</span></div>"#,
-        apply_button = apply_button,
-        rollback_button = rollback_button,
-        target = escape_html(&apply.target_path.display().to_string()),
+    let setup_step = first_non_daemon_setup_step(
+        view.setup_plan.as_ref(),
+        dam_diagnostics::SetupStepStatus::Blocked,
     )
+    .or_else(|| {
+        first_non_daemon_setup_step(
+            view.setup_plan.as_ref(),
+            dam_diagnostics::SetupStepStatus::Needed,
+        )
+    });
+    let step_label = setup_step
+        .map(|step| format!("Next: {}", setup_step_label(step.kind)))
+        .unwrap_or_else(|| "Ready".to_string());
+    let target = view
+        .active_profile_apply
+        .as_ref()
+        .map(|apply| apply.target_path.display().to_string())
+        .unwrap_or_else(|| "local setup".to_string());
+    if rollback_button.is_empty() && setup_step.is_none() {
+        return String::new();
+    }
+    format!(
+        r#"<div class="setup-actions">{rollback_button}<span>{step_label}</span><span>{target}</span></div>"#,
+        rollback_button = rollback_button,
+        step_label = escape_html(&step_label),
+        target = escape_html(&target),
+    )
+}
+
+fn setup_step_label(kind: dam_diagnostics::SetupStepKind) -> &'static str {
+    match kind {
+        dam_diagnostics::SetupStepKind::ProfileApply => "Profile",
+        dam_diagnostics::SetupStepKind::SystemProxy => "Routing",
+        dam_diagnostics::SetupStepKind::LocalCa => "Trust",
+        dam_diagnostics::SetupStepKind::Daemon => "Connect",
+    }
 }
 
 fn render_profile_option(card: &ProfileCard) -> String {
@@ -1549,11 +1992,15 @@ fn render_profile_option(card: &ProfileCard) -> String {
     let select_control = if card.active {
         format!(
             concat!(
-                r#"<button class="profile-select-row" type="button" disabled>"#,
+                r#"<form class="profile-select-form" method="post" action="/connect/action">"#,
+                r#"<input type="hidden" name="action" value="disable_profile">"#,
+                r#"<input type="hidden" name="profile_id" value="{profile_id}">"#,
+                r#"<button class="profile-select-row" type="submit">"#,
                 r#"<span class="profile-name">{name}</span>"#,
                 r#"<span class="profile-summary">{summary}</span>"#,
-                r#"<span class="profile-state">active</span></button>"#
+                r#"<span class="profile-state">enabled</span></button></form>"#
             ),
+            profile_id = escape_html(&card.profile.id),
             name = escape_html(profile_display_name(&card.profile)),
             summary = escape_html(profile_display_summary(&card.profile)),
         )
@@ -1561,7 +2008,7 @@ fn render_profile_option(card: &ProfileCard) -> String {
         format!(
             concat!(
                 r#"<form class="profile-select-form" method="post" action="/connect/action">"#,
-                r#"<input type="hidden" name="action" value="select_profile">"#,
+                r#"<input type="hidden" name="action" value="enable_profile">"#,
                 r#"<input type="hidden" name="profile_id" value="{profile_id}">"#,
                 r#"<button class="profile-select-row" type="submit">"#,
                 r#"<span class="profile-name">{name}</span>"#,
@@ -1613,6 +2060,22 @@ fn profile_display_summary(profile: &dam_integrations::IntegrationProfile) -> &s
     } else {
         &profile.summary
     }
+}
+
+fn enabled_profiles_display(view: &ConnectDashboard) -> String {
+    if view.enabled_profiles.is_empty() {
+        return "Protect Everything".to_string();
+    }
+    view.enabled_profiles
+        .iter()
+        .filter_map(|enabled| {
+            view.profiles
+                .iter()
+                .find(|card| card.profile.id == enabled.profile_id)
+                .map(|card| profile_display_name(&card.profile).to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn render_dashboard_diagnostics(view: &ConnectDashboard) -> String {
@@ -1842,6 +2305,10 @@ fn render_shell_with_mode(
     } else {
         ""
     };
+    let tray_post_token = env::var(DAM_WEB_TRAY_POST_TOKEN_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default();
     let tray_script = if shell_mode.is_tray() {
         r#"<script>
     (() => {
@@ -1850,6 +2317,40 @@ fn render_shell_with_mode(
           window.ipc.postMessage(message);
         }
       };
+      const trayPostToken = "{tray_post_token}";
+      if (trayPostToken) {
+        const attachTrayPostToken = (form) => {
+          if (!form || String(form.method).toLowerCase() !== "post") {
+            return;
+          }
+          const url = new URL(form.getAttribute("action") || window.location.href, window.location.href);
+          if (url.origin !== window.location.origin) {
+            return;
+          }
+          url.searchParams.set("tray_token", trayPostToken);
+          form.setAttribute("action", `${url.pathname}${url.search}${url.hash}`);
+        };
+        document.querySelectorAll("form").forEach(attachTrayPostToken);
+        document.addEventListener("submit", (event) => {
+          attachTrayPostToken(event.target);
+        }, true);
+      }
+      document.addEventListener("submit", (event) => {
+        const form = event.target;
+        if (!form || String(form.method).toLowerCase() !== "post") {
+          return;
+        }
+        const action = form.querySelector("input[name='action']");
+        if (!action || action.value !== "connect") {
+          return;
+        }
+        event.preventDefault();
+        const submitter = event.submitter || form.querySelector("button[type='submit']");
+        if (submitter) {
+          submitter.disabled = true;
+        }
+        post("{connect_message}");
+      }, true);
       document.querySelectorAll("[data-tray-external='rpblc']").forEach((link) => {
         link.addEventListener("click", (event) => {
           event.preventDefault();
@@ -1865,10 +2366,29 @@ fn render_shell_with_mode(
       }
     })();
   </script>"#
+            .replace("{tray_post_token}", &escape_js_string(&tray_post_token))
+            .replace("{connect_message}", DAM_TRAY_CONNECT_MESSAGE)
             .replace("{open_rpblc_message}", DAM_TRAY_OPEN_RPBLC_MESSAGE)
             .replace("{quit_message}", DAM_TRAY_QUIT_MESSAGE)
     } else {
         String::new()
+    };
+    let confirm_script = if shell_mode.is_tray() {
+        String::new()
+    } else {
+        r#"<script>
+    (() => {
+      document.querySelectorAll("[data-confirm]").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          const message = button.getAttribute("data-confirm");
+          if (message && !window.confirm(message)) {
+            event.preventDefault();
+          }
+        });
+      });
+    })();
+  </script>"#
+            .to_string()
     };
 
     format!(
@@ -2309,6 +2829,21 @@ fn render_shell_with_mode(
     }}
     .profile-option.selected {{
       border-color: var(--accent);
+    }}
+    .settings-panel {{
+      padding: 18px;
+    }}
+    .settings-profile {{
+      grid-template-columns: minmax(0, 1fr) auto;
+    }}
+    .settings-profile-action {{
+      display: flex;
+      align-items: center;
+      padding: 10px 12px;
+      border-left: 1px solid var(--line);
+    }}
+    .settings-profile-detail {{
+      display: block;
     }}
     .profile-select-form {{
       display: contents;
@@ -2879,6 +3414,7 @@ fn render_shell_with_mode(
       </a>
       <nav>
         <a class="{connect_class}" href="/connect">Connect</a>
+        <a class="{settings_class}" href="/settings">Settings</a>
         <a class="{vault_class}" href="/vault">Vault</a>
         <a class="{allowed_class}" href="/allowed">Allowed</a>
         <details class="nav-more">
@@ -2906,6 +3442,7 @@ fn render_shell_with_mode(
       {content}
     </div>
   </main>
+  {confirm_script}
   {tray_script}
 </body>
 </html>"#,
@@ -2913,6 +3450,7 @@ fn render_shell_with_mode(
         body_class = body_class,
         tray_quit = tray_quit,
         brand_tray_attrs = brand_tray_attrs,
+        confirm_script = confirm_script,
         tray_script = tray_script,
         title = title,
         meta = meta,
@@ -2921,12 +3459,13 @@ fn render_shell_with_mode(
         content = content,
         content_class = if active == "Connect" {
             "connect-surface"
-        } else if title == "Vault Value" {
+        } else if active == "Settings" || title == "Vault Value" {
             "content-surface"
         } else {
             "table-wrap"
         },
         connect_class = if active == "Connect" { "active" } else { "" },
+        settings_class = if active == "Settings" { "active" } else { "" },
         vault_class = if active == "Vault" { "active" } else { "" },
         insights_class = if active == "Logs" { "active" } else { "" },
         allowed_class = if active == "Allowed" { "active" } else { "" },
@@ -3666,6 +4205,24 @@ fn escape_html(input: &str) -> String {
     escaped
 }
 
+fn escape_js_string(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '<' => escaped.push_str("\\u003c"),
+            '>' => escaped.push_str("\\u003e"),
+            '&' => escaped.push_str("\\u0026"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3686,6 +4243,35 @@ mod tests {
 
         headers.insert(header::ORIGIN, "https://attacker.example".parse().unwrap());
         assert!(!post_origin_is_local(&headers));
+    }
+
+    #[test]
+    fn tray_post_token_allows_originless_tray_forms_only_with_match() {
+        assert!(tray_post_token_is_valid(
+            Some("tray_token=abc123"),
+            Some("abc123")
+        ));
+        assert!(tray_post_token_is_valid(
+            Some("notice=ok&tray_token=abc123"),
+            Some("abc123")
+        ));
+        assert!(!tray_post_token_is_valid(
+            Some("tray_token=wrong"),
+            Some("abc123")
+        ));
+        assert!(!tray_post_token_is_valid(
+            Some("tray_token=abc123"),
+            Some("")
+        ));
+        assert!(!tray_post_token_is_valid(Some("tray_token=abc123"), None));
+    }
+
+    #[test]
+    fn escape_js_string_prevents_script_breakout() {
+        assert_eq!(
+            escape_js_string("\"<tag>&\n"),
+            "\\\"\\u003ctag\\u003e\\u0026\\n"
+        );
     }
 
     #[test]
@@ -4089,12 +4675,109 @@ mod tests {
         assert!(html.contains("class=\"connect-button\" type=\"submit\">Connect</button>"));
         assert!(html.contains("action=\"/connect/action\""));
         assert!(html.contains("Claude Code"));
-        assert!(html.contains("<span class=\"toggle-title\">Profiles</span>"));
+        assert!(html.contains("<span class=\"toggle-title\">Apps</span>"));
         assert!(html.contains("<span class=\"toggle-value\">Claude Code</span>"));
         assert!(html.contains("<span class=\"toggle-chevron\" aria-hidden=\"true\"></span>"));
-        assert!(html.contains("Apply Setup"));
+        assert!(html.contains("Next: Profile"));
         assert!(html.contains("href=\"/connect\""));
         assert!(html.contains("class=\"active\" href=\"/connect\""));
+    }
+
+    #[test]
+    fn render_connect_dashboard_confirms_system_setup_from_primary_cta() {
+        let mut view = test_connect_dashboard(DashboardState::NeedsSetup, None, None);
+        if let Some(plan) = &mut view.setup_plan {
+            plan.steps[1].status = dam_diagnostics::SetupStepStatus::Needed;
+            plan.steps[1].message = "routing setup".to_string();
+            plan.steps[1].command = Some(vec![
+                "dam".to_string(),
+                "network".to_string(),
+                "install-system-proxy".to_string(),
+                "--yes".to_string(),
+            ]);
+            plan.steps[1].requires_confirmation = true;
+            plan.steps[1].changes_system = true;
+        }
+
+        let html = render_connect_dashboard(&view);
+
+        assert!(html.contains("name=\"confirm_system_changes\" value=\"yes\""));
+        assert!(
+            html.contains("data-confirm=\"Allow DAM to update local network and trust settings?\"")
+        );
+        assert!(html.contains("Next: Routing"));
+        assert!(html.contains("Connect</button>"));
+    }
+
+    #[test]
+    fn connect_setup_action_applies_profile_before_daemon() {
+        let plan = test_setup_plan(
+            Some(dam_integrations::ActiveProfileState {
+                profile_id: "claude-code".to_string(),
+                selected_at_unix: 1,
+            }),
+            Some(dam_integrations::IntegrationApplyStatus::NeedsApply),
+        );
+
+        assert!(matches!(
+            next_connect_setup_action(&plan),
+            ConnectSetupAction::ApplyProfile
+        ));
+    }
+
+    #[test]
+    fn connect_setup_action_runs_routing_before_trust_and_daemon() {
+        let mut plan = test_setup_plan(None, None);
+        plan.steps[1].status = dam_diagnostics::SetupStepStatus::Needed;
+        plan.steps[1].kind = dam_diagnostics::SetupStepKind::SystemProxy;
+        plan.steps[1].command = Some(vec![
+            "dam".to_string(),
+            "network".to_string(),
+            "install-system-proxy".to_string(),
+            "--yes".to_string(),
+        ]);
+        plan.steps[2].status = dam_diagnostics::SetupStepStatus::Needed;
+        plan.steps[2].kind = dam_diagnostics::SetupStepKind::LocalCa;
+        plan.steps[2].command = Some(vec![
+            "dam".to_string(),
+            "trust".to_string(),
+            "install-local-ca".to_string(),
+            "--yes".to_string(),
+        ]);
+
+        match next_connect_setup_action(&plan) {
+            ConnectSetupAction::RunSetupCommand(step) => {
+                assert_eq!(step.kind, dam_diagnostics::SetupStepKind::SystemProxy);
+            }
+            action => panic!("unexpected setup action: {action:?}"),
+        }
+    }
+
+    #[test]
+    fn connect_setup_action_blocks_before_running_needed_steps() {
+        let mut plan = test_setup_plan(None, None);
+        plan.steps[1].status = dam_diagnostics::SetupStepStatus::Needed;
+        plan.steps[2].status = dam_diagnostics::SetupStepStatus::Blocked;
+        plan.steps[2].kind = dam_diagnostics::SetupStepKind::LocalCa;
+        plan.steps[2].message = "trust needs review".to_string();
+
+        match next_connect_setup_action(&plan) {
+            ConnectSetupAction::Blocked(step) => {
+                assert_eq!(step.kind, dam_diagnostics::SetupStepKind::LocalCa);
+                assert_eq!(step.message, "trust needs review");
+            }
+            action => panic!("unexpected setup action: {action:?}"),
+        }
+    }
+
+    #[test]
+    fn connect_setup_action_runs_daemon_after_setup() {
+        let plan = test_setup_plan(None, None);
+
+        assert!(matches!(
+            next_connect_setup_action(&plan),
+            ConnectSetupAction::RunDaemon
+        ));
     }
 
     #[test]
@@ -4149,6 +4832,7 @@ mod tests {
         assert!(html.contains("data-tray-external=\"rpblc\""));
         assert!(html.contains("window.ipc.postMessage(message)"));
         assert!(html.contains("dam-tray:open-rpblc"));
+        assert!(html.contains("dam-tray:connect"));
         assert!(html.contains("class=\"tray-quit\""));
         assert!(html.contains("aria-label=\"Quit DAM\""));
         assert!(html.contains(">⏻</button>"));
@@ -4177,7 +4861,20 @@ mod tests {
         assert!(!html.contains("class=\"tray-quit\""));
         assert!(!html.contains("data-tray-external=\"rpblc\""));
         assert!(!html.contains("dam-tray:open-rpblc"));
+        assert!(!html.contains("dam-tray:connect"));
         assert!(!html.contains("dam-tray:quit"));
+    }
+
+    #[test]
+    fn disconnect_restores_system_proxy_before_stopping_daemon() {
+        assert_eq!(
+            system_proxy_remove_args(),
+            vec![
+                "network".to_string(),
+                "remove-system-proxy".to_string(),
+                "--yes".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -4253,8 +4950,19 @@ mod tests {
             proxy_url: dam_integrations::DEFAULT_PROXY_URL.to_string(),
             daemon: None,
             proxy: None,
-            active_profile,
+            setup_plan: Some(test_setup_plan(active_profile.clone(), apply_status)),
+            setup_plan_error: None,
             active_profile_error: None,
+            enabled_profiles: active_profile
+                .as_ref()
+                .map(|profile| {
+                    vec![dam_integrations::EnabledIntegrationState {
+                        profile_id: profile.profile_id.clone(),
+                        enabled_at_unix: profile.selected_at_unix,
+                    }]
+                })
+                .unwrap_or_default(),
+            enabled_profiles_error: None,
             active_profile_apply: apply.clone(),
             profiles: vec![ProfileCard {
                 profile,
@@ -4264,6 +4972,84 @@ mod tests {
             }],
             notice: None,
             error: None,
+        }
+    }
+
+    fn test_setup_plan(
+        active_profile: Option<dam_integrations::ActiveProfileState>,
+        apply_status: Option<dam_integrations::IntegrationApplyStatus>,
+    ) -> dam_diagnostics::SetupPlan {
+        let profile_step_status = match (active_profile.as_ref(), apply_status) {
+            (None, _) => dam_diagnostics::SetupStepStatus::Skipped,
+            (_, Some(dam_integrations::IntegrationApplyStatus::Modified)) => {
+                dam_diagnostics::SetupStepStatus::Blocked
+            }
+            (_, Some(dam_integrations::IntegrationApplyStatus::NeedsApply)) => {
+                dam_diagnostics::SetupStepStatus::Needed
+            }
+            (_, Some(dam_integrations::IntegrationApplyStatus::Applied)) => {
+                dam_diagnostics::SetupStepStatus::Done
+            }
+            (_, None) => dam_diagnostics::SetupStepStatus::Blocked,
+        };
+        let state = if profile_step_status == dam_diagnostics::SetupStepStatus::Blocked {
+            dam_diagnostics::SetupPlanState::Blocked
+        } else if profile_step_status == dam_diagnostics::SetupStepStatus::Needed {
+            dam_diagnostics::SetupPlanState::NeedsAction
+        } else {
+            dam_diagnostics::SetupPlanState::NeedsAction
+        };
+        dam_diagnostics::SetupPlan {
+            state,
+            message: "test setup plan".to_string(),
+            state_dir: PathBuf::from("/tmp/dam-state"),
+            integration_state_dir: PathBuf::from("/tmp/dam-state/integrations"),
+            proxy_url: dam_integrations::DEFAULT_PROXY_URL.to_string(),
+            network_mode: dam_net::CaptureMode::ExplicitProxy,
+            trust_mode: dam_trust::TrustMode::Disabled,
+            active_profile,
+            steps: vec![
+                dam_diagnostics::SetupStep {
+                    kind: dam_diagnostics::SetupStepKind::ProfileApply,
+                    status: profile_step_status,
+                    message: "profile setup".to_string(),
+                    command: if profile_step_status == dam_diagnostics::SetupStepStatus::Needed {
+                        Some(vec![
+                            "dam".to_string(),
+                            "connect".to_string(),
+                            "--apply".to_string(),
+                        ])
+                    } else {
+                        None
+                    },
+                    requires_confirmation: false,
+                    changes_system: false,
+                },
+                dam_diagnostics::SetupStep {
+                    kind: dam_diagnostics::SetupStepKind::SystemProxy,
+                    status: dam_diagnostics::SetupStepStatus::Skipped,
+                    message: "routing skipped".to_string(),
+                    command: None,
+                    requires_confirmation: false,
+                    changes_system: false,
+                },
+                dam_diagnostics::SetupStep {
+                    kind: dam_diagnostics::SetupStepKind::LocalCa,
+                    status: dam_diagnostics::SetupStepStatus::Skipped,
+                    message: "trust skipped".to_string(),
+                    command: None,
+                    requires_confirmation: false,
+                    changes_system: false,
+                },
+                dam_diagnostics::SetupStep {
+                    kind: dam_diagnostics::SetupStepKind::Daemon,
+                    status: dam_diagnostics::SetupStepStatus::Needed,
+                    message: "daemon disconnected".to_string(),
+                    command: Some(vec!["dam".to_string(), "connect".to_string()]),
+                    requires_confirmation: false,
+                    changes_system: false,
+                },
+            ],
         }
     }
 }

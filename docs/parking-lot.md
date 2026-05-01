@@ -8,14 +8,14 @@ Parking-lot items are not current product guarantees. Move an item out of this f
 
 ### Full-Device Routing And TLS Trust
 
-Current state: local protection is app-layer routing for supported AI harnesses and explicit proxy paths. `dam-net` defines capture-mode vocabulary and host-only AI traffic classification. `dam-trust` defines trust-mode and TLS readiness vocabulary. DAM does not install OS routes, create a TUN device, install a local CA, or decrypt TLS.
+Current state: local protection is app-layer routing for supported AI harnesses and explicit proxy paths. `dam-net` defines capture-mode vocabulary, routing readiness, and host-only AI traffic classification for the merged default/config AI route registry. `dam-net-macos` can install/remove macOS PAC routing for built-in and configured AI hosts with rollback. `dam-trust` defines trust-mode and TLS readiness vocabulary, can create local CA artifacts, explicitly install/remove the DAM CA in macOS system trust, and issue in-memory per-host leaf certificates. `dam-intercept` defines the final TLS adapter activation gate. `dam-proxy` has a first daemon-gated HTTP/1.1 CONNECT/TLS runtime for AI hosts when routing, trust, and consent are ready. DAM does not create a TUN device.
 
 Parked work:
 
-- Implement platform routing modules for system proxy, VPN/TUN, or network-extension routing.
-- Generate, install, remove, and rotate a local DAM CA with explicit user consent and rollback.
-- Build TLS interception for known AI hosts after trust and routing prerequisites exist.
-- Define degraded, bypass, and blocked states for transparent protection.
+- Implement Windows/Linux system proxy routing and VPN/TUN or network-extension routing.
+- Install and remove the local DAM CA on Windows/Linux, add CA rotation, and harden interrupted macOS trust mutation recovery.
+- Extend transparent TLS interception beyond the first HTTP/1.1 slice: HTTP/2, WebSockets, multiple requests per tunnel, target-specific consent, certificate caching, and stronger platform coverage.
+- Define degraded, bypass, and blocked states for transparent protection across system proxy and future TUN modes.
 - Add platform tests proving sensitive values do not leave before transparent protection is ready.
 
 ### Encrypted Vault And Key Management

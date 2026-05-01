@@ -34,6 +34,18 @@ pub struct ActiveProfileState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnabledIntegrationState {
+    pub profile_id: String,
+    pub enabled_at_unix: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnabledIntegrationsState {
+    #[serde(default)]
+    pub profiles: Vec<EnabledIntegrationState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntegrationSetting {
     pub key: String,
     pub value: String,
@@ -192,6 +204,10 @@ pub fn active_profile_path(integration_state_dir: &Path) -> PathBuf {
     integration_state_dir.join("active-profile.json")
 }
 
+pub fn enabled_integrations_path(integration_state_dir: &Path) -> PathBuf {
+    integration_state_dir.join("enabled-integrations.json")
+}
+
 pub fn read_active_profile(
     integration_state_dir: &Path,
 ) -> Result<Option<ActiveProfileState>, String> {
@@ -216,6 +232,78 @@ pub fn read_active_profile(
         ));
     }
     Ok(Some(state))
+}
+
+pub fn read_enabled_integrations(
+    integration_state_dir: &Path,
+) -> Result<Vec<EnabledIntegrationState>, String> {
+    read_enabled_integrations_file(integration_state_dir)
+        .map(|profiles| profiles.unwrap_or_default())
+}
+
+pub fn read_effective_enabled_integrations(
+    integration_state_dir: &Path,
+) -> Result<Vec<EnabledIntegrationState>, String> {
+    if let Some(profiles) = read_enabled_integrations_file(integration_state_dir)? {
+        return Ok(profiles);
+    }
+
+    Ok(read_active_profile(integration_state_dir)?
+        .map(|active| {
+            vec![EnabledIntegrationState {
+                profile_id: active.profile_id,
+                enabled_at_unix: active.selected_at_unix,
+            }]
+        })
+        .unwrap_or_default())
+}
+
+pub fn enabled_profile_ids(integration_state_dir: &Path) -> Result<Vec<String>, String> {
+    read_effective_enabled_integrations(integration_state_dir).map(|profiles| {
+        profiles
+            .into_iter()
+            .map(|profile| profile.profile_id)
+            .collect()
+    })
+}
+
+pub fn set_integration_enabled(
+    profile_id: &str,
+    enabled: bool,
+    integration_state_dir: &Path,
+) -> Result<Vec<EnabledIntegrationState>, String> {
+    if profile(profile_id, DEFAULT_PROXY_URL).is_none() {
+        return Err(unknown_profile_error(profile_id));
+    }
+
+    fs::create_dir_all(integration_state_dir).map_err(|error| {
+        format!(
+            "failed to create integration state directory {}: {error}",
+            integration_state_dir.display()
+        )
+    })?;
+
+    let mut profiles = read_effective_enabled_integrations(integration_state_dir)?;
+    profiles.retain(|profile| profile.profile_id != profile_id);
+    if enabled {
+        profiles.push(EnabledIntegrationState {
+            profile_id: profile_id.to_string(),
+            enabled_at_unix: unix_timestamp()?,
+        });
+    }
+    write_enabled_integrations(integration_state_dir, profiles)
+}
+
+pub fn clear_enabled_integrations(integration_state_dir: &Path) -> Result<bool, String> {
+    let path = enabled_integrations_path(integration_state_dir);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "failed to remove enabled integrations {}: {error}",
+            path.display()
+        )),
+    }
 }
 
 pub fn set_active_profile(
@@ -249,6 +337,54 @@ pub fn clear_active_profile(integration_state_dir: &Path) -> Result<bool, String
             path.display()
         )),
     }
+}
+
+fn read_enabled_integrations_file(
+    integration_state_dir: &Path,
+) -> Result<Option<Vec<EnabledIntegrationState>>, String> {
+    let path = enabled_integrations_path(integration_state_dir);
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "failed to read enabled integrations {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    let state = serde_json::from_str::<EnabledIntegrationsState>(&raw).map_err(|error| {
+        format!(
+            "failed to parse enabled integrations {}: {error}",
+            path.display()
+        )
+    })?;
+    let mut profiles = Vec::new();
+    for enabled in state.profiles {
+        if profile(&enabled.profile_id, DEFAULT_PROXY_URL).is_none() {
+            return Err(format!(
+                "enabled profile {} is not a known integration profile\nknown profiles: {}",
+                enabled.profile_id,
+                profile_ids().join(", ")
+            ));
+        }
+        if !profiles
+            .iter()
+            .any(|profile: &EnabledIntegrationState| profile.profile_id == enabled.profile_id)
+        {
+            profiles.push(enabled);
+        }
+    }
+    Ok(Some(profiles))
+}
+
+fn write_enabled_integrations(
+    integration_state_dir: &Path,
+    profiles: Vec<EnabledIntegrationState>,
+) -> Result<Vec<EnabledIntegrationState>, String> {
+    let state = EnabledIntegrationsState { profiles };
+    write_json_file(&enabled_integrations_path(integration_state_dir), &state)?;
+    Ok(state.profiles)
 }
 
 pub fn default_apply_path(
@@ -1144,6 +1280,58 @@ mod tests {
     fn active_profile_rejects_unknown_profile() {
         let dir = tempfile::tempdir().unwrap();
         let error = set_active_profile("missing", dir.path()).unwrap_err();
+
+        assert!(error.contains("unknown integration profile: missing"));
+    }
+
+    #[test]
+    fn enabled_integrations_roundtrip_and_fallback_to_active_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("integrations");
+
+        let active = set_active_profile("claude-code", &state_dir).unwrap();
+        assert_eq!(
+            read_effective_enabled_integrations(&state_dir).unwrap(),
+            vec![EnabledIntegrationState {
+                profile_id: "claude-code".to_string(),
+                enabled_at_unix: active.selected_at_unix,
+            }]
+        );
+
+        let enabled = set_integration_enabled("codex-api", true, &state_dir).unwrap();
+        assert_eq!(
+            enabled
+                .iter()
+                .map(|profile| profile.profile_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["claude-code", "codex-api"]
+        );
+        assert_eq!(
+            enabled_profile_ids(&state_dir).unwrap(),
+            vec!["claude-code".to_string(), "codex-api".to_string()]
+        );
+
+        let enabled = set_integration_enabled("claude-code", true, &state_dir).unwrap();
+        assert_eq!(
+            enabled
+                .iter()
+                .map(|profile| profile.profile_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["codex-api", "claude-code"]
+        );
+
+        let enabled = set_integration_enabled("codex-api", false, &state_dir).unwrap();
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0].profile_id, "claude-code");
+
+        assert!(clear_enabled_integrations(&state_dir).unwrap());
+        assert!(!clear_enabled_integrations(&state_dir).unwrap());
+    }
+
+    #[test]
+    fn enabled_integrations_reject_unknown_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = set_integration_enabled("missing", true, dir.path()).unwrap_err();
 
         assert!(error.contains("unknown integration profile: missing"));
     }

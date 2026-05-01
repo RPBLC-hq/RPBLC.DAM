@@ -408,13 +408,17 @@ dependencies = [
  "dam-api",
  "dam-config",
  "dam-daemon",
+ "dam-diagnostics",
  "dam-integrations",
+ "dam-intercept",
  "dam-net",
+ "dam-net-macos",
  "dam-proxy",
  "dam-trust",
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -466,7 +470,9 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "dam-config",
+ "dam-intercept",
  "dam-net",
+ "dam-net-macos",
  "dam-proxy",
  "dam-trust",
  "serde",
@@ -493,10 +499,16 @@ dependencies = [
  "dam-api",
  "dam-config",
  "dam-consent",
+ "dam-daemon",
+ "dam-integrations",
  "dam-log",
+ "dam-net",
+ "dam-net-macos",
  "dam-router",
+ "dam-trust",
  "dam-vault",
  "reqwest",
+ "serde",
  "tempfile",
  "tokio",
 ]
@@ -543,6 +555,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dam-intercept"
+version = "0.1.0"
+dependencies = [
+ "dam-net",
+ "dam-trust",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "dam-log"
 version = "0.1.0"
 dependencies = [
@@ -568,6 +590,18 @@ name = "dam-net"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "dam-net-macos"
+version = "0.1.0"
+dependencies = [
+ "dam-net",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]
@@ -621,18 +655,27 @@ dependencies = [
  "dam-config",
  "dam-consent",
  "dam-core",
+ "dam-intercept",
  "dam-log",
+ "dam-net",
  "dam-pipeline",
  "dam-policy",
  "dam-provider-anthropic",
  "dam-provider-openai",
  "dam-router",
+ "dam-trust",
  "dam-vault",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rcgen",
  "reqwest",
  "rusqlite",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
@@ -661,6 +704,7 @@ name = "dam-router"
 version = "0.1.0"
 dependencies = [
  "dam-config",
+ "dam-net",
  "http",
  "thiserror 2.0.18",
 ]
@@ -679,7 +723,15 @@ name = "dam-trust"
 version = "0.1.0"
 dependencies = [
  "dam-net",
+ "pem",
+ "rcgen",
  "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]
@@ -705,6 +757,8 @@ dependencies = [
  "dam-diagnostics",
  "dam-integrations",
  "dam-log",
+ "dam-net",
+ "dam-trust",
  "dam-vault",
  "reqwest",
  "tokio",
@@ -720,7 +774,9 @@ dependencies = [
  "dam-daemon",
  "dam-diagnostics",
  "dam-integrations",
+ "dam-intercept",
  "dam-net",
+ "dam-net-macos",
  "dam-trust",
  "reqwest",
  "serde",
@@ -2214,6 +2270,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pem"
+version = "3.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
+dependencies = [
+ "base64",
+ "serde_core",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2521,6 +2587,19 @@ name = "raw-window-handle"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
+
+[[package]]
+name = "rcgen"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
+dependencies = [
+ "pem",
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "yasna",
+]
 
 [[package]]
 name = "redox_syscall"
@@ -2837,6 +2916,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "170fb83ab34de17dc69aa7c67482b22218ddb85da56546f9bd6b929e32a05930"
 dependencies = [
  "stable_deref_trait",
+]
+
+[[package]]
+name = "sha1"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]
@@ -4320,6 +4410,15 @@ dependencies = [
  "windows",
  "windows-core",
  "windows-version",
+]
+
+[[package]]
+name = "yasna"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
+dependencies = [
+ "time",
 ]
 
 [[package]]

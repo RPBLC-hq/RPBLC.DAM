@@ -15,7 +15,8 @@ Deferred security and product-design work is tracked in [parking-lot.md](parking
 - [dam-consent](dam-consent.md): exact-value passthrough grants with TTL and revocation.
 - [dam-daemon](dam-daemon.md): background local proxy lifecycle, state file, and `dam connect/status/disconnect` support.
 - [dam-diagnostics](dam-diagnostics.md): shared local readiness checks for `damctl doctor` and `dam-web /doctor`.
-- [dam-integrations](dam-integrations.md): known local harness profiles and active profile state for `dam integrations`, `dam profile`, and `dam connect --profile`.
+- [dam-intercept](dam-intercept.md): guarded TLS interception activation contract for transparent AI routes.
+- [dam-integrations](dam-integrations.md): known local harness profiles, enabled app state, and legacy active profile state for `dam integrations`, `dam profile`, and `dam connect --profile`.
 - [damctl](damctl.md): local status and config diagnostics CLI.
 - [dam-detect](dam-detect.md): pure rule-based sensitive value detection.
 - [dam-e2e](dam-e2e.md): process-level end-to-end tests across the local binaries.
@@ -26,13 +27,14 @@ Deferred security and product-design work is tracked in [parking-lot.md](parking
 - [dam-router](dam-router.md): proxy target selection, provider classification, auth mode, and failure-mode decisions.
 - [dam-vault](dam-vault.md): local SQLite `VaultWriter` and `VaultReader` implementation.
 - [dam-log](dam-log.md): local SQLite `EventSink` implementation.
-- [dam-net](dam-net.md): network capture-mode vocabulary and transparent AI host classification for future system routing.
-- [dam-trust](dam-trust.md): TLS trust-mode vocabulary, local CA readiness contracts, and trusted AI host scope for future transparent protection.
+- [dam-net](dam-net.md): network capture-mode vocabulary, routing readiness, and transparent AI host classification for future system routing.
+- [dam-net-macos](dam-net-macos.md): macOS PAC system-proxy install/remove with rollback for built-in and configured AI host routing.
+- [dam-trust](dam-trust.md): TLS trust-mode vocabulary, local CA artifacts, leaf issuance, macOS trust install/remove, readiness contracts, and trusted AI host scope for transparent protection.
 - [dam-redact](dam-redact.md): pure replacement application.
 - [dam-filter](dam-filter.md): CLI pipeline wiring detection, policy, vault, logs, and redaction.
 - [dam-resolve](dam-resolve.md): CLI pipeline for resolving `[kind:id]` references through `VaultReader`.
-- [dam-proxy](dam-proxy.md): first app-layer LLM proxy slice with OpenAI-compatible and Anthropic reverse proxy behavior.
-- [dam-web](dam-web.md): local web UI for Connect/profile controls, protected values, Allowed values, log events, and diagnostics.
+- [dam-proxy](dam-proxy.md): app-layer LLM proxy plus daemon-gated HTTP/1.1 CONNECT/TLS runtime for ready transparent AI routes.
+- [dam-web](dam-web.md): local web UI for setup-plan-driven Connect/app controls, Settings, protected values, Allowed values, log events, and diagnostics.
 - [dam-tray](dam-tray.md): native desktop shell that hosts the Connect surface from the local web UI.
 - [dam-mcp](dam-mcp.md): MCP tools for agent-managed consent operations.
 
@@ -123,7 +125,7 @@ dam status / dam disconnect
   -> dam-proxy /health when connected
 
 dam profile
-  -> active harness profile state
+  -> enabled app state and legacy active harness profile state
 
 dam integrations list/show/apply/rollback
   -> dam-integrations profile catalog
@@ -155,9 +157,21 @@ damctl bypass status
 
 damctl daemon inspect
   -> dam-daemon state file
+  -> dam-net routing readiness
+  -> dam-intercept guarded interception readiness
+
+damctl network inspect
+  -> dam-net-macos routing state
+  -> dam-net route readiness
+
+dam network install-system-proxy / remove-system-proxy
+  -> dam-net-macos macOS PAC routing with rollback
 
 damctl trust inspect
   -> dam-trust readiness and action plans
+
+dam trust generate-local-ca / delete-local-ca / install-local-ca / remove-local-ca
+  -> dam-trust local CA artifacts and explicit macOS system trust changes
 
 damctl integrations check
   -> dam-integrations apply-state inspection
@@ -167,7 +181,7 @@ damctl config check
   -> dam-api HealthReport
 
 dam-web /connect
-  -> dam-integrations active profile and apply-state inspection
+  -> dam-integrations enabled profiles and apply-state inspection
   -> dam connect/disconnect control
 
 dam-tray

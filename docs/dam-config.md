@@ -49,6 +49,12 @@ action = "tokenize"
 vault_write = "redact_only"
 log_write = "warn_continue"
 
+[[network.ai_routes]]
+host = "api.enterprise-ai.example"
+provider = "openai-compatible"
+target_name = "enterprise-ai"
+upstream = "https://api.enterprise-ai.example"
+
 [web]
 addr = "127.0.0.1:2896"
 
@@ -67,7 +73,9 @@ failure_mode = "bypass_on_error"
 api_key_env = "OPENAI_API_KEY"
 ```
 
-Supported first-slice provider values are `openai-compatible` and `anthropic`. The current local proxy slice accepts exactly one configured target; multi-target routing is parked until target selection has a user-facing model.
+Supported first-slice provider values are `openai-compatible` and `anthropic`. The local proxy can accept multiple configured targets; `dam-router` selects the OpenAI-compatible or Anthropic route from request path/header shape or from the transparent AI route match.
+
+`network.ai_routes` is optional. DAM always includes built-in transparent AI routes for `api.openai.com`, `api.anthropic.com`, `api.x.ai`, and `chatgpt.com`. Add `[[network.ai_routes]]` entries for enterprise gateways, private OpenAI-compatible endpoints, Anthropic-compatible endpoints, or package-specific AI hosts that should be treated as AI traffic by system proxy routing, trust readiness, daemon state, and the transparent proxy runtime. If a configured route uses the same normalized host as a built-in route, the config route replaces that built-in entry. Duplicate configured hosts are rejected.
 
 `web.addr` and `proxy.listen` must be loopback socket addresses in this local build, for example `127.0.0.1:2896` and `127.0.0.1:7828`.
 

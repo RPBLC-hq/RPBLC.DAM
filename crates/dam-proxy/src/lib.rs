@@ -1,8 +1,8 @@
 use axum::{
     Router,
-    body::Bytes,
-    extract::{DefaultBodyLimit, State},
-    http::{HeaderMap, Method, StatusCode, Uri, header},
+    body::{Body, Bytes, to_bytes},
+    extract::{DefaultBodyLimit, Request, State},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -10,10 +10,27 @@ use dam_core::{
     EventSink, LogEvent, LogEventType, LogLevel, VaultReadError, VaultReader, VaultRecord,
     VaultWriter,
 };
-use std::{net::SocketAddr, sync::Arc};
-use tokio::net::TcpListener;
+use http_body_util::BodyExt;
+use hyper::upgrade::Upgraded;
+use hyper_util::rt::TokioIo;
+use std::{
+    future::Future,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Once},
+};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_rustls::{
+    TlsAcceptor,
+    rustls::{
+        ServerConfig,
+        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
+    },
+};
 
 const MAX_REQUEST_BYTES: usize = 10 * 1024 * 1024;
+const MAX_INTERCEPTED_HEADER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
@@ -57,36 +74,55 @@ pub enum ProxyError {
     ConsentUnavailable(String),
 }
 
-#[derive(Clone)]
-enum ProviderAdapter {
-    OpenAi(dam_provider_openai::OpenAiProvider),
-    Anthropic(dam_provider_anthropic::AnthropicProvider),
+struct ProviderAdapters {
+    openai: dam_provider_openai::OpenAiProvider,
+    anthropic: dam_provider_anthropic::AnthropicProvider,
 }
 
-impl ProviderAdapter {
-    fn for_kind(kind: dam_router::ProviderKind) -> Result<Self, ProxyError> {
+enum ProviderAdapter<'a> {
+    OpenAi(&'a dam_provider_openai::OpenAiProvider),
+    Anthropic(&'a dam_provider_anthropic::AnthropicProvider),
+}
+
+impl ProviderAdapters {
+    fn new() -> Result<Self, ProxyError> {
+        Ok(Self {
+            openai: dam_provider_openai::OpenAiProvider::new()
+                .map_err(|error| ProxyError::ProviderInit(error.to_string()))?,
+            anthropic: dam_provider_anthropic::AnthropicProvider::new()
+                .map_err(|error| ProxyError::ProviderInit(error.to_string()))?,
+        })
+    }
+
+    fn get(&self, kind: dam_router::ProviderKind) -> ProviderAdapter<'_> {
         match kind {
-            dam_router::ProviderKind::OpenAiCompatible => {
-                dam_provider_openai::OpenAiProvider::new()
-                    .map(Self::OpenAi)
-                    .map_err(|error| ProxyError::ProviderInit(error.to_string()))
-            }
-            dam_router::ProviderKind::Anthropic => dam_provider_anthropic::AnthropicProvider::new()
-                .map(Self::Anthropic)
-                .map_err(|error| ProxyError::ProviderInit(error.to_string())),
+            dam_router::ProviderKind::OpenAiCompatible => ProviderAdapter::OpenAi(&self.openai),
+            dam_router::ProviderKind::Anthropic => ProviderAdapter::Anthropic(&self.anthropic),
         }
     }
 }
 
 pub struct ProxyState {
-    route: dam_router::RoutePlan,
+    routes: dam_router::RouteTable,
     resolve_inbound: bool,
     vault: Arc<dyn ProxyVault>,
     consent_store: Option<Arc<dam_consent::ConsentStore>>,
     log_sink: Option<Arc<dyn EventSink>>,
     policy: dam_policy::StaticPolicy,
     replacement_options: dam_core::ReplacementPlanOptions,
-    provider: ProviderAdapter,
+    providers: ProviderAdapters,
+    transparent_interception: Option<TransparentInterceptionConfig>,
+}
+
+#[derive(Clone)]
+pub struct TransparentInterceptionConfig {
+    pub state_dir: PathBuf,
+    pub network_mode: dam_net::CaptureMode,
+    pub system_proxy_active: bool,
+    pub tun_active: bool,
+    pub ai_routes: Vec<dam_net::AiRoute>,
+    pub trust: dam_trust::TrustState,
+    pub user_consented: bool,
 }
 
 impl From<dam_router::RouteError> for ProxyError {
@@ -142,33 +178,74 @@ pub async fn run(config: dam_config::DamConfig) -> Result<(), ProxyError> {
 }
 
 pub fn build_app(config: dam_config::DamConfig) -> Result<Router, ProxyError> {
+    build_app_with_interception(config, None)
+}
+
+pub fn build_app_with_interception(
+    config: dam_config::DamConfig,
+    transparent_interception: Option<TransparentInterceptionConfig>,
+) -> Result<Router, ProxyError> {
+    let state = build_state(config, transparent_interception)?;
+
+    Ok(Router::new()
+        .route("/health", get(health))
+        .fallback(proxy)
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
+        .with_state(state))
+}
+
+fn build_state(
+    config: dam_config::DamConfig,
+    transparent_interception: Option<TransparentInterceptionConfig>,
+) -> Result<Arc<ProxyState>, ProxyError> {
     if !config.proxy.enabled {
         return Err(ProxyError::Disabled);
     }
 
-    let route = dam_router::RoutePlan::from_proxy_config(&config.proxy)?;
-    let provider = ProviderAdapter::for_kind(route.provider_kind())?;
+    let routes = dam_router::RouteTable::from_proxy_config(&config.proxy)?;
+    let providers = ProviderAdapters::new()?;
 
     let replacement_options = dam_core::ReplacementPlanOptions {
         deduplicate_replacements: config.policy.deduplicate_replacements,
     };
 
-    let state = ProxyState {
-        route,
+    Ok(Arc::new(ProxyState {
+        routes,
         resolve_inbound: config.proxy.resolve_inbound,
         vault: open_vault(&config)?,
         consent_store: open_consent_store(&config)?,
         log_sink: open_log_sink(&config)?,
         policy: dam_policy::StaticPolicy::from(config.policy),
         replacement_options,
-        provider,
-    };
+        providers,
+        transparent_interception,
+    }))
+}
 
-    Ok(Router::new()
-        .route("/health", get(health))
-        .fallback(proxy)
-        .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
-        .with_state(Arc::new(state)))
+pub async fn serve_transparent_with_shutdown<F>(
+    listener: TcpListener,
+    config: dam_config::DamConfig,
+    transparent_interception: TransparentInterceptionConfig,
+    shutdown: F,
+) -> Result<(), ProxyError>
+where
+    F: Future<Output = ()> + Send,
+{
+    let state = build_state(config, Some(transparent_interception))?;
+    tokio::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => return Ok(()),
+            accepted = listener.accept() => {
+                let (stream, _) = accepted.map_err(ProxyError::Server)?;
+                let state = state.clone();
+                tokio::spawn(async move {
+                    let _ = handle_raw_proxy_connection(state, stream).await;
+                });
+            }
+        }
+    }
 }
 
 fn open_vault(config: &dam_config::DamConfig) -> Result<Arc<dyn ProxyVault>, ProxyError> {
@@ -241,7 +318,11 @@ fn open_log_sink(config: &dam_config::DamConfig) -> Result<Option<Arc<dyn EventS
 }
 
 async fn health(State(state): State<Arc<ProxyState>>) -> Response {
-    let route = state.route.decide(&HeaderMap::new());
+    health_response(&state)
+}
+
+fn health_response(state: &ProxyState) -> Response {
+    let route = state.routes.decide(&HeaderMap::new(), None);
     let (proxy_state, message) = if route.config_required() {
         (
             dam_api::ProxyState::ConfigRequired,
@@ -254,15 +335,336 @@ async fn health(State(state): State<Arc<ProxyState>>) -> Response {
     status_response(StatusCode::OK, proxy_state, message, None, route.target())
 }
 
-async fn proxy(
-    State(state): State<Arc<ProxyState>>,
+async fn handle_raw_proxy_connection(
+    state: Arc<ProxyState>,
+    mut stream: TcpStream,
+) -> Result<(), String> {
+    let operation_id = dam_core::generate_operation_id();
+    let request = match read_intercepted_http_request(&mut stream).await {
+        Ok(Some(request)) => request,
+        Ok(None) => return Ok(()),
+        Err(error) => {
+            write_intercepted_error(&mut stream, StatusCode::BAD_REQUEST, &error).await?;
+            return Err(error);
+        }
+    };
+
+    if request.method == Method::CONNECT {
+        return handle_raw_connect_request(state, operation_id, request, stream).await;
+    }
+
+    let response = if request.method == Method::GET && request.uri.path() == "/health" {
+        health_response(&state)
+    } else {
+        proxy_http_request(
+            state,
+            request.method,
+            request.uri,
+            request.headers,
+            request.body,
+            operation_id,
+        )
+        .await
+    };
+    write_intercepted_http_response(&mut stream, response).await
+}
+
+async fn handle_raw_connect_request(
+    state: Arc<ProxyState>,
+    operation_id: String,
+    request: InterceptedHttpRequest,
+    mut stream: TcpStream,
+) -> Result<(), String> {
+    let route = state.routes.decide(&request.headers, Some(&request.uri));
+    let Some(interception) = state.transparent_interception.clone() else {
+        let response = connect_blocked_response(
+            &state,
+            route,
+            &operation_id,
+            StatusCode::NOT_IMPLEMENTED,
+            "transparent CONNECT traffic requires the TLS interception runtime",
+        );
+        write_intercepted_http_response(&mut stream, response).await?;
+        return Ok(());
+    };
+
+    let Some(host) = connect_host(&request.uri, &request.headers) else {
+        let response = connect_blocked_response(
+            &state,
+            route,
+            &operation_id,
+            StatusCode::BAD_REQUEST,
+            "CONNECT target host is missing",
+        );
+        write_intercepted_http_response(&mut stream, response).await?;
+        return Ok(());
+    };
+    let Some(ai_route) = dam_net::classify_ai_host_with_routes(&host, &interception.ai_routes)
+    else {
+        let response = connect_blocked_response(
+            &state,
+            route,
+            &operation_id,
+            StatusCode::FORBIDDEN,
+            "CONNECT target is not in the known AI route scope",
+        );
+        write_intercepted_http_response(&mut stream, response).await?;
+        return Ok(());
+    };
+    let route = state
+        .routes
+        .decide_for_ai_route(&request.headers, &ai_route);
+    if !route_matches_ai_target(route, &ai_route) {
+        let response = connect_blocked_response(
+            &state,
+            route,
+            &operation_id,
+            StatusCode::FORBIDDEN,
+            "CONNECT target does not match the configured proxy target",
+        );
+        write_intercepted_http_response(&mut stream, response).await?;
+        return Ok(());
+    }
+
+    let readiness = transparent_interception_readiness(&interception, ai_route);
+    if readiness.readiness != dam_intercept::TlsInterceptionReadiness::Ready {
+        record_proxy_event(
+            &state,
+            &operation_id,
+            LogLevel::Error,
+            LogEventType::ProxyFailure,
+            "blocked",
+            "transparent TLS interception is not ready",
+        );
+        let response = status_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            dam_api::ProxyState::Blocked,
+            readiness.message,
+            Some(operation_id),
+            route.target(),
+        );
+        write_intercepted_http_response(&mut stream, response).await?;
+        return Ok(());
+    }
+
+    let acceptor = match tls_acceptor_for_host(&interception, &host) {
+        Ok(acceptor) => acceptor,
+        Err(message) => {
+            record_proxy_event(
+                &state,
+                &operation_id,
+                LogLevel::Error,
+                LogEventType::ProxyFailure,
+                "blocked",
+                "failed to prepare transparent TLS interception",
+            );
+            let response = status_response(
+                StatusCode::BAD_GATEWAY,
+                dam_api::ProxyState::Blocked,
+                message,
+                Some(operation_id),
+                route.target(),
+            );
+            write_intercepted_http_response(&mut stream, response).await?;
+            return Ok(());
+        }
+    };
+
+    handle_intercepted_tls_io(state, &operation_id, stream, acceptor, true).await
+}
+
+async fn proxy(State(state): State<Arc<ProxyState>>, mut request: Request) -> Response {
+    let operation_id = dam_core::generate_operation_id();
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let headers = request.headers().clone();
+    let route = state.routes.decide(&headers, Some(&uri));
+
+    if method == Method::CONNECT {
+        return handle_connect_request(
+            state.clone(),
+            route,
+            operation_id,
+            &uri,
+            &headers,
+            &mut request,
+        );
+    }
+
+    let body = match to_bytes(request.into_body(), MAX_REQUEST_BYTES).await {
+        Ok(body) => body,
+        Err(_) => {
+            return handle_protection_failure(
+                state.clone(),
+                route,
+                operation_id,
+                "request body exceeds the supported size",
+            );
+        }
+    };
+
+    proxy_http_request(state, method, uri, headers, body, operation_id).await
+}
+
+fn handle_connect_request(
+    state: Arc<ProxyState>,
+    route: dam_router::RouteDecision<'_>,
+    operation_id: String,
+    uri: &Uri,
+    headers: &HeaderMap,
+    request: &mut Request,
+) -> Response {
+    let Some(interception) = state.transparent_interception.clone() else {
+        return connect_blocked_response(
+            &state,
+            route,
+            &operation_id,
+            StatusCode::NOT_IMPLEMENTED,
+            "transparent CONNECT traffic requires the TLS interception runtime",
+        );
+    };
+
+    let Some(host) = connect_host(uri, headers) else {
+        return connect_blocked_response(
+            &state,
+            route,
+            &operation_id,
+            StatusCode::BAD_REQUEST,
+            "CONNECT target host is missing",
+        );
+    };
+
+    let Some(ai_route) = dam_net::classify_ai_host_with_routes(&host, &interception.ai_routes)
+    else {
+        return connect_blocked_response(
+            &state,
+            route,
+            &operation_id,
+            StatusCode::FORBIDDEN,
+            "CONNECT target is not in the known AI route scope",
+        );
+    };
+
+    let route = state.routes.decide_for_ai_route(headers, &ai_route);
+    if !route_matches_ai_target(route, &ai_route) {
+        return connect_blocked_response(
+            &state,
+            route,
+            &operation_id,
+            StatusCode::FORBIDDEN,
+            "CONNECT target does not match the configured proxy target",
+        );
+    }
+
+    let readiness = transparent_interception_readiness(&interception, ai_route);
+    if readiness.readiness != dam_intercept::TlsInterceptionReadiness::Ready {
+        record_proxy_event(
+            &state,
+            &operation_id,
+            LogLevel::Error,
+            LogEventType::ProxyFailure,
+            "blocked",
+            "transparent TLS interception is not ready",
+        );
+        return status_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            dam_api::ProxyState::Blocked,
+            readiness.message,
+            Some(operation_id),
+            route.target(),
+        );
+    }
+
+    let acceptor = match tls_acceptor_for_host(&interception, &host) {
+        Ok(acceptor) => acceptor,
+        Err(message) => {
+            record_proxy_event(
+                &state,
+                &operation_id,
+                LogLevel::Error,
+                LogEventType::ProxyFailure,
+                "blocked",
+                "failed to prepare transparent TLS interception",
+            );
+            return status_response(
+                StatusCode::BAD_GATEWAY,
+                dam_api::ProxyState::Blocked,
+                message,
+                Some(operation_id),
+                route.target(),
+            );
+        }
+    };
+
+    if request
+        .extensions()
+        .get::<hyper::upgrade::OnUpgrade>()
+        .is_none()
+    {
+        record_proxy_event(
+            &state,
+            &operation_id,
+            LogLevel::Error,
+            LogEventType::ProxyFailure,
+            "blocked",
+            "CONNECT request cannot be upgraded",
+        );
+        return status_response(
+            StatusCode::BAD_GATEWAY,
+            dam_api::ProxyState::Blocked,
+            "CONNECT request cannot be upgraded".to_string(),
+            Some(operation_id),
+            route.target(),
+        );
+    }
+
+    let upgrade = hyper::upgrade::on(request);
+    tokio::spawn(handle_upgraded_connect(
+        state,
+        operation_id,
+        upgrade,
+        acceptor,
+    ));
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::empty())
+        .unwrap_or_else(|_| StatusCode::OK.into_response())
+}
+
+fn connect_blocked_response(
+    state: &ProxyState,
+    route: dam_router::RouteDecision<'_>,
+    operation_id: &str,
+    status: StatusCode,
+    message: &'static str,
+) -> Response {
+    record_proxy_event(
+        state,
+        operation_id,
+        LogLevel::Error,
+        LogEventType::ProxyFailure,
+        "blocked",
+        message,
+    );
+    status_response(
+        status,
+        dam_api::ProxyState::Blocked,
+        message.to_string(),
+        Some(operation_id.to_string()),
+        route.target(),
+    )
+}
+
+async fn proxy_http_request(
+    state: Arc<ProxyState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
+    operation_id: String,
 ) -> Response {
-    let operation_id = dam_core::generate_operation_id();
-    let route = state.route.decide(&headers);
+    let route = state.routes.decide(&headers, Some(&uri));
 
     if route.config_required() {
         record_proxy_event(
@@ -373,6 +775,488 @@ async fn proxy(
     .await
 }
 
+async fn handle_upgraded_connect(
+    state: Arc<ProxyState>,
+    operation_id: String,
+    upgrade: hyper::upgrade::OnUpgrade,
+    acceptor: TlsAcceptor,
+) {
+    let upgraded = match upgrade.await {
+        Ok(upgraded) => upgraded,
+        Err(_) => {
+            record_proxy_event(
+                &state,
+                &operation_id,
+                LogLevel::Error,
+                LogEventType::ProxyFailure,
+                "blocked",
+                "CONNECT upgrade failed",
+            );
+            return;
+        }
+    };
+
+    if let Err(error) =
+        handle_intercepted_tls_connection(state.clone(), &operation_id, upgraded, acceptor).await
+    {
+        record_proxy_event(
+            &state,
+            &operation_id,
+            LogLevel::Error,
+            LogEventType::ProxyFailure,
+            "blocked",
+            "intercepted TLS request failed",
+        );
+        let _ = error;
+    }
+}
+
+async fn handle_intercepted_tls_connection(
+    state: Arc<ProxyState>,
+    operation_id: &str,
+    upgraded: Upgraded,
+    acceptor: TlsAcceptor,
+) -> Result<(), String> {
+    handle_intercepted_tls_io(state, operation_id, TokioIo::new(upgraded), acceptor, true).await
+}
+
+async fn handle_intercepted_tls_io<T>(
+    state: Arc<ProxyState>,
+    operation_id: &str,
+    mut io: T,
+    acceptor: TlsAcceptor,
+    acknowledge_connect: bool,
+) -> Result<(), String>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    if acknowledge_connect {
+        io.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await
+            .map_err(|error| format!("failed to acknowledge CONNECT tunnel: {error}"))?;
+        io.flush()
+            .await
+            .map_err(|error| format!("failed to flush CONNECT tunnel: {error}"))?;
+    }
+    let mut tls = acceptor
+        .accept(io)
+        .await
+        .map_err(|error| format!("TLS handshake failed: {error}"))?;
+
+    let request = match read_intercepted_http_request(&mut tls).await {
+        Ok(Some(request)) => request,
+        Ok(None) => return Ok(()),
+        Err(error) => {
+            write_intercepted_error(&mut tls, StatusCode::BAD_REQUEST, &error).await?;
+            return Err(error);
+        }
+    };
+
+    let response = proxy_http_request(
+        state,
+        request.method,
+        request.uri,
+        request.headers,
+        request.body,
+        operation_id.to_string(),
+    )
+    .await;
+
+    if let Err(error) = write_intercepted_http_response(&mut tls, response).await {
+        let _ = write_intercepted_error(&mut tls, StatusCode::BAD_GATEWAY, &error).await;
+        return Err(error);
+    }
+    let _ = tls.shutdown().await;
+    Ok(())
+}
+
+struct InterceptedHttpRequest {
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+}
+
+fn tls_server_config(issued: dam_trust::LocalCaIssuedCertificate) -> Result<ServerConfig, String> {
+    ensure_rustls_crypto_provider();
+    let cert_chain = vec![CertificateDer::from(issued.certificate_der)];
+    let private_key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(issued.private_key_der));
+    let mut config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, private_key)
+        .map_err(|error| format!("failed to configure TLS certificate: {error}"))?;
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(config)
+}
+
+fn ensure_rustls_crypto_provider() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
+fn tls_acceptor_for_host(
+    interception: &TransparentInterceptionConfig,
+    host: &str,
+) -> Result<TlsAcceptor, String> {
+    let issued = dam_trust::issue_local_ca_leaf_certificate(&interception.state_dir, host)
+        .map_err(|error| format!("failed to issue local TLS certificate: {error}"))?;
+    tls_server_config(issued).map(|config| TlsAcceptor::from(Arc::new(config)))
+}
+
+fn transparent_interception_readiness(
+    interception: &TransparentInterceptionConfig,
+    ai_route: dam_net::AiRoute,
+) -> dam_intercept::RouteTlsInterceptionReadiness {
+    let routing = dam_net::transparent_route_capture_readiness(
+        ai_route.clone(),
+        dam_net::TrafficProtocol::Https,
+        interception.network_mode,
+        interception.system_proxy_active,
+        interception.tun_active,
+    );
+    let trust_report = dam_trust::readiness_for_route(
+        &dam_net::decide_transparent_route_with_routes(
+            &dam_net::TrafficObservation::new(
+                ai_route.host.clone(),
+                dam_net::TrafficProtocol::Https,
+            ),
+            &interception.ai_routes,
+        ),
+        &interception.trust,
+        interception.user_consented,
+    );
+    let route_trust = dam_trust::RouteTrustReadiness {
+        route: ai_route.clone(),
+        protocol: dam_net::TrafficProtocol::Https,
+        readiness: trust_report.readiness,
+        message: trust_report.message,
+    };
+
+    dam_intercept::readiness_for_route(
+        &routing,
+        &route_trust,
+        interception.user_consented,
+        dam_intercept::TlsInterceptionAdapter::new(true),
+    )
+}
+
+fn connect_host(uri: &Uri, headers: &HeaderMap) -> Option<String> {
+    uri.authority()
+        .map(|authority| authority.as_str())
+        .or_else(|| {
+            headers
+                .get(header::HOST)
+                .and_then(|value| value.to_str().ok())
+        })
+        .map(normalize_host)
+        .filter(|host| !host.is_empty())
+}
+
+fn route_matches_ai_target(
+    route: dam_router::RouteDecision<'_>,
+    ai_route: &dam_net::AiRoute,
+) -> bool {
+    let target = route.target();
+    route.provider_kind().id() == ai_route.provider
+        && (target.name == ai_route.target_name
+            || normalize_host(&target.upstream) == normalize_host(&ai_route.upstream))
+}
+
+async fn read_intercepted_http_request<T>(
+    stream: &mut T,
+) -> Result<Option<InterceptedHttpRequest>, String>
+where
+    T: AsyncRead + Unpin,
+{
+    let mut buffer = Vec::new();
+    let mut scratch = [0_u8; 1024];
+    let header_end = loop {
+        if let Some(index) = find_header_end(&buffer) {
+            break index;
+        }
+        if buffer.len() >= MAX_INTERCEPTED_HEADER_BYTES {
+            return Err("intercepted request headers are too large".to_string());
+        }
+        let read = stream
+            .read(&mut scratch)
+            .await
+            .map_err(|error| format!("failed to read intercepted request: {error}"))?;
+        if read == 0 {
+            if buffer.is_empty() {
+                return Ok(None);
+            }
+            return Err("intercepted request ended before headers completed".to_string());
+        }
+        buffer.extend_from_slice(&scratch[..read]);
+    };
+
+    let head = std::str::from_utf8(&buffer[..header_end])
+        .map_err(|_| "intercepted request headers are not utf-8".to_string())?;
+    let mut lines = head.split("\r\n");
+    let request_line = lines
+        .next()
+        .ok_or_else(|| "intercepted request line is missing".to_string())?;
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts
+        .next()
+        .ok_or_else(|| "intercepted request method is missing".to_string())?
+        .parse::<Method>()
+        .map_err(|_| "intercepted request method is invalid".to_string())?;
+    let target = request_parts
+        .next()
+        .ok_or_else(|| "intercepted request target is missing".to_string())?;
+    let version = request_parts
+        .next()
+        .ok_or_else(|| "intercepted HTTP version is missing".to_string())?;
+    if request_parts.next().is_some() || version != "HTTP/1.1" {
+        return Err("only HTTP/1.1 intercepted requests are supported".to_string());
+    }
+    let uri = parse_intercepted_request_target(target)?;
+
+    let mut headers = HeaderMap::new();
+    let mut content_length_count = 0;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with(' ') || line.starts_with('\t') {
+            return Err("folded intercepted request headers are not supported".to_string());
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            return Err("intercepted request header is invalid".to_string());
+        };
+        let name = HeaderName::from_bytes(name.trim().as_bytes())
+            .map_err(|_| "intercepted request header name is invalid".to_string())?;
+        if name == header::CONTENT_LENGTH {
+            content_length_count += 1;
+        }
+        let value = HeaderValue::from_str(value.trim())
+            .map_err(|_| "intercepted request header value is invalid".to_string())?;
+        headers.append(name, value);
+    }
+
+    if headers.contains_key(header::TRANSFER_ENCODING) {
+        return Err("chunked intercepted requests are not supported".to_string());
+    }
+    if content_length_count > 1 {
+        return Err("multiple content-length headers are not supported".to_string());
+    }
+    let content_length = headers
+        .get(header::CONTENT_LENGTH)
+        .map(|value| {
+            value
+                .to_str()
+                .map_err(|_| "content-length is invalid".to_string())
+                .and_then(|value| {
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| "content-length is invalid".to_string())
+                })
+        })
+        .transpose()?
+        .unwrap_or(0);
+    if content_length > MAX_REQUEST_BYTES {
+        return Err("intercepted request body exceeds the supported size".to_string());
+    }
+
+    let body_start = header_end + 4;
+    let mut body = buffer[body_start..].to_vec();
+    if body.len() > content_length {
+        body.truncate(content_length);
+    }
+    while body.len() < content_length {
+        let mut chunk = vec![0_u8; content_length - body.len()];
+        stream
+            .read_exact(&mut chunk)
+            .await
+            .map_err(|error| format!("failed to read intercepted request body: {error}"))?;
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(Some(InterceptedHttpRequest {
+        method,
+        uri,
+        headers,
+        body: Bytes::from(body),
+    }))
+}
+
+async fn write_intercepted_http_response<T>(
+    stream: &mut T,
+    response: Response,
+) -> Result<(), String>
+where
+    T: AsyncWrite + Unpin,
+{
+    let streaming = response_is_streaming(&response);
+    let (parts, body) = response.into_parts();
+    let reason = parts.status.canonical_reason().unwrap_or("");
+    stream
+        .write_all(format!("HTTP/1.1 {} {reason}\r\n", parts.status.as_u16()).as_bytes())
+        .await
+        .map_err(|error| format!("failed to write intercepted response: {error}"))?;
+    for (name, value) in parts.headers.iter() {
+        if intercepted_response_should_skip_header(name) {
+            continue;
+        }
+        stream
+            .write_all(name.as_str().as_bytes())
+            .await
+            .map_err(|error| format!("failed to write intercepted response: {error}"))?;
+        stream
+            .write_all(b": ")
+            .await
+            .map_err(|error| format!("failed to write intercepted response: {error}"))?;
+        stream
+            .write_all(value.as_bytes())
+            .await
+            .map_err(|error| format!("failed to write intercepted response: {error}"))?;
+        stream
+            .write_all(b"\r\n")
+            .await
+            .map_err(|error| format!("failed to write intercepted response: {error}"))?;
+    }
+    if streaming {
+        stream
+            .write_all(b"transfer-encoding: chunked\r\nconnection: close\r\n\r\n")
+            .await
+            .map_err(|error| format!("failed to write intercepted response: {error}"))?;
+        write_intercepted_chunked_body(stream, body).await?;
+        return Ok(());
+    }
+
+    let body = to_bytes(body, MAX_REQUEST_BYTES)
+        .await
+        .map_err(|_| "intercepted response body exceeds the supported size".to_string())?;
+    stream
+        .write_all(
+            format!(
+                "content-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .map_err(|error| format!("failed to write intercepted response: {error}"))?;
+    stream
+        .write_all(&body)
+        .await
+        .map_err(|error| format!("failed to write intercepted response: {error}"))?;
+    Ok(())
+}
+
+async fn write_intercepted_chunked_body<T>(stream: &mut T, mut body: Body) -> Result<(), String>
+where
+    T: AsyncWrite + Unpin,
+{
+    while let Some(frame) = body.frame().await {
+        let frame = frame
+            .map_err(|error| format!("failed to read intercepted streaming response: {error}"))?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        if data.is_empty() {
+            continue;
+        }
+        stream
+            .write_all(format!("{:x}\r\n", data.len()).as_bytes())
+            .await
+            .map_err(|error| format!("failed to write intercepted streaming response: {error}"))?;
+        stream
+            .write_all(&data)
+            .await
+            .map_err(|error| format!("failed to write intercepted streaming response: {error}"))?;
+        stream
+            .write_all(b"\r\n")
+            .await
+            .map_err(|error| format!("failed to write intercepted streaming response: {error}"))?;
+    }
+    stream
+        .write_all(b"0\r\n\r\n")
+        .await
+        .map_err(|error| format!("failed to finish intercepted streaming response: {error}"))
+}
+
+async fn write_intercepted_error<T>(
+    stream: &mut T,
+    status: StatusCode,
+    message: &str,
+) -> Result<(), String>
+where
+    T: AsyncWrite + Unpin,
+{
+    let safe_message = if message.is_empty() {
+        "intercepted request failed"
+    } else {
+        message
+    };
+    let reason = status.canonical_reason().unwrap_or("Error");
+    let body = format!("{safe_message}\n");
+    let response = format!(
+        "HTTP/1.1 {} {reason}\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+        status.as_u16(),
+        body.len(),
+        body
+    );
+    stream
+        .write_all(response.as_bytes())
+        .await
+        .map_err(|error| format!("failed to write intercepted error response: {error}"))
+}
+
+fn find_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn parse_intercepted_request_target(target: &str) -> Result<Uri, String> {
+    target
+        .parse::<Uri>()
+        .or_else(|_| format!("http://{target}").parse::<Uri>())
+        .map_err(|_| "intercepted request target is invalid".to_string())
+}
+
+fn response_is_streaming(response: &Response) -> bool {
+    response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(';')
+                .any(|part| part.trim().eq_ignore_ascii_case("text/event-stream"))
+        })
+}
+
+fn intercepted_response_should_skip_header(name: &HeaderName) -> bool {
+    matches!(
+        name.as_str().to_ascii_lowercase().as_str(),
+        "content-length" | "connection" | "transfer-encoding" | "keep-alive" | "upgrade"
+    )
+}
+
+fn normalize_host(host: &str) -> String {
+    let trimmed = host.trim().trim_end_matches('.');
+    let without_scheme = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .or_else(|| trimmed.strip_prefix("wss://"))
+        .or_else(|| trimmed.strip_prefix("ws://"))
+        .unwrap_or(trimmed);
+    let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
+    host_port
+        .strip_prefix('[')
+        .and_then(|value| value.split_once(']').map(|(host, _)| host))
+        .unwrap_or_else(|| {
+            host_port
+                .split_once(':')
+                .map(|(host, _)| host)
+                .unwrap_or(host_port)
+        })
+        .to_ascii_lowercase()
+}
+
 fn handle_protection_failure(
     state: Arc<ProxyState>,
     route: dam_router::RouteDecision<'_>,
@@ -467,7 +1351,7 @@ async fn forward_request(
     operation_id: &str,
 ) -> Result<Response, String> {
     let target_api_key = route.target_api_key();
-    match &state.provider {
+    match state.providers.get(route.provider_kind()) {
         ProviderAdapter::OpenAi(provider) => {
             let request = dam_provider_openai::ForwardRequest {
                 upstream: &route.target().upstream,
@@ -761,6 +1645,291 @@ mod tests {
 
     async fn proxy_report(response: reqwest::Response) -> dam_api::ProxyReport {
         response.json().await.expect("proxy report json")
+    }
+
+    #[tokio::test]
+    async fn transparent_connect_requests_fail_closed_without_tls_runtime() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_capture_echo_upstream(upstream_seen.clone()).await;
+        let config = proxy_config(upstream);
+        let log_path = config.log.sqlite_path.clone();
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+        let addr = proxy.strip_prefix("http://").unwrap();
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut stream,
+            b"CONNECT api.openai.com:443 HTTP/1.1\r\nHost: api.openai.com:443\r\nConnection: close\r\n\r\n",
+        )
+        .await
+        .unwrap();
+
+        let mut response = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut response)
+            .await
+            .unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 501"));
+        assert!(
+            response.contains("transparent CONNECT traffic requires the TLS interception runtime")
+        );
+        assert!(upstream_seen.lock().unwrap().is_none());
+        let logs = dam_log::LogStore::open(log_path).unwrap().list().unwrap();
+        assert!(logs.iter().any(|entry| {
+            entry.event_type == "proxy_failure"
+                && entry.action.as_deref() == Some("blocked")
+                && entry
+                    .message
+                    .contains("transparent CONNECT traffic requires")
+        }));
+    }
+
+    #[tokio::test]
+    async fn transparent_connect_requests_fail_closed_when_interception_is_not_ready() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_capture_echo_upstream(upstream_seen.clone()).await;
+        let mut config = proxy_config(upstream);
+        config.proxy.targets[0].name = "openai".to_string();
+        let interception = TransparentInterceptionConfig {
+            state_dir: tempfile::tempdir().unwrap().keep(),
+            network_mode: dam_net::CaptureMode::SystemProxy,
+            system_proxy_active: true,
+            tun_active: false,
+            ai_routes: dam_net::known_ai_routes(),
+            trust: dam_trust::TrustState::default(),
+            user_consented: true,
+        };
+        let proxy =
+            spawn_app(build_app_with_interception(config, Some(interception)).unwrap()).await;
+        let addr = proxy.strip_prefix("http://").unwrap();
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut stream,
+            b"CONNECT api.openai.com:443 HTTP/1.1\r\nHost: api.openai.com:443\r\nConnection: close\r\n\r\n",
+        )
+        .await
+        .unwrap();
+
+        let mut response = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut response)
+            .await
+            .unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 503"));
+        assert!(response.contains("TLS interception is disabled"));
+        assert!(upstream_seen.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn transparent_connect_uses_configured_ai_route_registry() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_capture_echo_upstream(upstream_seen.clone()).await;
+        let mut config = proxy_config(upstream);
+        config.proxy.targets[0].name = "enterprise-ai".to_string();
+        let ai_routes = dam_net::ai_routes_with_overlays([dam_net::AiRoute::custom(
+            "api.enterprise-ai.example",
+            dam_net::OPENAI_COMPATIBLE_PROVIDER,
+            "enterprise-ai",
+            "https://api.enterprise-ai.example",
+        )]);
+        let interception = TransparentInterceptionConfig {
+            state_dir: tempfile::tempdir().unwrap().keep(),
+            network_mode: dam_net::CaptureMode::SystemProxy,
+            system_proxy_active: true,
+            tun_active: false,
+            ai_routes,
+            trust: dam_trust::TrustState::default(),
+            user_consented: true,
+        };
+        let proxy =
+            spawn_app(build_app_with_interception(config, Some(interception)).unwrap()).await;
+        let addr = proxy.strip_prefix("http://").unwrap();
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut stream,
+            b"CONNECT api.enterprise-ai.example:443 HTTP/1.1\r\nHost: api.enterprise-ai.example:443\r\nConnection: close\r\n\r\n",
+        )
+        .await
+        .unwrap();
+
+        let mut response = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut stream, &mut response)
+            .await
+            .unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 503"));
+        assert!(response.contains("TLS interception is disabled"));
+        assert!(!response.contains("not in the known AI route scope"));
+        assert!(upstream_seen.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn transparent_connect_tls_http1_requests_are_protected() {
+        use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::{
+            ClientConfig, RootCertStore,
+            pki_types::{CertificateDer, ServerName},
+        };
+
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_capture_echo_upstream(upstream_seen.clone()).await;
+        let mut config = proxy_config(upstream);
+        config.proxy.targets[0].name = "openai".to_string();
+
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = dam_trust::generate_local_ca_artifact_at(dir.path(), 1).unwrap();
+        let mut record = artifact.record.clone();
+        record.installed_at_unix = Some(2);
+        let trust = dam_trust::TrustState {
+            mode: dam_trust::TrustMode::LocalCa,
+            local_ca: Some(record),
+            ..dam_trust::TrustState::default()
+        };
+        let interception = TransparentInterceptionConfig {
+            state_dir: dir.path().to_path_buf(),
+            network_mode: dam_net::CaptureMode::SystemProxy,
+            system_proxy_active: true,
+            tun_active: false,
+            ai_routes: dam_net::known_ai_routes(),
+            trust,
+            user_consented: true,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            serve_transparent_with_shutdown(listener, config, interception, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut stream,
+            b"CONNECT api.openai.com:443 HTTP/1.1\r\nHost: api.openai.com:443\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        let connect_response = read_until_headers(&mut stream).await;
+        assert!(String::from_utf8_lossy(&connect_response).starts_with("HTTP/1.1 200"));
+
+        let mut roots = RootCertStore::empty();
+        let ca_der = dam_trust::issue_local_ca_leaf_certificate(dir.path(), "api.openai.com")
+            .unwrap()
+            .ca_certificate_der;
+        roots.add(CertificateDer::from(ca_der)).unwrap();
+        let client_config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector = TlsConnector::from(Arc::new(client_config));
+        let server_name = ServerName::try_from("api.openai.com".to_string()).unwrap();
+        let mut tls = connector.connect(server_name, stream).await.unwrap();
+
+        let body = r#"{"input":"email alice@example.com"}"#;
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: api.openai.com\r\nAuthorization: Bearer local\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut tls, request.as_bytes())
+            .await
+            .unwrap();
+        let response = read_intercepted_test_response(&mut tls).await;
+
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(!response.contains("alice@example.com"));
+        assert!(response.contains("[email:"));
+        let upstream_body = upstream_seen.lock().unwrap().clone().unwrap();
+        assert!(!upstream_body.contains("alice@example.com"));
+        assert!(upstream_body.contains("[email:"));
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn transparent_plain_http_streams_event_stream_responses() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_capture_sse_upstream(upstream_seen.clone()).await;
+        let config = proxy_config(upstream);
+        let interception = TransparentInterceptionConfig {
+            state_dir: tempfile::tempdir().unwrap().keep(),
+            network_mode: dam_net::CaptureMode::SystemProxy,
+            system_proxy_active: true,
+            tun_active: false,
+            ai_routes: dam_net::known_ai_routes(),
+            trust: dam_trust::TrustState::default(),
+            user_consented: true,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            serve_transparent_with_shutdown(listener, config, interception, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let body = r#"{"input":[{"content":"email erin@example.com"}],"stream":true}"#;
+        let request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer local\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut stream, request.as_bytes())
+            .await
+            .unwrap();
+        let response = read_intercepted_test_response(&mut stream).await;
+
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.contains("content-type: text/event-stream"));
+        assert!(response.contains("transfer-encoding: chunked"));
+        assert!(!response.contains("erin@example.com"));
+        assert!(response.contains("[email:"));
+        let upstream_body = upstream_seen.lock().unwrap().clone().unwrap();
+        assert!(!upstream_body.contains("erin@example.com"));
+        assert!(upstream_body.contains("[email:"));
+        let _ = shutdown_tx.send(());
+    }
+
+    async fn read_until_headers<T>(stream: &mut T) -> Vec<u8>
+    where
+        T: tokio::io::AsyncRead + Unpin,
+    {
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            let read = tokio::io::AsyncReadExt::read(stream, &mut chunk)
+                .await
+                .unwrap();
+            assert!(
+                read != 0,
+                "connection closed before headers completed: {}",
+                String::from_utf8_lossy(&buffer)
+            );
+            buffer.extend_from_slice(&chunk[..read]);
+            if buffer.ends_with(b"\r\n\r\n") {
+                return buffer;
+            }
+        }
+    }
+
+    async fn read_intercepted_test_response<T>(stream: &mut T) -> String
+    where
+        T: tokio::io::AsyncRead + Unpin,
+    {
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            match tokio::io::AsyncReadExt::read(stream, &mut chunk).await {
+                Ok(0) => break,
+                Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(error) => panic!("failed to read intercepted response: {error}"),
+            }
+        }
+        String::from_utf8(buffer).expect("intercepted response should be utf-8")
     }
 
     #[tokio::test]

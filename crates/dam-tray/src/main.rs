@@ -13,6 +13,7 @@ const DAM_STATE_DIR_ENV: &str = "DAM_STATE_DIR";
 const DAM_CONSENT_PATH_ENV: &str = "DAM_CONSENT_PATH";
 const DAM_WEB_SHELL_ENV: &str = "DAM_WEB_SHELL";
 const DAM_WEB_SHELL_TRAY: &str = "tray";
+const DAM_WEB_TRAY_POST_TOKEN_ENV: &str = "DAM_WEB_TRAY_POST_TOKEN";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CliArgs {
@@ -245,12 +246,14 @@ mod macos {
     const POPOVER_MARGIN: f64 = 8.0;
     const RPBLC_HOME_URL: &str = "https://rpblc.com";
     const TRAY_OPEN_RPBLC_MESSAGE: &str = "dam-tray:open-rpblc";
+    const TRAY_CONNECT_MESSAGE: &str = "dam-tray:connect";
     const TRAY_QUIT_MESSAGE: &str = "dam-tray:quit";
 
     #[derive(Debug)]
     enum UserEvent {
         TrayIcon(TrayIconEvent),
         OpenRpblc,
+        ConnectRequested,
         QuitRequested,
     }
 
@@ -275,12 +278,14 @@ mod macos {
 
         let dam_bin = sibling_or_path(cli.dam_bin.clone(), DAM_BIN_ENV, "dam");
         let dam_web_bin = sibling_or_path(cli.dam_web_bin.clone(), DAM_WEB_BIN_ENV, "dam-web");
+        let tray_post_token = generate_tray_post_token()?;
         let mut web_child = WebChild::spawn(
             &dam_web_bin,
             &dam_bin,
             &addr,
             &data_paths,
             cli.config_path.as_ref(),
+            &tray_post_token,
         )?;
         wait_for_tcp(&addr, Duration::from_secs(8))?;
 
@@ -313,7 +318,7 @@ mod macos {
             .build(&event_loop)
             .map_err(|error| format!("failed to create DAM window: {error}"))?;
 
-        let _webview = WebViewBuilder::new()
+        let webview = WebViewBuilder::new()
             .with_url(&url)
             .with_navigation_handler(move |target| {
                 url_has_local_origin(&target, &navigation_authority)
@@ -327,6 +332,9 @@ mod macos {
                     TRAY_OPEN_RPBLC_MESSAGE => {
                         let _ = ipc_proxy.send_event(UserEvent::OpenRpblc);
                     }
+                    TRAY_CONNECT_MESSAGE => {
+                        let _ = ipc_proxy.send_event(UserEvent::ConnectRequested);
+                    }
                     TRAY_QUIT_MESSAGE => {
                         let _ = ipc_proxy.send_event(UserEvent::QuitRequested);
                     }
@@ -337,8 +345,11 @@ mod macos {
             .map_err(|error| format!("failed to create DAM webview: {error}"))?;
 
         let mut tray_icon = None;
+        let dam_bin_for_connect = dam_bin.clone();
+        let data_paths_for_connect = data_paths.clone();
+        let config_path_for_connect = cli.config_path.clone();
         let dam_bin_for_quit = dam_bin.clone();
-        let state_dir_for_quit = data_paths.state_dir.clone();
+        let data_paths_for_quit = data_paths.clone();
 
         event_loop.run(move |event, _, control_flow| {
             *control_flow = ControlFlow::Wait;
@@ -373,8 +384,19 @@ mod macos {
                         eprintln!("{error}");
                     }
                 }
+                Event::UserEvent(UserEvent::ConnectRequested) => {
+                    let redirect = connect_result_redirect(connect_dam(
+                        &dam_bin_for_connect,
+                        &data_paths_for_connect,
+                        config_path_for_connect.as_ref(),
+                    ));
+                    let script = format!("window.location.href = {}", js_string_literal(&redirect));
+                    if let Err(error) = webview.evaluate_script(&script) {
+                        eprintln!("failed to refresh DAM tray view: {error}");
+                    }
+                }
                 Event::UserEvent(UserEvent::QuitRequested) => {
-                    if let Err(error) = disconnect_dam(&dam_bin_for_quit, &state_dir_for_quit) {
+                    if let Err(error) = disconnect_dam(&dam_bin_for_quit, &data_paths_for_quit) {
                         eprintln!("{error}");
                     }
                     web_child.stop();
@@ -395,6 +417,22 @@ mod macos {
                 _ => {}
             }
         });
+    }
+
+    fn connect_result_redirect(result: Result<(), String>) -> String {
+        match result {
+            Ok(()) => format!(
+                "/connect?notice={}",
+                form_url_encode_component("DAM connected")
+            ),
+            Err(error) => {
+                eprintln!("{error}");
+                format!(
+                    "/connect?error={}",
+                    form_url_encode_component(&format!("Connect failed: {error}"))
+                )
+            }
+        }
     }
 
     fn build_tray() -> Result<tray_icon::TrayIcon, String> {
@@ -502,6 +540,180 @@ mod macos {
         }
     }
 
+    fn connect_dam(
+        dam_bin: &PathBuf,
+        data_paths: &DataPaths,
+        config_path: Option<&PathBuf>,
+    ) -> Result<(), String> {
+        run_dam_command(
+            dam_bin,
+            data_paths,
+            &network_install_args(config_path),
+            "install system proxy routing",
+        )?;
+        run_dam_command(
+            dam_bin,
+            data_paths,
+            &[
+                "trust".to_string(),
+                "install-local-ca".to_string(),
+                "--yes".to_string(),
+            ],
+            "install local trust",
+        )?;
+        let has_active_profile = enabled_profile_selected(dam_bin, data_paths)?;
+        run_dam_command(
+            dam_bin,
+            data_paths,
+            &connect_args(data_paths, config_path, has_active_profile),
+            "connect DAM",
+        )
+    }
+
+    fn network_install_args(config_path: Option<&PathBuf>) -> Vec<String> {
+        let mut args = vec![
+            "network".to_string(),
+            "install-system-proxy".to_string(),
+            "--yes".to_string(),
+        ];
+        if let Some(config_path) = config_path {
+            args.extend(["--config".to_string(), config_path.display().to_string()]);
+        }
+        args
+    }
+
+    fn connect_args(
+        data_paths: &DataPaths,
+        config_path: Option<&PathBuf>,
+        has_active_profile: bool,
+    ) -> Vec<String> {
+        let mut args = vec!["connect".to_string()];
+        if has_active_profile {
+            args.push("--apply".to_string());
+        }
+        if let Some(config_path) = config_path {
+            args.extend(["--config".to_string(), config_path.display().to_string()]);
+        }
+        args.extend([
+            "--db".to_string(),
+            data_paths.vault_path.display().to_string(),
+            "--log".to_string(),
+            data_paths.log_path.display().to_string(),
+            "--consent-db".to_string(),
+            data_paths.consent_path.display().to_string(),
+            "--network-mode".to_string(),
+            "system_proxy".to_string(),
+            "--trust-mode".to_string(),
+            "local_ca".to_string(),
+        ]);
+        args
+    }
+
+    fn enabled_profile_selected(dam_bin: &PathBuf, data_paths: &DataPaths) -> Result<bool, String> {
+        let output = Command::new(dam_bin)
+            .arg("profile")
+            .arg("status")
+            .env(DAM_STATE_DIR_ENV, &data_paths.state_dir)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| format!("failed to inspect active profile: {error}"))?;
+        if !output.status.success() {
+            return Err(command_error(
+                "inspect active profile",
+                &["profile".to_string(), "status".to_string()],
+                &output,
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(profile_status_has_enabled_profile(&stdout))
+    }
+
+    fn profile_status_has_enabled_profile(output: &str) -> bool {
+        output
+            .lines()
+            .find_map(|line| line.strip_prefix("enabled_profiles: "))
+            .map(|profiles| profiles.trim() != "none")
+            .unwrap_or_else(|| {
+                output
+                    .lines()
+                    .find_map(|line| line.strip_prefix("active_profile: "))
+                    .map(|profile| profile.trim() != "none")
+                    .unwrap_or(false)
+            })
+    }
+
+    fn run_dam_command(
+        dam_bin: &PathBuf,
+        data_paths: &DataPaths,
+        args: &[String],
+        label: &str,
+    ) -> Result<(), String> {
+        let output = Command::new(dam_bin)
+            .args(args)
+            .env(DAM_STATE_DIR_ENV, &data_paths.state_dir)
+            .env(DAM_CONSENT_PATH_ENV, &data_paths.consent_path)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| format!("failed to {label}: {error}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(command_error(label, args, &output))
+        }
+    }
+
+    fn command_error(label: &str, args: &[String], output: &std::process::Output) -> String {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let message = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        if message.is_empty() {
+            format!(
+                "failed to {label}: dam {} exited with {}",
+                args.join(" "),
+                output.status
+            )
+        } else {
+            format!("failed to {label}: {message}")
+        }
+    }
+
+    fn form_url_encode_component(value: &str) -> String {
+        let mut encoded = String::new();
+        for byte in value.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    encoded.push(byte as char)
+                }
+                b' ' => encoded.push('+'),
+                _ => encoded.push_str(&format!("%{byte:02X}")),
+            }
+        }
+        encoded
+    }
+
+    fn js_string_literal(value: &str) -> String {
+        let mut escaped = String::with_capacity(value.len() + 2);
+        escaped.push('"');
+        for ch in value.chars() {
+            match ch {
+                '\\' => escaped.push_str("\\\\"),
+                '"' => escaped.push_str("\\\""),
+                '\n' => escaped.push_str("\\n"),
+                '\r' => escaped.push_str("\\r"),
+                '<' => escaped.push_str("\\u003c"),
+                '>' => escaped.push_str("\\u003e"),
+                '&' => escaped.push_str("\\u0026"),
+                _ => escaped.push(ch),
+            }
+        }
+        escaped.push('"');
+        escaped
+    }
+
     fn url_has_local_origin(candidate: &str, allowed_authority: &str) -> bool {
         let Some(rest) = candidate.strip_prefix("http://") else {
             return false;
@@ -513,10 +725,36 @@ mod macos {
         authority == Some(allowed_authority)
     }
 
-    fn disconnect_dam(dam_bin: &PathBuf, state_dir: &PathBuf) -> Result<(), String> {
+    fn network_remove_args() -> Vec<String> {
+        vec![
+            "network".to_string(),
+            "remove-system-proxy".to_string(),
+            "--yes".to_string(),
+        ]
+    }
+
+    fn disconnect_dam(dam_bin: &PathBuf, data_paths: &DataPaths) -> Result<(), String> {
+        run_dam_command(
+            dam_bin,
+            data_paths,
+            &network_remove_args(),
+            "restore system proxy routing",
+        )?;
+        for profile_id in profiles_with_rollback(dam_bin, data_paths)? {
+            run_dam_command(
+                dam_bin,
+                data_paths,
+                &[
+                    "integrations".to_string(),
+                    "rollback".to_string(),
+                    profile_id,
+                ],
+                "restore active profile setup",
+            )?;
+        }
         let status = Command::new(dam_bin)
             .arg("disconnect")
-            .env(DAM_STATE_DIR_ENV, state_dir)
+            .env(DAM_STATE_DIR_ENV, &data_paths.state_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -527,6 +765,76 @@ mod macos {
         } else {
             Err(format!("`dam disconnect` exited with {status}"))
         }
+    }
+
+    fn profiles_with_rollback(
+        dam_bin: &PathBuf,
+        data_paths: &DataPaths,
+    ) -> Result<Vec<String>, String> {
+        let output = Command::new(dam_bin)
+            .arg("profile")
+            .arg("status")
+            .env(DAM_STATE_DIR_ENV, &data_paths.state_dir)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| format!("failed to inspect active profile: {error}"))?;
+        if !output.status.success() {
+            return Err(command_error(
+                "inspect active profile",
+                &["profile".to_string(), "status".to_string()],
+                &output,
+            ));
+        }
+        Ok(parse_profiles_with_rollback(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+
+    fn parse_profiles_with_rollback(output: &str) -> Vec<String> {
+        let profiles = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("rollback_profile: "))
+            .map(str::trim)
+            .filter(|profile| !profile.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        if !profiles.is_empty() {
+            return profiles;
+        }
+        let profile = output
+            .lines()
+            .find_map(|line| line.strip_prefix("active_profile: "))
+            .map(str::trim)
+            .filter(|profile| !profile.is_empty() && *profile != "none");
+        let rollback_available = output
+            .lines()
+            .find_map(|line| line.strip_prefix("rollback: "))
+            .map(str::trim)
+            == Some("available");
+        match (profile, rollback_available) {
+            (Some(profile), true) => vec![profile.to_string()],
+            _ => Vec::new(),
+        }
+    }
+
+    fn generate_tray_post_token() -> Result<String, String> {
+        use std::io::Read as _;
+
+        let mut bytes = [0_u8; 24];
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut file| file.read_exact(&mut bytes))
+            .map_err(|error| format!("failed to generate tray session token: {error}"))?;
+        Ok(hex_encode(&bytes))
+    }
+
+    pub(super) fn hex_encode(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut encoded = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        encoded
     }
 
     struct WebChild {
@@ -540,6 +848,7 @@ mod macos {
             addr: &str,
             data_paths: &DataPaths,
             config_path: Option<&PathBuf>,
+            tray_post_token: &str,
         ) -> Result<Self, String> {
             let mut command = Command::new(dam_web_bin);
             if let Some(path) = config_path {
@@ -556,6 +865,7 @@ mod macos {
                 .env(DAM_STATE_DIR_ENV, &data_paths.state_dir)
                 .env(DAM_CONSENT_PATH_ENV, &data_paths.consent_path)
                 .env(DAM_WEB_SHELL_ENV, DAM_WEB_SHELL_TRAY)
+                .env(DAM_WEB_TRAY_POST_TOKEN_ENV, tray_post_token)
                 .stdin(Stdio::null())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit());
@@ -641,6 +951,93 @@ mod macos {
             ));
             assert!(!url_has_local_origin("https://rpblc.com", "127.0.0.1:2896"));
         }
+
+        #[test]
+        fn native_connect_args_include_state_paths_and_transparent_modes() {
+            let data_paths = DataPaths {
+                state_dir: PathBuf::from("/tmp/dam-state"),
+                vault_path: PathBuf::from("/tmp/dam-state/vault.db"),
+                log_path: PathBuf::from("/tmp/dam-state/log.db"),
+                consent_path: PathBuf::from("/tmp/dam-state/consent.db"),
+            };
+            let args = connect_args(&data_paths, Some(&PathBuf::from("dam.toml")), true);
+
+            assert!(args.contains(&"--apply".to_string()));
+            assert!(arg_pair_exists(&args, "--config", "dam.toml"));
+            assert!(arg_pair_exists(&args, "--db", "/tmp/dam-state/vault.db"));
+            assert!(arg_pair_exists(&args, "--log", "/tmp/dam-state/log.db"));
+            assert!(arg_pair_exists(
+                &args,
+                "--consent-db",
+                "/tmp/dam-state/consent.db"
+            ));
+            assert!(arg_pair_exists(&args, "--network-mode", "system_proxy"));
+            assert!(arg_pair_exists(&args, "--trust-mode", "local_ca"));
+        }
+
+        #[test]
+        fn native_disconnect_removes_system_proxy_before_daemon_stop() {
+            assert_eq!(
+                network_remove_args(),
+                vec![
+                    "network".to_string(),
+                    "remove-system-proxy".to_string(),
+                    "--yes".to_string(),
+                ]
+            );
+        }
+
+        #[test]
+        fn native_disconnect_rolls_back_applied_enabled_profiles() {
+            assert_eq!(
+                parse_profiles_with_rollback(
+                    "active_profile: claude-code\napply_state: applied\nrollback: available\n"
+                ),
+                vec!["claude-code".to_string()]
+            );
+            assert_eq!(
+                parse_profiles_with_rollback(
+                    "active_profile: claude-code\napply_state: needs_apply\nrollback: unavailable\n"
+                ),
+                Vec::<String>::new()
+            );
+            assert_eq!(
+                parse_profiles_with_rollback("active_profile: none\n"),
+                Vec::<String>::new()
+            );
+            assert_eq!(
+                parse_profiles_with_rollback(
+                    "enabled_profiles: codex-api, claude-code\nrollback_profile: codex-api\nrollback_profile: claude-code\n"
+                ),
+                vec!["codex-api".to_string(), "claude-code".to_string()]
+            );
+        }
+
+        #[test]
+        fn native_connect_notice_encoding_is_url_and_js_safe() {
+            assert_eq!(
+                form_url_encode_component("Connect failed: local trust"),
+                "Connect+failed%3A+local+trust"
+            );
+            assert_eq!(js_string_literal("\"<&"), "\"\\\"\\u003c\\u0026\"");
+        }
+
+        #[test]
+        fn native_connect_failure_redirect_uses_error_banner_param() {
+            assert_eq!(
+                connect_result_redirect(Ok(())),
+                "/connect?notice=DAM+connected"
+            );
+            assert_eq!(
+                connect_result_redirect(Err("local trust".to_string())),
+                "/connect?error=Connect+failed%3A+local+trust"
+            );
+        }
+
+        fn arg_pair_exists(args: &[String], name: &str, value: &str) -> bool {
+            args.windows(2)
+                .any(|pair| pair[0] == name && pair[1] == value)
+        }
     }
 }
 
@@ -696,5 +1093,10 @@ mod tests {
             connect_url("127.0.0.1:2896"),
             "http://127.0.0.1:2896/connect"
         );
+    }
+
+    #[test]
+    fn hex_encode_uses_lowercase_pairs() {
+        assert_eq!(macos::hex_encode(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
     }
 }
