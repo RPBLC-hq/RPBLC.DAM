@@ -74,7 +74,7 @@ pub enum MacosNetworkExtensionError {
     },
 
     #[error(
-        "macOS Network Extension helper is required to activate capture for {bundle_identifier}; set DAM_MACOS_NE_HELPER in source builds or use the signed app bundle"
+        "macOS Network Extension helper is required to configure capture for {bundle_identifier}; set DAM_MACOS_NE_HELPER in source builds or use the signed app bundle"
     )]
     MissingHelper { bundle_identifier: String },
 
@@ -254,7 +254,7 @@ pub fn install_network_extension_for_hosts(
         ai_hosts: plan.ai_hosts.clone(),
         installed_at_unix: unix_timestamp()?,
         active: true,
-        activation_method: "native_helper".to_string(),
+        activation_method: "app_owned_system_extension_native_helper_config".to_string(),
     };
     write_state_record(&plan.paths, &record)?;
 
@@ -350,10 +350,10 @@ fn install_plan_for_hosts(
     } else if pending_approval {
         "macOS Network Extension activation is waiting for user approval".to_string()
     } else if commands.is_empty() {
-        "packaged macOS Network Extension helper is required before capture can be activated"
+        "packaged macOS Network Extension helper is required before capture can be configured"
             .to_string()
     } else {
-        "will ask the packaged macOS helper to activate Network Extension capture".to_string()
+        "will ask the packaged macOS helper to configure Network Extension capture".to_string()
     };
     let backend_status = backend_status_from_record(record.as_ref(), message.clone());
 
@@ -583,12 +583,28 @@ fn run_helper_command(
         }
         return Ok(());
     }
+    let mut stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() && was_sigkill(&output.status) {
+        stderr = "macOS killed the Network Extension helper before it could run; the installed app provisioning profile likely does not authorize a restricted entitlement such as com.apple.developer.networking.networkextension or com.apple.security.application-groups".to_string();
+    }
     Err(MacosNetworkExtensionError::HelperFailed {
         program: command.program.clone(),
         args: command.args.join(" "),
         status: output.status.to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        stderr,
     })
+}
+
+#[cfg(unix)]
+fn was_sigkill(status: &std::process::ExitStatus) -> bool {
+    use std::os::unix::process::ExitStatusExt;
+
+    status.signal() == Some(9)
+}
+
+#[cfg(not(unix))]
+fn was_sigkill(_status: &std::process::ExitStatus) -> bool {
+    false
 }
 
 fn write_state_record(
@@ -855,6 +871,28 @@ mod tests {
         assert!(error.to_string().contains("needs_user_approval"));
         assert!(!network_extension_installed(dir.path()));
         assert!(!network_extension_active(dir.path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn helper_sigkill_reports_likely_restricted_entitlement_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("helper.sh");
+        fs::write(&helper, "#!/bin/sh\nkill -9 $$\n").unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let _helper = HelperEnvGuard::with_helper_path(&helper);
+        let error =
+            install_network_extension_for_hosts(dir.path(), &["api.openai.com".to_string()])
+                .unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("signal: 9"));
+        assert!(message.contains("provisioning profile likely does not authorize"));
+        assert!(message.contains("com.apple.developer.networking.networkextension"));
+        assert!(!network_extension_installed(dir.path()));
     }
 
     #[test]

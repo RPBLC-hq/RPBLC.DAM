@@ -6,13 +6,6 @@ struct TransparentProxyController {
     private let store = ManagerStore()
 
     func install(_ options: DAMHelperOptions) async throws -> String {
-        let activation = try await MainActor.run {
-            let activator = SystemExtensionActivation()
-            return try activator.activate(bundleIdentifier: options.bundleIdentifier)
-        }
-        if case .needsUserApproval(let message) = activation {
-            throw TransparentProxyControllerError.userApprovalRequiresAppProcess(message)
-        }
         let managers = try await store.loadManagers()
         let manager = store.manager(matching: options.bundleIdentifier, in: managers) ?? NETransparentProxyManager()
         let provider = NETunnelProviderProtocol()
@@ -31,14 +24,7 @@ struct TransparentProxyController {
             try manager.connection.startVPNTunnel(options: [:])
         }
 
-        let activationMessage: String
-        switch activation {
-        case .finished(let message):
-            activationMessage = message
-        case .needsUserApproval(let message):
-            activationMessage = message
-        }
-        return "installed \(options.bundleIdentifier) with \(options.runtimeConfiguration.protectedHosts.count) protected hosts; \(activationMessage)"
+        return "installed \(options.bundleIdentifier) with \(options.runtimeConfiguration.protectedHosts.count) protected hosts after app-owned activation"
     }
 
     func remove(_ options: DAMHelperOptions) async throws -> String {
@@ -76,17 +62,6 @@ struct TransparentProxyController {
             return "disconnecting"
         @unknown default:
             return "unknown"
-        }
-    }
-
-    enum TransparentProxyControllerError: Error, CustomStringConvertible {
-        case userApprovalRequiresAppProcess(String)
-
-        var description: String {
-            switch self {
-            case .userApprovalRequiresAppProcess(let message):
-                return message
-            }
         }
     }
 }

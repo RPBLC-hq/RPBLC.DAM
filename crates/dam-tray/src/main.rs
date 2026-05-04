@@ -249,6 +249,8 @@ mod macos {
     const POPOVER_HEIGHT: f64 = 720.0;
     const POPOVER_MARGIN: f64 = 8.0;
     const RPBLC_HOME_URL: &str = "https://rpblc.com";
+    const MACOS_NETWORK_EXTENSION_APPROVAL_SETTINGS_URL: &str =
+        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension";
     const TRAY_OPEN_RPBLC_MESSAGE: &str = "dam-tray:open-rpblc";
     const TRAY_CONNECT_MESSAGE: &str = "dam-tray:connect";
     const TRAY_QUIT_MESSAGE: &str = "dam-tray:quit";
@@ -591,10 +593,24 @@ mod macos {
         match crate::macos_system_extension::activate(&bundle_identifier, Duration::from_secs(20)) {
             Ok(crate::macos_system_extension::ActivationOutcome::Ready(_)) => Ok(()),
             Ok(crate::macos_system_extension::ActivationOutcome::NeedsApproval(message)) => {
+                open_network_extension_approval_settings();
                 Err(format!("action required: {message}"))
             }
             Err(error) => Err(format!("activate DAM Network Protection: {error}")),
         }
+    }
+
+    fn open_network_extension_approval_settings() {
+        if open_in_browser(MACOS_NETWORK_EXTENSION_APPROVAL_SETTINGS_URL).is_ok() {
+            return;
+        }
+        let _ = Command::new("open")
+            .arg("-b")
+            .arg("com.apple.systempreferences")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 
     fn network_install_args(config_path: Option<&PathBuf>) -> Vec<String> {

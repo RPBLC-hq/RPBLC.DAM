@@ -131,6 +131,29 @@ team_identifier_for_profile() {
   printf '%s\n' "$team"
 }
 
+require_profile_entitlement_contains() {
+  local profile="$1"
+  local profile_name="$2"
+  local key="$3"
+  local expected="$4"
+  local plist actual
+  plist="$(mktemp)"
+  decode_profile "$profile" "$plist"
+  if ! actual="$(/usr/libexec/PlistBuddy -c "Print :Entitlements:$key" "$plist" 2>/dev/null)"; then
+    echo "provisioning profile $profile_name is missing entitlement $key" >&2
+    echo "profile: $profile" >&2
+    rm -f "$plist"
+    exit 1
+  fi
+  rm -f "$plist"
+  if ! grep -q "$expected" <<<"$actual"; then
+    echo "provisioning profile $profile_name entitlement $key did not contain $expected" >&2
+    echo "profile: $profile" >&2
+    echo "$actual" >&2
+    exit 1
+  fi
+}
+
 require_signed_entitlement_contains() {
   local signed="$1"
   local key="$2"
@@ -242,6 +265,11 @@ fi
 APP_GROUP_ID="${APP_GROUP_ID:-$TEAM_ID.$APP_BUNDLE_ID}"
 APP_IDENTITY="$(identity_for_profile "$APP_PROFILE")"
 EXT_IDENTITY="$(identity_for_profile "$EXT_PROFILE")"
+require_profile_entitlement_contains "$APP_PROFILE" "$APP_PROFILE_NAME" "com.apple.developer.system-extension.install" "true"
+require_profile_entitlement_contains "$APP_PROFILE" "$APP_PROFILE_NAME" "com.apple.security.application-groups" "$APP_GROUP_ID"
+require_profile_entitlement_contains "$APP_PROFILE" "$APP_PROFILE_NAME" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
+require_profile_entitlement_contains "$EXT_PROFILE" "$EXT_PROFILE_NAME" "com.apple.security.application-groups" "$APP_GROUP_ID"
+require_profile_entitlement_contains "$EXT_PROFILE" "$EXT_PROFILE_NAME" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
 
 ENTITLEMENTS_DIR="$OUT_DIR/entitlements/$MODE"
 mkdir -p "$ENTITLEMENTS_DIR"
@@ -321,9 +349,12 @@ echo "Verifying signatures..."
 codesign --verify --deep --strict --verbose=2 "$APP"
 require_signed_entitlement_contains "$APP" "com.apple.developer.system-extension.install" "true"
 require_signed_entitlement_contains "$APP" "com.apple.security.application-groups" "$APP_GROUP_ID"
+require_signed_entitlement_contains "$APP" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
 require_signed_entitlement_contains "$MACOS/dam-macos-ne-helper" "com.apple.developer.system-extension.install" "true"
 require_signed_entitlement_contains "$MACOS/dam-macos-ne-helper" "com.apple.security.application-groups" "$APP_GROUP_ID"
+require_signed_entitlement_contains "$MACOS/dam-macos-ne-helper" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
 require_signed_entitlement_contains "$MACOS/dam-tray" "com.apple.security.application-groups" "$APP_GROUP_ID"
+require_signed_entitlement_contains "$MACOS/dam-tray" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
 require_signed_entitlement_contains "$EXT" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
 require_signed_entitlement_contains "$EXT" "com.apple.security.application-groups" "$APP_GROUP_ID"
 

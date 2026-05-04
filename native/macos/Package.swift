@@ -35,7 +35,6 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("Network"),
                 .linkedFramework("NetworkExtension"),
-                .linkedFramework("SystemExtensions"),
             ]
         ),
         .testTarget(
