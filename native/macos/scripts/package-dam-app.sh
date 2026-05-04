@@ -155,6 +155,20 @@ require_signed_entitlement_contains() {
   fi
 }
 
+require_plist_nonempty() {
+  local plist="$1"
+  local key="$2"
+  local value
+  if ! value="$(/usr/libexec/PlistBuddy -c "Print :$key" "$plist" 2>/dev/null)"; then
+    echo "missing Info.plist key $key in $plist" >&2
+    exit 1
+  fi
+  if [[ -z "${value//[[:space:]]/}" ]]; then
+    echo "empty Info.plist key $key in $plist" >&2
+    exit 1
+  fi
+}
+
 sign_code() {
   local identity="$1"
   shift
@@ -230,6 +244,7 @@ mkdir -p "$MACOS" "$RESOURCES" "$EXT_MACOS"
 
 cp "$NATIVE/InfoPlists/DAM.Info.plist" "$CONTENTS/Info.plist"
 cp "$NATIVE/InfoPlists/DAMTransparentProxyProvider.Info.plist" "$EXT_CONTENTS/Info.plist"
+require_plist_nonempty "$EXT_CONTENTS/Info.plist" "NSSystemExtensionUsageDescription"
 cp "$APP_PROFILE" "$CONTENTS/embedded.provisionprofile"
 cp "$EXT_PROFILE" "$EXT_CONTENTS/embedded.provisionprofile"
 
