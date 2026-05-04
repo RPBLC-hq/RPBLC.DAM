@@ -2025,7 +2025,7 @@ fn render_network_extension_result(
     }
     if result.state == dam_net_macos::MacosNetworkExtensionResultState::NeedsApproval {
         output.push_str(
-            "approval: approve DAM Network Protection in System Settings, then click Connect again\n",
+            "approval: approve DAM Network Protection in System Settings, then click Connect/Resume again\n",
         );
     }
     if !approved && plan.can_execute {

@@ -109,7 +109,7 @@ static void DAMCopyMessage(NSString *message, char *buffer, size_t bufferLength)
 - (void)requestNeedsUserApproval:(OSSystemExtensionRequest *)request {
     (void)request;
     self.status = DAMActivationStatusNeedsApproval;
-    self.message = @"approve DAM Network Protection in System Settings, then click Connect again";
+    self.message = @"approve DAM Network Protection in System Settings, then click Connect/Resume again";
     DAMRetainPendingActivation(self);
     [self complete];
 }

@@ -946,10 +946,10 @@ mod macos {
             );
             assert_eq!(
                 connect_result_redirect(Err(
-                    "action required: approve DAM Network Protection in System Settings, then click Connect again"
+                    "action required: approve DAM Network Protection in System Settings, then click Connect/Resume again"
                         .to_string()
                 )),
-                "/connect?error=Action+required%3A+approve+DAM+Network+Protection+in+System+Settings%2C+then+click+Connect+again"
+                "/connect?error=Action+required%3A+approve+DAM+Network+Protection+in+System+Settings%2C+then+click+Connect%2FResume+again"
             );
         }
 
@@ -958,12 +958,12 @@ mod macos {
             let stdout = concat!(
                 "state: needs_approval\n",
                 "message: raw helper state\n",
-                "approval: approve DAM Network Protection in System Settings, then click Connect again\n",
+                "approval: approve DAM Network Protection in System Settings, then click Connect/Resume again\n",
             );
 
             assert_eq!(
                 dam_command_failure_message(stdout, ""),
-                "approve DAM Network Protection in System Settings, then click Connect again"
+                "approve DAM Network Protection in System Settings, then click Connect/Resume again"
             );
             assert_eq!(
                 dam_command_failure_message(stdout, "explicit failure"),

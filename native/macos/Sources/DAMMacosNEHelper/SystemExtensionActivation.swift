@@ -52,7 +52,7 @@ final class SystemExtensionActivation: NSObject, OSSystemExtensionRequestDelegat
     func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
         requiredUserApproval = true
         complete(.success(.needsUserApproval(
-            "needs_user_approval \(bundleIdentifier) open DAM and approve DAM Network Protection in System Settings, then click Connect again"
+            "needs_user_approval \(bundleIdentifier) open DAM and approve DAM Network Protection in System Settings, then click Connect/Resume again"
         )))
     }
 
@@ -91,7 +91,7 @@ final class SystemExtensionActivation: NSObject, OSSystemExtensionRequestDelegat
             case .missingResult:
                 return "system extension activation finished without a result"
             case .timedOut(let bundleIdentifier):
-                return "system extension activation timed out before macOS registered \(bundleIdentifier); open DAM and click Connect to request approval from the app"
+                return "system extension activation timed out before macOS registered \(bundleIdentifier); open DAM and click Connect/Resume to request approval from the app"
             }
         }
     }

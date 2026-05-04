@@ -4,7 +4,7 @@
 
 It manages macOS Auto Proxy Configuration through `networksetup` and a DAM-generated PAC file. The PAC routes proxy-capable HTTP and HTTPS traffic to the local DAM proxy, while bypassing localhost, plain hostnames, `.local`, loopback, link-local, and private LAN address ranges.
 
-It also owns the macOS Network Extension control-plane used by `tun` mode. `dam-tray` owns the app-process System Extension activation request for packaged builds, because macOS keeps user approval pending only while the requesting app is alive. `dam network install-network-extension` then plans configuration through the native Swift helper/provider package under `native/macos` (`DAM_MACOS_NE_HELPER` in source builds, or the signed app bundle in release builds). Without that helper, install fails closed instead of recording false active capture.
+It also owns the macOS Network Extension control-plane used by `tun` mode. `dam-tray` owns the app-process System Extension activation request for packaged builds, because macOS keeps user approval pending only while the requesting app is alive. The tray refreshes `systemextensionsctl` before activation so `activated waiting for user` maps to the System Settings approval action and `activated enabled` proceeds to setup. `dam network install-network-extension` then plans configuration through the native Swift helper/provider package under `native/macos` (`DAM_MACOS_NE_HELPER` in source builds, or the signed app bundle in release builds). Without that helper, install fails closed instead of recording false active capture.
 
 ## Commands
 

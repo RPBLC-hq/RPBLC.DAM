@@ -6053,12 +6053,12 @@ mod tests {
         let stdout = concat!(
             "state: needs_approval\n",
             "message: raw helper state\n",
-            "approval: approve DAM Network Protection in System Settings, then click Connect again\n",
+            "approval: approve DAM Network Protection in System Settings, then click Connect/Resume again\n",
         );
 
         assert_eq!(
             dam_command_failure_message(stdout, ""),
-            "approve DAM Network Protection in System Settings, then click Connect again"
+            "approve DAM Network Protection in System Settings, then click Connect/Resume again"
         );
         assert_eq!(
             dam_command_failure_message(stdout, "explicit failure"),
