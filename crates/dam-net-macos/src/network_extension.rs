@@ -554,11 +554,27 @@ fn helper_path() -> Option<PathBuf> {
 
     let exe = env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
-    let candidates = [
+    helper_path_candidates(exe_dir)
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+fn helper_path_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![
         exe_dir.join("dam-macos-ne-helper"),
         exe_dir.join("Helpers").join("dam-macos-ne-helper"),
     ];
-    candidates.into_iter().find(|path| path.is_file())
+    if let Some(contents_dir) = exe_dir.parent() {
+        candidates.push(
+            contents_dir
+                .join("Helpers")
+                .join("DAMMacosNEHelper.app")
+                .join("Contents")
+                .join("MacOS")
+                .join("dam-macos-ne-helper"),
+        );
+    }
+    candidates
 }
 
 fn run_helper_command(
@@ -914,6 +930,15 @@ mod tests {
         assert!(command.args.contains(&"api.openai.com".to_string()));
         assert!(command.args.contains(&"--exclude-signing-id".to_string()));
         assert!(command.args.contains(&"com.rpblc.dam.proxy".to_string()));
+    }
+
+    #[test]
+    fn helper_path_candidates_include_packaged_helper_app_wrapper() {
+        let candidates = helper_path_candidates(Path::new("/Applications/DAM.app/Contents/MacOS"));
+
+        assert!(candidates.contains(&PathBuf::from(
+            "/Applications/DAM.app/Contents/Helpers/DAMMacosNEHelper.app/Contents/MacOS/dam-macos-ne-helper"
+        )));
     }
 
     #[test]

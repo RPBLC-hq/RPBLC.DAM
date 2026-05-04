@@ -290,30 +290,38 @@ swift build --package-path "$NATIVE" -c release
 APP="$OUT_DIR/$APP_NAME.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
+HELPERS="$CONTENTS/Helpers"
 RESOURCES="$CONTENTS/Resources"
 SYSTEM_EXTENSIONS="$CONTENTS/Library/SystemExtensions"
+HELPER_APP="$HELPERS/DAMMacosNEHelper.app"
+HELPER_CONTENTS="$HELPER_APP/Contents"
+HELPER_MACOS="$HELPER_CONTENTS/MacOS"
+HELPER_BIN="$HELPER_MACOS/dam-macos-ne-helper"
 EXT="$SYSTEM_EXTENSIONS/$EXT_BUNDLE_ID.systemextension"
 EXT_CONTENTS="$EXT/Contents"
 EXT_MACOS="$EXT_CONTENTS/MacOS"
 SWIFT_BUILD="$NATIVE/.build/arm64-apple-macosx/release"
 
 rm -rf "$APP"
-mkdir -p "$MACOS" "$RESOURCES" "$EXT_MACOS"
+mkdir -p "$MACOS" "$RESOURCES" "$HELPER_MACOS" "$EXT_MACOS"
 
 cp "$NATIVE/InfoPlists/DAM.Info.plist" "$CONTENTS/Info.plist"
+cp "$NATIVE/InfoPlists/DAMMacosNEHelper.Info.plist" "$HELPER_CONTENTS/Info.plist"
 materialize_template "$NATIVE/InfoPlists/DAMTransparentProxyProvider.Info.plist" "$EXT_CONTENTS/Info.plist"
+plutil -lint "$HELPER_CONTENTS/Info.plist" >/dev/null
 plutil -lint "$EXT_CONTENTS/Info.plist" >/dev/null
 require_plist_nonempty "$EXT_CONTENTS/Info.plist" "NSSystemExtensionUsageDescription"
 require_plist_nonempty "$EXT_CONTENTS/Info.plist" "NetworkExtension:NEMachServiceName"
 require_plist_nonempty "$EXT_CONTENTS/Info.plist" "NetworkExtension:NEProviderClasses:com.apple.networkextension.app-proxy"
 require_plist_value_prefixed_by "$EXT_CONTENTS/Info.plist" "NetworkExtension:NEMachServiceName" "$APP_GROUP_ID."
 cp "$APP_PROFILE" "$CONTENTS/embedded.provisionprofile"
+cp "$APP_PROFILE" "$HELPER_CONTENTS/embedded.provisionprofile"
 cp "$EXT_PROFILE" "$EXT_CONTENTS/embedded.provisionprofile"
 
 for bin in dam dam-web dam-proxy dam-mcp dam-daemon dam-tray; do
   cp "$ROOT/target/release/$bin" "$MACOS/$bin"
 done
-cp "$SWIFT_BUILD/dam-macos-ne-helper" "$MACOS/dam-macos-ne-helper"
+cp "$SWIFT_BUILD/dam-macos-ne-helper" "$HELPER_BIN"
 
 echo "Linking transparent proxy provider bundle executable..."
 xcrun swiftc \
@@ -336,7 +344,8 @@ echo "Signing nested executables..."
 for bin in dam dam-web dam-proxy dam-mcp dam-daemon; do
   sign_code "$APP_IDENTITY" "$MACOS/$bin"
 done
-sign_code "$APP_IDENTITY" --identifier "$APP_BUNDLE_ID" --entitlements "$APP_ENTITLEMENTS" "$MACOS/dam-macos-ne-helper"
+sign_code "$APP_IDENTITY" --identifier "$APP_BUNDLE_ID" --entitlements "$APP_ENTITLEMENTS" "$HELPER_BIN"
+sign_code "$APP_IDENTITY" --entitlements "$APP_ENTITLEMENTS" "$HELPER_APP"
 sign_code "$APP_IDENTITY" --entitlements "$APP_ENTITLEMENTS" "$MACOS/dam-tray"
 
 echo "Signing system extension..."
@@ -350,9 +359,12 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 require_signed_entitlement_contains "$APP" "com.apple.developer.system-extension.install" "true"
 require_signed_entitlement_contains "$APP" "com.apple.security.application-groups" "$APP_GROUP_ID"
 require_signed_entitlement_contains "$APP" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
-require_signed_entitlement_contains "$MACOS/dam-macos-ne-helper" "com.apple.developer.system-extension.install" "true"
-require_signed_entitlement_contains "$MACOS/dam-macos-ne-helper" "com.apple.security.application-groups" "$APP_GROUP_ID"
-require_signed_entitlement_contains "$MACOS/dam-macos-ne-helper" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
+require_signed_entitlement_contains "$HELPER_APP" "com.apple.developer.system-extension.install" "true"
+require_signed_entitlement_contains "$HELPER_APP" "com.apple.security.application-groups" "$APP_GROUP_ID"
+require_signed_entitlement_contains "$HELPER_APP" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
+require_signed_entitlement_contains "$HELPER_BIN" "com.apple.developer.system-extension.install" "true"
+require_signed_entitlement_contains "$HELPER_BIN" "com.apple.security.application-groups" "$APP_GROUP_ID"
+require_signed_entitlement_contains "$HELPER_BIN" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
 require_signed_entitlement_contains "$MACOS/dam-tray" "com.apple.security.application-groups" "$APP_GROUP_ID"
 require_signed_entitlement_contains "$MACOS/dam-tray" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
 require_signed_entitlement_contains "$EXT" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"

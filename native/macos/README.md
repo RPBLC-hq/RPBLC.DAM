@@ -17,7 +17,7 @@ Release packaging:
 native/macos/scripts/package-dam-app.sh --mode developer-id
 ```
 
-The package script builds the Rust binaries and Swift helper/provider, stages `DAM.app`, embeds the app and Network Extension provisioning profiles, substitutes the Team ID and App Group ID into the generated entitlements and system extension `NetworkExtension` Info.plist dictionary, signs the app/helper with `com.apple.developer.system-extension.install` and `app-proxy-provider-systemextension`, signs the bundled system extension with `app-proxy-provider-systemextension`, and fails if the system extension usage description, provider class mapping, App-Group-prefixed Mach service name, signed entitlement blobs, or profile-authorized entitlements are missing.
+The package script builds the Rust binaries and Swift helper/provider, stages `DAM.app`, embeds the app and Network Extension provisioning profiles, substitutes the Team ID and App Group ID into the generated entitlements and system extension `NetworkExtension` Info.plist dictionary, wraps the helper as `Contents/Helpers/DAMMacosNEHelper.app` so macOS can validate its restricted entitlements against an embedded provisioning profile, signs the app/helper with `com.apple.developer.system-extension.install` and `app-proxy-provider-systemextension`, signs the bundled system extension with `app-proxy-provider-systemextension`, and fails if the system extension usage description, provider class mapping, App-Group-prefixed Mach service name, signed entitlement blobs, or profile-authorized entitlements are missing.
 
 Current DAM package identifiers are:
 
