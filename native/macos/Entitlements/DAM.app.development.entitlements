@@ -8,6 +8,10 @@
 	<true/>
 	<key>com.apple.developer.team-identifier</key>
 	<string>__TEAM_ID__</string>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>__APP_GROUP_ID__</string>
+	</array>
 	<key>get-task-allow</key>
 	<true/>
 	<key>keychain-access-groups</key>

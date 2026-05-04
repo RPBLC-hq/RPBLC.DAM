@@ -9,6 +9,7 @@ APP_NAME="DAM"
 APP_BUNDLE_ID="com.rpblc.dam"
 EXT_BUNDLE_ID="com.rpblc.dam.network-extension"
 TEAM_ID="${DAM_MACOS_TEAM_ID:-}"
+APP_GROUP_ID="${DAM_MACOS_APP_GROUP_ID:-}"
 MODE="developer-id"
 SIGN_OPTIONS=()
 
@@ -17,6 +18,10 @@ usage() {
 Usage: native/macos/scripts/package-dam-app.sh [--mode development|developer-id] [--out DIR]
 
 Builds a signed DAM.app bundle with the macOS Network Extension system extension embedded.
+
+Environment:
+  DAM_MACOS_TEAM_ID       Optional Team ID override. Inferred from profiles by default.
+  DAM_MACOS_APP_GROUP_ID  Optional App Group override. Defaults to TEAMID.com.rpblc.dam.
 EOF
 }
 
@@ -169,6 +174,22 @@ require_plist_nonempty() {
   fi
 }
 
+require_plist_value_prefixed_by() {
+  local plist="$1"
+  local key="$2"
+  local prefix="$3"
+  local value
+  if ! value="$(/usr/libexec/PlistBuddy -c "Print :$key" "$plist" 2>/dev/null)"; then
+    echo "missing Info.plist key $key in $plist" >&2
+    exit 1
+  fi
+  if [[ "$value" != "$prefix"* ]]; then
+    echo "Info.plist key $key in $plist must be prefixed with $prefix" >&2
+    echo "actual: $value" >&2
+    exit 1
+  fi
+}
+
 sign_code() {
   local identity="$1"
   shift
@@ -179,14 +200,22 @@ sign_code() {
   fi
 }
 
-materialize_entitlements() {
+materialize_template() {
   local template="$1"
   local output="$2"
   if [[ ! "$TEAM_ID" =~ ^[A-Z0-9]+$ ]]; then
     echo "invalid Team ID: $TEAM_ID" >&2
     exit 1
   fi
-  sed "s/__TEAM_ID__/$TEAM_ID/g" "$template" > "$output"
+  if [[ ! "$APP_GROUP_ID" =~ ^(group|[A-Z0-9]+)\.[A-Za-z0-9.-]+$ ]]; then
+    echo "invalid App Group ID: $APP_GROUP_ID" >&2
+    echo "expected group.<name> or TEAMID.<name>" >&2
+    exit 1
+  fi
+  sed \
+    -e "s/__TEAM_ID__/$TEAM_ID/g" \
+    -e "s/__APP_GROUP_ID__/$APP_GROUP_ID/g" \
+    "$template" > "$output"
   plutil -lint "$output" >/dev/null
 }
 
@@ -210,6 +239,7 @@ if [[ "$EXT_PROFILE_TEAM_ID" != "$TEAM_ID" ]]; then
   echo "profile Team ID mismatch: app=$TEAM_ID extension=$EXT_PROFILE_TEAM_ID" >&2
   exit 1
 fi
+APP_GROUP_ID="${APP_GROUP_ID:-$TEAM_ID.$APP_BUNDLE_ID}"
 APP_IDENTITY="$(identity_for_profile "$APP_PROFILE")"
 EXT_IDENTITY="$(identity_for_profile "$EXT_PROFILE")"
 
@@ -217,8 +247,8 @@ ENTITLEMENTS_DIR="$OUT_DIR/entitlements/$MODE"
 mkdir -p "$ENTITLEMENTS_DIR"
 APP_ENTITLEMENTS="$ENTITLEMENTS_DIR/$(basename "$APP_ENTITLEMENTS_TEMPLATE")"
 EXT_ENTITLEMENTS="$ENTITLEMENTS_DIR/$(basename "$EXT_ENTITLEMENTS_TEMPLATE")"
-materialize_entitlements "$APP_ENTITLEMENTS_TEMPLATE" "$APP_ENTITLEMENTS"
-materialize_entitlements "$EXT_ENTITLEMENTS_TEMPLATE" "$EXT_ENTITLEMENTS"
+materialize_template "$APP_ENTITLEMENTS_TEMPLATE" "$APP_ENTITLEMENTS"
+materialize_template "$EXT_ENTITLEMENTS_TEMPLATE" "$EXT_ENTITLEMENTS"
 
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$ROOT/target/macos-clang-module-cache}"
 mkdir -p "$CLANG_MODULE_CACHE_PATH"
@@ -243,11 +273,12 @@ rm -rf "$APP"
 mkdir -p "$MACOS" "$RESOURCES" "$EXT_MACOS"
 
 cp "$NATIVE/InfoPlists/DAM.Info.plist" "$CONTENTS/Info.plist"
-sed "s/__TEAM_ID__/$TEAM_ID/g" "$NATIVE/InfoPlists/DAMTransparentProxyProvider.Info.plist" > "$EXT_CONTENTS/Info.plist"
+materialize_template "$NATIVE/InfoPlists/DAMTransparentProxyProvider.Info.plist" "$EXT_CONTENTS/Info.plist"
 plutil -lint "$EXT_CONTENTS/Info.plist" >/dev/null
 require_plist_nonempty "$EXT_CONTENTS/Info.plist" "NSSystemExtensionUsageDescription"
 require_plist_nonempty "$EXT_CONTENTS/Info.plist" "NetworkExtension:NEMachServiceName"
 require_plist_nonempty "$EXT_CONTENTS/Info.plist" "NetworkExtension:NEProviderClasses:com.apple.networkextension.app-proxy"
+require_plist_value_prefixed_by "$EXT_CONTENTS/Info.plist" "NetworkExtension:NEMachServiceName" "$APP_GROUP_ID."
 cp "$APP_PROFILE" "$CONTENTS/embedded.provisionprofile"
 cp "$EXT_PROFILE" "$EXT_CONTENTS/embedded.provisionprofile"
 
@@ -289,8 +320,12 @@ sign_code "$APP_IDENTITY" --entitlements "$APP_ENTITLEMENTS" "$APP"
 echo "Verifying signatures..."
 codesign --verify --deep --strict --verbose=2 "$APP"
 require_signed_entitlement_contains "$APP" "com.apple.developer.system-extension.install" "true"
+require_signed_entitlement_contains "$APP" "com.apple.security.application-groups" "$APP_GROUP_ID"
 require_signed_entitlement_contains "$MACOS/dam-macos-ne-helper" "com.apple.developer.system-extension.install" "true"
+require_signed_entitlement_contains "$MACOS/dam-macos-ne-helper" "com.apple.security.application-groups" "$APP_GROUP_ID"
+require_signed_entitlement_contains "$MACOS/dam-tray" "com.apple.security.application-groups" "$APP_GROUP_ID"
 require_signed_entitlement_contains "$EXT" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
+require_signed_entitlement_contains "$EXT" "com.apple.security.application-groups" "$APP_GROUP_ID"
 
 cat <<EOF
 
@@ -302,5 +337,8 @@ Mode:
 
 Team:
   $TEAM_ID
+
+App Group:
+  $APP_GROUP_ID
 
 EOF

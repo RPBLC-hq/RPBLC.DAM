@@ -25,7 +25,7 @@
 	<key>NetworkExtension</key>
 	<dict>
 		<key>NEMachServiceName</key>
-		<string>__TEAM_ID__.com.rpblc.dam.network-extension</string>
+		<string>__APP_GROUP_ID__.network-extension</string>
 		<key>NEProviderClasses</key>
 		<dict>
 			<key>com.apple.networkextension.app-proxy</key>

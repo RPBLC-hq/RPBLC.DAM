@@ -17,15 +17,18 @@ Release packaging:
 native/macos/scripts/package-dam-app.sh --mode developer-id
 ```
 
-The package script builds the Rust binaries and Swift helper/provider, stages `DAM.app`, embeds the app and Network Extension provisioning profiles, substitutes the Team ID into the system extension `NetworkExtension` Info.plist dictionary, signs the app, signs the helper with `com.apple.developer.system-extension.install`, signs the bundled system extension with `app-proxy-provider-systemextension`, and fails if the system extension usage description, provider class mapping, Mach service name, or signed entitlement blobs are missing.
+The package script builds the Rust binaries and Swift helper/provider, stages `DAM.app`, embeds the app and Network Extension provisioning profiles, substitutes the Team ID and App Group ID into the generated entitlements and system extension `NetworkExtension` Info.plist dictionary, signs the app, signs the helper with `com.apple.developer.system-extension.install`, signs the bundled system extension with `app-proxy-provider-systemextension`, and fails if the system extension usage description, provider class mapping, App-Group-prefixed Mach service name, or signed entitlement blobs are missing.
 
 Current DAM package identifiers are:
 
 - App bundle ID: `com.rpblc.dam`
 - Network Extension bundle ID: `com.rpblc.dam.network-extension`
+- Default macOS App Group ID: `TEAMID.com.rpblc.dam`
 - Developer ID profile names: `DAM Developer ID App` and `DAM Developer ID Network Extension`
 
 The Team ID is inferred from the installed provisioning profiles. Set `DAM_MACOS_TEAM_ID` only when you need to force a specific team during local packaging.
+
+The App Group ID defaults to the macOS Team-ID-prefixed form, for example `2T6856RWGV.com.rpblc.dam`. This form is valid for macOS IPC and does not require registering a separate `group.*` identifier. Set `DAM_MACOS_APP_GROUP_ID` only if the Apple Developer account is configured to use a different registered App Group. The system extension Mach service name is generated as `APP_GROUP_ID.network-extension`, because macOS rejects Network Extension system extensions whose `NEMachServiceName` is not prefixed by one of their `com.apple.security.application-groups` entitlements.
 
 The Developer ID artifact still needs notarization before normal Gatekeeper distribution. Local development can use System Extension developer mode for path checks, or copy the app into `/Applications` for closer release-path testing.
 
