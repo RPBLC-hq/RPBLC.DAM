@@ -14,7 +14,7 @@ dam status
 dam disconnect
 ```
 
-`dam connect` starts a background daemon process by re-running the current `dam` executable through an internal `daemon-run` command. This keeps `cargo run -p dam -- connect` and installed `dam connect` on the same path.
+`dam connect` starts a background daemon process by re-running the current `dam` executable through an internal `daemon-run` command. This keeps `cargo run -p dam -- connect` and installed `dam connect` on the same path. If protection was paused with `dam disconnect`, `dam connect` resumes the existing daemon and leaves its installed routing/trust setup unchanged; changing setup requires `dam disconnect --stop` first.
 
 The standalone service entry point also exists:
 

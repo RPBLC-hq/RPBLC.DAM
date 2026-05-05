@@ -616,6 +616,43 @@ async fn dam_disconnect_pauses_explicit_claude_profile_without_closing_proxy() {
     assert!(status_stdout.contains("state: bypassing"));
     assert!(status_stdout.contains("protection: bypassing"));
 
+    let resume = Command::new(binary("dam"))
+        .args([
+            "connect",
+            "--listen",
+            &proxy_addr.to_string(),
+            "--db",
+            vault_path.to_str().unwrap(),
+            "--log",
+            log_path.to_str().unwrap(),
+            "--consent-db",
+            consent_path.to_str().unwrap(),
+            "--network-mode",
+            "tun",
+            "--trust-mode",
+            "local_ca",
+        ])
+        .current_dir(dir.path())
+        .env("DAM_STATE_DIR", &state_dir)
+        .env("HOME", &home_dir)
+        .output()
+        .expect("run dam connect after pause");
+    assert!(
+        resume.status.success(),
+        "stdout: {}\nstderr: {}",
+        utf8(&resume.stdout),
+        utf8(&resume.stderr)
+    );
+    assert!(utf8(&resume.stdout).contains("DAM protection enabled"));
+
+    let resumed_health: serde_json::Value = reqwest::get(format!("{proxy_base}/health"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resumed_health["state"], "protected");
+
     let rollback = Command::new(binary("dam"))
         .args(["integrations", "rollback", "claude-code"])
         .current_dir(dir.path())

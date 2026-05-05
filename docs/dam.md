@@ -120,6 +120,7 @@ The previous one-shot `npx @rpblc/dam claude` and `npx @rpblc/dam codex --api` t
 ## Current Limits
 
 - `dam connect` can start one daemon with multiple proxy targets when multiple app profiles are enabled. `--profile <id>` selects one explicit profile. `--apply` writes reversible explicit-proxy fallback before connecting; tray/web Connect uses Network Extension capture as the primary path and keeps the fallback for source builds and unsupported environments.
+- `dam disconnect` pauses protection without stopping the daemon. `dam connect` resumes a paused daemon using its existing routing/trust setup; use `dam disconnect --stop` before intentionally changing setup.
 - `dam profile set <id>` persists the legacy active local harness profile. The tray/web Settings flow persists enabled app profiles for simultaneous Codex API and Claude Code protection.
 - `dam connect --network-mode system_proxy` refuses to start until DAM sees macOS PAC routing installed. Run `dam network install-system-proxy --yes` first after reviewing the preview.
 - `dam connect --trust-mode local_ca` refuses to start until local CA trust is ready. Run `dam trust install-local-ca --yes` first after reviewing the preview. The `claude-code` integration profile uses `local_ca` because proxy-routed Anthropic HTTPS bodies require guarded TLS interception.

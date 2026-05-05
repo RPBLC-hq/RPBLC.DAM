@@ -284,8 +284,20 @@ async fn connect(args: ConnectArgs) -> Result<i32, String> {
             if state.network_mode != args.proxy.network_mode
                 || state.trust.mode != args.proxy.trust_mode
             {
+                if !state.protection_enabled {
+                    dam_daemon::set_protection_enabled(true).map_err(|error| error.to_string())?;
+                    for profile_id in &args.apply_profile_ids {
+                        let outcome = apply_connect_profile(profile_id, &state.proxy_url)?;
+                        print!("{}", render_connect_apply_outcome(&outcome));
+                    }
+                    println!(
+                        "DAM protection enabled at {} using existing network mode {} and trust mode {}",
+                        state.proxy_url, state.network_mode, state.trust.mode
+                    );
+                    return Ok(0);
+                }
                 return Err(format!(
-                    "DAM is already connected with network mode {} and trust mode {}; run `dam disconnect` before changing setup",
+                    "DAM is already connected with network mode {} and trust mode {}; run `dam disconnect --stop` before changing setup",
                     state.network_mode, state.trust.mode
                 ));
             }
