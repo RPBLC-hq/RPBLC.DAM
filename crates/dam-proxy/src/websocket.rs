@@ -2,7 +2,9 @@ use axum::http::{HeaderMap, HeaderName, Method, header};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub(crate) const MAX_WEBSOCKET_FRAME_BYTES: usize = 10 * 1024 * 1024;
+pub(crate) const OPCODE_CONTINUATION: u8 = 0x0;
 pub(crate) const OPCODE_TEXT: u8 = 0x1;
+pub(crate) const OPCODE_BINARY: u8 = 0x2;
 pub(crate) const OPCODE_CLOSE: u8 = 0x8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +27,14 @@ impl WebSocketFrame {
 
     pub(crate) fn is_unfragmented_text(&self) -> bool {
         self.fin && self.opcode == OPCODE_TEXT
+    }
+
+    pub(crate) fn is_fragmented_text_or_continuation(&self) -> bool {
+        (!self.fin && self.opcode == OPCODE_TEXT) || self.opcode == OPCODE_CONTINUATION
+    }
+
+    pub(crate) fn is_binary(&self) -> bool {
+        self.opcode == OPCODE_BINARY
     }
 }
 
@@ -183,6 +193,16 @@ where
     write_frame_parts(writer, frame.fin, frame.opcode, Some(mask), &payload).await
 }
 
+pub(crate) async fn write_unmasked_frame<W>(
+    writer: &mut W,
+    frame: &WebSocketFrame,
+) -> Result<(), String>
+where
+    W: AsyncWrite + Unpin,
+{
+    write_frame_parts(writer, frame.fin, frame.opcode, None, &frame.payload).await
+}
+
 async fn write_frame_parts<W>(
     writer: &mut W,
     fin: bool,
@@ -261,6 +281,19 @@ mod tests {
 
         assert!(frame.is_unfragmented_text());
         assert_eq!(frame.payload, b"hello");
+    }
+
+    #[tokio::test]
+    async fn unmasked_close_frame_uses_server_to_client_framing() {
+        let mut output = Vec::new();
+        write_unmasked_frame(&mut output, &WebSocketFrame::close(1008, "blocked"))
+            .await
+            .unwrap();
+
+        assert_eq!(output[0], 0x80 | OPCODE_CLOSE);
+        assert_eq!(output[1] & 0x80, 0);
+        assert_eq!(&output[2..4], &1008_u16.to_be_bytes());
+        assert!(output.ends_with(b"blocked"));
     }
 
     #[test]

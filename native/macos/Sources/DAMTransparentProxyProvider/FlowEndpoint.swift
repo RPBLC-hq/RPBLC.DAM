@@ -7,7 +7,10 @@ struct FlowEndpoint: Equatable, Sendable {
     var port: UInt16
 
     var authority: String {
-        "\(host):\(port)"
+        if host.contains(":") && !(host.hasPrefix("[") && host.hasSuffix("]")) {
+            return "[\(host)]:\(port)"
+        }
+        return "\(host):\(port)"
     }
 
     init?(tcpFlow: NEAppProxyTCPFlow) {

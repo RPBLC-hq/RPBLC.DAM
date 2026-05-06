@@ -18,7 +18,7 @@ Parked work:
 - Add true full-device capture for UDP and non-HTTP protocols.
 - Replace the current CLI explicit-proxy fallback with process/network-level capture everywhere signed platform capture is available.
 - Install and remove the local DAM CA on Windows/Linux, add CA rotation, and harden interrupted macOS trust mutation recovery.
-- Extend transparent TLS interception beyond the current HTTP/1.1/WebSocket slice: HTTP/2, inbound/fragmented/compressed WebSocket payloads, multiple requests per tunnel, target-specific consent, certificate caching, and stronger platform coverage.
+- Extend transparent TLS interception beyond the current HTTP/1.1/WebSocket slice: HTTP/2, inbound/fragmented/compressed WebSocket payloads, multiple requests per tunnel, target-specific consent, and stronger platform coverage.
 - Define degraded, bypass, and blocked states for transparent protection across system proxy and `tun` modes.
 - Define a future short-lived app wrapper, if needed, that starts or reuses the daemon and routes traffic by proxy/system routing without provider base-url mutation.
 - Add platform tests proving sensitive values do not leave before transparent protection is ready.
@@ -37,7 +37,7 @@ Parked work:
 
 ### Streaming Response Protection
 
-Current state: outbound requests are protected; inbound provider responses are not redetected. Inbound responses resolve known DAM references by default when `proxy.resolve_inbound` is enabled. JSON-shaped responses are transformed string-by-string for provider-escaped references, including newline-delimited JSON. `text/event-stream` responses are transformed for reference resolution. Raw stream transformation handles references split across adjacent chunks; provider-aware SSE text-delta transformation handles references split across OpenAI-compatible and Anthropic JSON delta events. The MVP text-delta path preserves SSE framing but may buffer parsed streams until upstream completion.
+Current state: outbound requests are protected; inbound provider responses are not redetected. Inbound responses resolve known DAM references by default when `proxy.resolve_inbound` is enabled. JSON-shaped responses are transformed string-by-string for provider-escaped references, including newline-delimited JSON. `text/event-stream` responses are transformed for reference resolution. Raw stream transformation handles references split across adjacent chunks; provider-aware SSE text-delta transformation handles references split across OpenAI-compatible and Anthropic JSON delta events with a bounded trailing event window instead of EOF buffering.
 
 Parked work:
 

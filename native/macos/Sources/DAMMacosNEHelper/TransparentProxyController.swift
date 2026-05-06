@@ -23,6 +23,7 @@ struct TransparentProxyController {
         if manager.connection.status != .connected && manager.connection.status != .connecting {
             try manager.connection.startVPNTunnel(options: [:])
         }
+        try await waitForConnected(manager)
 
         return "installed \(options.bundleIdentifier) with \(options.runtimeConfiguration.protectedHosts.count) protected hosts after app-owned activation"
     }
@@ -63,5 +64,27 @@ struct TransparentProxyController {
         @unknown default:
             return "unknown"
         }
+    }
+
+    private func waitForConnected(_ manager: NETransparentProxyManager) async throws {
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline {
+            if manager.connection.status == .connected {
+                return
+            }
+            if manager.connection.status == .invalid {
+                throw NSError(
+                    domain: "DAMMacosNEHelper",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Network Extension tunnel became invalid before connecting"]
+                )
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        throw NSError(
+            domain: "DAMMacosNEHelper",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Network Extension tunnel did not reach connected status before timeout"]
+        )
     }
 }

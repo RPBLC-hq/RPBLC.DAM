@@ -9,6 +9,7 @@ use std::{
 pub enum ActivationOutcome {
     Ready(String),
     NeedsApproval(String),
+    NeedsReboot(String),
 }
 
 const RETURN_READY: i32 = 0;
@@ -16,8 +17,10 @@ const RETURN_NEEDS_APPROVAL: i32 = 1;
 const RETURN_FAILED: i32 = 2;
 const RETURN_INVALID_ARGUMENT: i32 = 3;
 const RETURN_TIMED_OUT: i32 = 4;
+const RETURN_NEEDS_REBOOT: i32 = 5;
 const APPROVAL_MESSAGE: &str =
     "approve DAM Network Protection in System Settings, then click Connect/Resume again";
+const REBOOT_MESSAGE: &str = "reboot macOS to finish activating DAM Network Protection";
 
 unsafe extern "C" {
     fn dam_tray_activate_system_extension(
@@ -57,6 +60,10 @@ pub fn activate(bundle_identifier: &str, timeout: Duration) -> Result<Activation
         RETURN_NEEDS_APPROVAL => Ok(ActivationOutcome::NeedsApproval(non_empty_message(
             message,
             APPROVAL_MESSAGE,
+        ))),
+        RETURN_NEEDS_REBOOT => Ok(ActivationOutcome::NeedsReboot(non_empty_message(
+            message,
+            REBOOT_MESSAGE,
         ))),
         RETURN_INVALID_ARGUMENT => Err(non_empty_message(
             message,
@@ -113,6 +120,9 @@ fn parse_systemextensionsctl_outcome(
             APPROVAL_MESSAGE.to_string(),
         ));
     }
+    if line.contains("reboot") {
+        return Some(ActivationOutcome::NeedsReboot(REBOOT_MESSAGE.to_string()));
+    }
     None
 }
 
@@ -168,12 +178,25 @@ mod tests {
     fn ignores_other_system_extension_states() {
         let output = concat!(
             "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]\n",
-            "\t\t2T6856RWGV\tcom.rpblc.dam.network-extension (1.0/1)\tDAM Network Protection\t[terminated waiting to uninstall on reboot]\n",
+            "\t\t2T6856RWGV\tcom.rpblc.other.network-extension (1.0/1)\tOther Network Protection\t[terminated waiting to uninstall on reboot]\n",
         );
 
         assert_eq!(
             parse_systemextensionsctl_outcome(output, "com.rpblc.dam.network-extension"),
             None
+        );
+    }
+
+    #[test]
+    fn parses_reboot_system_extension_state() {
+        let output = concat!(
+            "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]\n",
+            "*\t\t2T6856RWGV\tcom.rpblc.dam.network-extension (1.0/1)\tDAM Network Protection\t[activated waiting to reboot]\n",
+        );
+
+        assert_eq!(
+            parse_systemextensionsctl_outcome(output, "com.rpblc.dam.network-extension"),
+            Some(ActivationOutcome::NeedsReboot(REBOOT_MESSAGE.to_string()))
         );
     }
 }

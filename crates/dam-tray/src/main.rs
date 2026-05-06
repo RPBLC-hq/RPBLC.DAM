@@ -596,6 +596,9 @@ mod macos {
                 open_network_extension_approval_settings();
                 Err(format!("action required: {message}"))
             }
+            Ok(crate::macos_system_extension::ActivationOutcome::NeedsReboot(message)) => {
+                Err(format!("action required: {message}"))
+            }
             Err(error) => Err(format!("activate DAM Network Protection: {error}")),
         }
     }

@@ -13,7 +13,7 @@ scripts/dam-build.sh release-macos --mode developer-id
 scripts/dam-build.sh deploy-local --mode development
 ```
 
-`check` runs the repository verification suite: Rust formatting, workspace clippy, workspace tests, and macOS Swift package tests when running on macOS.
+`check` runs the repository verification suite: React/Vite UI dependency install and build for the embedded `dam-web` asset, Rust formatting, workspace clippy, workspace tests, and macOS Swift package tests when running on macOS.
 
 `dev` builds the source-tree binaries used by local daemon/tray runs: `dam`, `damctl`, `dam-web`, and `dam-tray`.
 

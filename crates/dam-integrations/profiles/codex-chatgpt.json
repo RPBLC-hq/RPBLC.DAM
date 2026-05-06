@@ -58,7 +58,7 @@
   ],
   "notes": [
     "Codex keeps its normal ChatGPT login and session flow; DAM captures configured chatgpt.com traffic through Network Extension routing.",
-    "The MVP WebSocket adapter protects unfragmented client text frames, forwards non-text frames without mutation, and currently passes server-to-client frames through without local reference resolution.",
+    "The MVP WebSocket adapter protects unfragmented client text frames, logs warning events for fragmented/binary client frames that pass without mutation, and currently passes server-to-client frames through without local reference resolution.",
     "Explicit proxy env fallback is retained for source builds and unsupported environments, but Network Extension capture is the primary path for ChatGPT-login traffic."
   ],
   "automation": "connect_preset"

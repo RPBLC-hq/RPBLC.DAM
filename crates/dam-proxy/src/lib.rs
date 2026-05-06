@@ -13,11 +13,12 @@ use http_body_util::BodyExt;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use std::{
+    collections::HashMap,
     fs,
     future::Future,
     net::SocketAddr,
     path::PathBuf,
-    sync::{Arc, Once},
+    sync::{Arc, Mutex, Once},
     time::Duration,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -37,7 +38,7 @@ mod websocket;
 use events::{log_intercepted_response_write, log_provider_response, record_proxy_event};
 use providers::{ProviderAdapter, ProviderAdapters};
 
-const MAX_REQUEST_BYTES: usize = 10 * 1024 * 1024;
+const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_INTERCEPTED_HEADER_BYTES: usize = 64 * 1024;
 const PASSTHROUGH_RESUME_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -93,6 +94,7 @@ pub struct ProxyState {
     replacement_options: dam_core::ReplacementPlanOptions,
     providers: ProviderAdapters,
     transparent_interception: Option<TransparentInterceptionConfig>,
+    tls_acceptor_cache: Mutex<HashMap<String, Arc<ServerConfig>>>,
 }
 
 #[derive(Clone)]
@@ -215,6 +217,7 @@ fn build_state(
         replacement_options,
         providers,
         transparent_interception,
+        tls_acceptor_cache: Mutex::new(HashMap::new()),
     }))
 }
 
@@ -227,6 +230,10 @@ pub async fn serve_transparent_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send,
 {
+    let addr = listener.local_addr().map_err(ProxyError::Server)?;
+    if !addr.ip().is_loopback() {
+        return Err(ProxyError::NonLoopbackListen(addr));
+    }
     let state = build_state(config, Some(transparent_interception))?;
     tokio::pin!(shutdown);
 
@@ -457,7 +464,7 @@ async fn handle_raw_connect_request(
         return Ok(());
     }
 
-    let acceptor = match tls_acceptor_for_host(&interception, &authority.host) {
+    let acceptor = match tls_acceptor_for_host(&state, &interception, &authority.host) {
         Ok(acceptor) => acceptor,
         Err(message) => {
             record_proxy_event(
@@ -589,7 +596,7 @@ async fn handle_connect_request(
         );
     }
 
-    let acceptor = match tls_acceptor_for_host(&interception, &authority.host) {
+    let acceptor = match tls_acceptor_for_host(&state, &interception, &authority.host) {
         Ok(acceptor) => acceptor,
         Err(message) => {
             record_proxy_event(
@@ -1295,22 +1302,35 @@ where
 {
     let (mut client_reader, mut client_writer) = tokio::io::split(client_tls);
     let (mut upstream_reader, mut upstream_writer) = tokio::io::split(upstream_tls);
-    let client_to_upstream = proxy_websocket_client_frames(
-        state.clone(),
-        operation_id.to_string(),
-        &mut client_reader,
-        &mut upstream_writer,
-    );
-    let upstream_to_client = tokio::io::copy(&mut upstream_reader, &mut client_writer);
+    let outcome = {
+        let client_to_upstream = proxy_websocket_client_frames(
+            state.clone(),
+            operation_id.to_string(),
+            &mut client_reader,
+            &mut upstream_writer,
+        );
+        let upstream_to_client = tokio::io::copy(&mut upstream_reader, &mut client_writer);
 
-    tokio::select! {
-        result = client_to_upstream => result,
-        result = upstream_to_client => {
-            result
-                .map(|_| ())
-                .map_err(|error| format!("WebSocket upstream copy failed: {error}"))
+        tokio::select! {
+            result = client_to_upstream => result,
+            result = upstream_to_client => {
+                result
+                    .map(|_| WebSocketClientFrameOutcome::Completed)
+                    .map_err(|error| format!("WebSocket upstream copy failed: {error}"))
+            }
         }
+    }?;
+
+    if matches!(outcome, WebSocketClientFrameOutcome::PolicyBlocked) {
+        let close = websocket::WebSocketFrame::close(1008, "blocked by DAM policy");
+        websocket::write_unmasked_frame(&mut client_writer, &close).await?;
     }
+    Ok(())
+}
+
+enum WebSocketClientFrameOutcome {
+    Completed,
+    PolicyBlocked,
 }
 
 async fn proxy_websocket_client_frames<R, W>(
@@ -1318,14 +1338,14 @@ async fn proxy_websocket_client_frames<R, W>(
     operation_id: String,
     reader: &mut R,
     writer: &mut W,
-) -> Result<(), String>
+) -> Result<WebSocketClientFrameOutcome, String>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     loop {
         let Some(mut frame) = websocket::read_frame(reader).await? else {
-            return Ok(());
+            return Ok(WebSocketClientFrameOutcome::Completed);
         };
         if frame.is_unfragmented_text() && state.protection_enabled() {
             let text = std::str::from_utf8(&frame.payload)
@@ -1352,9 +1372,7 @@ where
                     "blocked",
                     "WebSocket request frame blocked by policy",
                 );
-                let close = websocket::WebSocketFrame::close(1008, "blocked by DAM policy");
-                websocket::write_masked_frame(writer, &close).await?;
-                return Ok(());
+                return Ok(WebSocketClientFrameOutcome::PolicyBlocked);
             }
             let Some(output) = protected.output else {
                 return Err("WebSocket request frame protection did not produce output".to_string());
@@ -1368,11 +1386,22 @@ where
                 "protected",
                 "WebSocket request text frame protected",
             );
+        } else if state.protection_enabled()
+            && (frame.is_fragmented_text_or_continuation() || frame.is_binary())
+        {
+            record_proxy_event(
+                &state,
+                &operation_id,
+                LogLevel::Warn,
+                LogEventType::ProxyBypass,
+                "bypassing",
+                "WebSocket frame passed without protection because fragmented/binary frames are parked",
+            );
         }
         let is_close = frame.opcode == websocket::OPCODE_CLOSE;
         websocket::write_masked_frame(writer, &frame).await?;
         if is_close {
-            return Ok(());
+            return Ok(WebSocketClientFrameOutcome::Completed);
         }
     }
 }
@@ -1489,12 +1518,33 @@ fn ensure_rustls_crypto_provider() {
 }
 
 fn tls_acceptor_for_host(
+    state: &ProxyState,
     interception: &TransparentInterceptionConfig,
     host: &str,
 ) -> Result<TlsAcceptor, String> {
-    let issued = dam_trust::issue_local_ca_leaf_certificate(&interception.state_dir, host)
+    let host = dam_net::normalize_ai_host(host);
+    if host.is_empty() {
+        return Err("failed to issue local TLS certificate: host is empty".to_string());
+    }
+    if let Some(config) = state
+        .tls_acceptor_cache
+        .lock()
+        .map_err(|_| "TLS certificate cache is unavailable".to_string())?
+        .get(&host)
+        .cloned()
+    {
+        return Ok(TlsAcceptor::from(config));
+    }
+
+    let issued = dam_trust::issue_local_ca_leaf_certificate(&interception.state_dir, &host)
         .map_err(|error| format!("failed to issue local TLS certificate: {error}"))?;
-    tls_server_config(issued).map(|config| TlsAcceptor::from(Arc::new(config)))
+    let config = Arc::new(tls_server_config(issued)?);
+    state
+        .tls_acceptor_cache
+        .lock()
+        .map_err(|_| "TLS certificate cache is unavailable".to_string())?
+        .insert(host, config.clone());
+    Ok(TlsAcceptor::from(config))
 }
 
 fn transparent_interception_readiness(

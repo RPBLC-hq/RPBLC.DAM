@@ -10,6 +10,7 @@ typedef NS_ENUM(NSInteger, DAMActivationStatus) {
     DAMActivationStatusReady = 1,
     DAMActivationStatusNeedsApproval = 2,
     DAMActivationStatusFailed = 3,
+    DAMActivationStatusNeedsReboot = 4,
 };
 
 static const int DAMActivationReturnReady = 0;
@@ -17,6 +18,7 @@ static const int DAMActivationReturnNeedsApproval = 1;
 static const int DAMActivationReturnFailed = 2;
 static const int DAMActivationReturnInvalidArgument = 3;
 static const int DAMActivationReturnTimedOut = 4;
+static const int DAMActivationReturnNeedsReboot = 5;
 
 @interface DAMSystemExtensionActivation : NSObject <OSSystemExtensionRequestDelegate>
 @property(nonatomic, copy) NSString *bundleIdentifier;
@@ -117,10 +119,11 @@ static void DAMCopyMessage(NSString *message, char *buffer, size_t bufferLength)
 - (void)request:(OSSystemExtensionRequest *)request didFinishWithResult:(OSSystemExtensionRequestResult)result {
     (void)request;
     DAMReleasePendingActivation(self);
-    self.status = DAMActivationStatusReady;
     if (result == OSSystemExtensionRequestWillCompleteAfterReboot) {
+        self.status = DAMActivationStatusNeedsReboot;
         self.message = @"DAM Network Protection will finish activating after reboot";
     } else {
+        self.status = DAMActivationStatusReady;
         self.message = @"DAM Network Protection is active";
     }
     [self complete];
@@ -200,6 +203,8 @@ int dam_tray_activate_system_extension(const char *bundleIdentifier,
                 return DAMActivationReturnReady;
             case DAMActivationStatusNeedsApproval:
                 return DAMActivationReturnNeedsApproval;
+            case DAMActivationStatusNeedsReboot:
+                return DAMActivationReturnNeedsReboot;
             case DAMActivationStatusFailed:
                 return DAMActivationReturnFailed;
             case DAMActivationStatusWaiting:

@@ -271,13 +271,14 @@ pub fn preview_remove_network_extension(
 ) -> Result<MacosNetworkExtensionResult, MacosNetworkExtensionError> {
     ensure_macos()?;
     let plan = remove_plan(state_dir)?;
+    let record = read_record(&plan.paths)?;
     Ok(MacosNetworkExtensionResult {
-        state: if plan.can_execute {
+        state: if record.is_some() {
             MacosNetworkExtensionResultState::Preview
         } else {
             MacosNetworkExtensionResultState::NotInstalled
         },
-        record: read_record(&plan.paths)?,
+        record,
         plan,
         system_routes_changed: false,
     })
@@ -295,6 +296,11 @@ pub fn remove_network_extension(
             plan,
             record: None,
             system_routes_changed: false,
+        });
+    }
+    if !plan.can_execute {
+        return Err(MacosNetworkExtensionError::MissingHelper {
+            bundle_identifier: plan.bundle_identifier,
         });
     }
 
@@ -315,8 +321,32 @@ pub fn network_extension_status(
     state_dir: impl AsRef<Path>,
 ) -> Result<MacosNetworkExtensionResult, MacosNetworkExtensionError> {
     let paths = MacosNetworkExtensionPaths::for_state_dir(state_dir);
-    let record = read_record(&paths)?;
-    let plan = status_plan(paths, record.as_ref());
+    let mut record = read_record(&paths)?;
+    let mut live_message = None;
+    if let Some(existing) = record.as_mut() {
+        let command = helper_command(
+            "status",
+            &existing.bundle_identifier,
+            existing.team_identifier.as_deref(),
+            &[],
+        )
+        .into_iter()
+        .next();
+        if let Some(command) = command {
+            let status = run_helper_status_command(&command)?;
+            live_message = Some(status.message.clone());
+            existing.active = status.active;
+            write_state_record(&paths, existing)?;
+        } else {
+            existing.active = false;
+            live_message = Some(
+                "macOS Network Extension helper is unavailable; live capture status cannot be verified"
+                    .to_string(),
+            );
+            write_state_record(&paths, existing)?;
+        }
+    }
+    let plan = status_plan(paths, record.as_ref(), live_message);
     Ok(MacosNetworkExtensionResult {
         state: MacosNetworkExtensionResultState::Status,
         plan,
@@ -394,10 +424,13 @@ fn remove_plan(
         &[],
     );
     let support = support();
-    let can_execute = support == MacosNetworkExtensionSupport::Implemented && record.is_some();
+    let can_execute = support == MacosNetworkExtensionSupport::Implemented
+        && record.is_some()
+        && !commands.is_empty();
     let message = if record.is_some() {
         if commands.is_empty() {
-            "will remove recorded macOS Network Extension capture state; packaged release helper performs OS removal when available".to_string()
+            "packaged macOS Network Extension helper is required before capture can be removed"
+                .to_string()
         } else {
             "will ask the packaged macOS helper to deactivate Network Extension capture".to_string()
         }
@@ -429,17 +462,31 @@ fn remove_plan(
 fn status_plan(
     paths: MacosNetworkExtensionPaths,
     record: Option<&MacosNetworkExtensionStateRecord>,
+    live_message: Option<String>,
 ) -> MacosNetworkExtensionPlan {
-    let message = record
+    let commands = record
         .map(|record| {
-            if record.active {
-                "macOS Network Extension capture is recorded active"
-            } else {
-                "macOS Network Extension capture is recorded inactive"
-            }
+            helper_command(
+                "status",
+                &record.bundle_identifier,
+                record.team_identifier.as_deref(),
+                &[],
+            )
         })
-        .unwrap_or("macOS Network Extension capture is not installed")
-        .to_string();
+        .unwrap_or_default();
+    let can_execute = !commands.is_empty();
+    let message = live_message.unwrap_or_else(|| {
+        record
+            .map(|record| {
+                if record.active {
+                    "macOS Network Extension capture is recorded active"
+                } else {
+                    "macOS Network Extension capture is recorded inactive"
+                }
+            })
+            .unwrap_or("macOS Network Extension capture is not installed")
+            .to_string()
+    });
     MacosNetworkExtensionPlan {
         action: MacosNetworkExtensionAction::Status,
         support: support(),
@@ -453,10 +500,10 @@ fn status_plan(
         ai_hosts: record
             .map(|record| record.ai_hosts.clone())
             .unwrap_or_default(),
-        commands: Vec::new(),
+        commands,
         requires_admin: false,
         changes_system_routes: false,
-        can_execute: false,
+        can_execute,
         helper_required_for_release: true,
         backend_status: backend_status_from_record(record, message.clone()),
         message,
@@ -609,6 +656,45 @@ fn run_helper_command(
         status: output.status.to_string(),
         stderr,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HelperLiveStatus {
+    active: bool,
+    message: String,
+}
+
+fn run_helper_status_command(
+    command: &MacosNetworkExtensionCommand,
+) -> Result<HelperLiveStatus, MacosNetworkExtensionError> {
+    let output = Command::new(&command.program)
+        .args(&command.args)
+        .output()
+        .map_err(|source| MacosNetworkExtensionError::RunHelper {
+            program: command.program.clone(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(MacosNetworkExtensionError::HelperFailed {
+            program: command.program.clone(),
+            args: command.args.join(" "),
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(parse_helper_status(&stdout))
+}
+
+fn parse_helper_status(output: &str) -> HelperLiveStatus {
+    let lower = output.to_ascii_lowercase();
+    let active = lower.split_whitespace().any(|part| part == "connected");
+    let message = if output.trim().is_empty() {
+        "macOS Network Extension helper returned an empty live status".to_string()
+    } else {
+        format!("macOS Network Extension live status: {}", output.trim())
+    };
+    HelperLiveStatus { active, message }
 }
 
 #[cfg(unix)]
@@ -807,11 +893,24 @@ mod tests {
 
     struct HelperEnvGuard {
         _lock: MutexGuard<'static, ()>,
+        _temp: Option<tempfile::TempDir>,
     }
 
     impl HelperEnvGuard {
         fn install() -> Self {
-            Self::with_helper_path(Path::new("/usr/bin/true"))
+            use std::os::unix::fs::PermissionsExt;
+
+            let temp = tempfile::tempdir().unwrap();
+            let helper = temp.path().join("helper.sh");
+            fs::write(
+                &helper,
+                "#!/bin/sh\nif [ \"$1\" = \"status\" ]; then echo \"enabled com.rpblc.dam.network-extension connected\"; fi\nexit 0\n",
+            )
+            .unwrap();
+            fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+            let mut guard = Self::with_helper_path(&helper);
+            guard._temp = Some(temp);
+            guard
         }
 
         fn with_helper_path(path: &Path) -> Self {
@@ -819,7 +918,10 @@ mod tests {
             unsafe {
                 env::set_var(HELPER_ENV, path);
             }
-            Self { _lock: lock }
+            Self {
+                _lock: lock,
+                _temp: None,
+            }
         }
     }
 
@@ -949,5 +1051,48 @@ mod tests {
         assert_eq!(removed.state, MacosNetworkExtensionResultState::Removed);
         assert!(!network_extension_installed(dir.path()));
         assert!(!network_extension_active(dir.path()));
+    }
+
+    #[test]
+    fn status_reconciles_record_when_helper_reports_disconnected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let active_helper = HelperEnvGuard::install();
+        let dir = tempfile::tempdir().unwrap();
+        install_network_extension(dir.path()).unwrap();
+        drop(active_helper);
+
+        let helper = dir.path().join("status-helper.sh");
+        fs::write(
+            &helper,
+            "#!/bin/sh\nif [ \"$1\" = \"status\" ]; then echo \"enabled com.rpblc.dam.network-extension disconnected\"; fi\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let _helper = HelperEnvGuard::with_helper_path(&helper);
+
+        let status = network_extension_status(dir.path()).unwrap();
+
+        assert!(!status.record.unwrap().active);
+        assert!(!network_extension_active(dir.path()));
+        assert_eq!(
+            status.plan.backend_status.readiness,
+            dam_net::CaptureBackendReadiness::NeedsApproval
+        );
+    }
+
+    #[test]
+    fn remove_requires_helper_when_record_exists() {
+        let _helper = HelperEnvGuard::install();
+        let dir = tempfile::tempdir().unwrap();
+        install_network_extension(dir.path()).unwrap();
+        unsafe {
+            env::remove_var(HELPER_ENV);
+        }
+
+        let error = remove_network_extension(dir.path()).unwrap_err();
+
+        assert!(error.to_string().contains("helper is required"));
+        assert!(network_extension_installed(dir.path()));
     }
 }

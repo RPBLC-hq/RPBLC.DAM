@@ -286,9 +286,6 @@ fn install_system_proxy_for_hosts_with_runner(
         services: plan.services.clone(),
         applied_at_unix: unix_timestamp()?,
     };
-    let record_json =
-        serde_json::to_vec_pretty(&record).map_err(MacosNetworkError::SerializeRollback)?;
-    write_atomic(&plan.paths.rollback_path, &record_json, 0o600)?;
     write_atomic(
         &plan.paths.pac_path,
         pac_content_for_hosts(&plan.proxy_url, &plan.ai_hosts).as_bytes(),
@@ -298,6 +295,10 @@ fn install_system_proxy_for_hosts_with_runner(
     for command in &plan.commands {
         run_network_command(runner, command)?;
     }
+
+    let record_json =
+        serde_json::to_vec_pretty(&record).map_err(MacosNetworkError::SerializeRollback)?;
+    write_atomic(&plan.paths.rollback_path, &record_json, 0o600)?;
 
     Ok(MacosSystemProxyResult {
         state: MacosSystemProxyResultState::Installed,
@@ -567,7 +568,7 @@ fn pac_content_for_hosts(proxy_url: &str, ai_hosts: &[String]) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "{protected_host_comment}\nfunction FindProxyForURL(url, host) {{\n  host = host.toLowerCase();\n  if (isPlainHostName(host) || host === \"localhost\" || host === \"::1\" || shExpMatch(host, \"*.local\")) {{\n    return \"DIRECT\";\n  }}\n  if (shExpMatch(host, \"127.*\") || shExpMatch(host, \"10.*\") || shExpMatch(host, \"192.168.*\") || shExpMatch(host, \"169.254.*\")) {{\n    return \"DIRECT\";\n  }}\n  if (shExpMatch(host, \"172.16.*\") || shExpMatch(host, \"172.17.*\") || shExpMatch(host, \"172.18.*\") || shExpMatch(host, \"172.19.*\") || shExpMatch(host, \"172.2?.*\") || shExpMatch(host, \"172.30.*\") || shExpMatch(host, \"172.31.*\")) {{\n    return \"DIRECT\";\n  }}\n  if (url.substring(0, 5) === \"http:\" || url.substring(0, 6) === \"https:\") {{\n    return \"PROXY {proxy}; DIRECT\";\n  }}\n  return \"DIRECT\";\n}}\n"
+        "{protected_host_comment}\nfunction FindProxyForURL(url, host) {{\n  host = host.toLowerCase();\n  var bareHost = host;\n  if (bareHost.charAt(0) === \"[\" && bareHost.charAt(bareHost.length - 1) === \"]\") {{\n    bareHost = bareHost.substring(1, bareHost.length - 1);\n  }}\n  if (isPlainHostName(host) || host === \"localhost\" || bareHost === \"::1\" || shExpMatch(host, \"*.local\")) {{\n    return \"DIRECT\";\n  }}\n  if (shExpMatch(host, \"127.*\") || shExpMatch(host, \"10.*\") || shExpMatch(host, \"192.168.*\") || shExpMatch(host, \"169.254.*\")) {{\n    return \"DIRECT\";\n  }}\n  if (shExpMatch(host, \"172.16.*\") || shExpMatch(host, \"172.17.*\") || shExpMatch(host, \"172.18.*\") || shExpMatch(host, \"172.19.*\") || shExpMatch(host, \"172.2?.*\") || shExpMatch(host, \"172.30.*\") || shExpMatch(host, \"172.31.*\")) {{\n    return \"DIRECT\";\n  }}\n  if (shExpMatch(bareHost, \"fe8*:*\") || shExpMatch(bareHost, \"fe9*:*\") || shExpMatch(bareHost, \"fea*:*\") || shExpMatch(bareHost, \"feb*:*\") || shExpMatch(bareHost, \"fc*:*\") || shExpMatch(bareHost, \"fd*:*\") ) {{\n    return \"DIRECT\";\n  }}\n  if (url.substring(0, 5) === \"http:\" || url.substring(0, 6) === \"https:\") {{\n    return \"PROXY {proxy}; DIRECT\";\n  }}\n  return \"DIRECT\";\n}}\n"
     )
 }
 
@@ -723,6 +724,7 @@ mod tests {
     struct FakeRunner {
         outputs: RefCell<VecDeque<String>>,
         commands: RefCell<Vec<Vec<String>>>,
+        fail_on_networksetup: bool,
     }
 
     impl FakeRunner {
@@ -730,6 +732,15 @@ mod tests {
             Self {
                 outputs: RefCell::new(outputs.into_iter().map(str::to_string).collect()),
                 commands: RefCell::new(Vec::new()),
+                fail_on_networksetup: false,
+            }
+        }
+
+        fn failing(outputs: Vec<&str>) -> Self {
+            Self {
+                outputs: RefCell::new(outputs.into_iter().map(str::to_string).collect()),
+                commands: RefCell::new(Vec::new()),
+                fail_on_networksetup: true,
             }
         }
     }
@@ -739,6 +750,17 @@ mod tests {
             let mut command = vec![program.to_string()];
             command.extend(args.iter().map(|arg| (*arg).to_string()));
             self.commands.borrow_mut().push(command);
+            if self.fail_on_networksetup
+                && program == NETWORKSETUP
+                && args.first().is_some_and(|arg| arg.starts_with("-set"))
+            {
+                return Err(MacosNetworkError::CommandFailed {
+                    program: program.to_string(),
+                    args: args.join(" "),
+                    status: "exit status: 1".to_string(),
+                    stderr: "synthetic failure".to_string(),
+                });
+            }
             Ok(self.outputs.borrow_mut().pop_front().unwrap_or_default())
         }
     }
@@ -770,6 +792,9 @@ mod tests {
         assert!(pac.contains("url.substring(0, 5) === \"http:\""));
         assert!(pac.contains("host === \"localhost\""));
         assert!(pac.contains("shExpMatch(host, \"192.168.*\")"));
+        assert!(pac.contains("bareHost === \"::1\""));
+        assert!(pac.contains("shExpMatch(bareHost, \"fe8*:*\")"));
+        assert!(pac.contains("shExpMatch(bareHost, \"fc*:*\")"));
     }
 
     #[test]
@@ -818,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_writes_rollback_before_route_commands_and_remove_restores() {
+    fn apply_writes_rollback_after_route_commands_and_remove_restores() {
         let runner = FakeRunner::new(vec![
             "Wi-Fi\n",
             "URL: file:///old.pac\nEnabled: Yes\n",
@@ -860,6 +885,20 @@ mod tests {
                 installed.state,
                 MacosSystemProxyResultState::AlreadyInstalled
             );
+        }
+    }
+
+    #[test]
+    fn install_failure_does_not_leave_rollback_marker() {
+        let runner = FakeRunner::failing(vec!["Wi-Fi\n", "URL: file:///old.pac\nEnabled: Yes\n"]);
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = install_system_proxy_with_runner(dir.path(), "http://127.0.0.1:7828", &runner);
+
+        if support() == MacosSystemProxySupport::Implemented {
+            assert!(result.is_err());
+            let paths = MacosNetworkPaths::for_state_dir(dir.path());
+            assert!(!paths.rollback_path.exists());
         }
     }
 }

@@ -64,6 +64,10 @@ zip_path_for_app() {
 }
 
 cmd_check() {
+  if [[ -f "$ROOT/crates/dam-web/ui/package.json" ]]; then
+    run npm ci --prefix "$ROOT/crates/dam-web/ui"
+    run npm run build --prefix "$ROOT/crates/dam-web/ui"
+  fi
   run cargo fmt --all --check
   run cargo clippy --workspace -- -D warnings
   run cargo test --workspace
