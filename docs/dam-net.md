@@ -4,7 +4,9 @@
 
 It does not install system proxy settings, create a TUN device, intercept TLS, forward packets, or inspect traffic. It is a small control-plane crate used to keep daemon, UI, CLI, and future native network modules aligned on the same vocabulary.
 
-DAM network control must remain portable across macOS, Linux, and Windows. Platform-specific implementations such as `dam-net-macos` live behind shared capture-mode and readiness contracts; missing or partial platform support must stay tracked in `docs/parking-lot.md` or the module parking lot until it is implemented and tested.
+DAM network control must remain portable across macOS, Linux, and Windows. Platform-specific implementations such as `dam-net-macos` live behind shared capture-mode, readiness, and routing-failure-policy contracts; missing or partial platform support must stay tracked in `docs/parking-lot.md` or the module parking lot until it is implemented and tested.
+
+The architecture is not AI-only. The bundled LLM targets are the MVP traffic profile; future profiles can describe WebSocket chats, email, uploads, media/control protocols, or other application traffic as adapters become available.
 
 ## Current Contracts
 
@@ -18,7 +20,7 @@ tun             platform capture backend mode; macOS uses Network Extension
 
 `CapturePlan::for_mode` reports whether a mode is implemented, whether it requires admin/system permission, whether it installs system routes, and what TLS visibility is available.
 
-`TransparentRouteCaptureReadiness` reports per-AI-route routing readiness for capture modes:
+`TransparentRouteCaptureReadiness` reports per configured-profile-route routing readiness for capture modes:
 
 ```text
 not_transparent_mode         route capture is inactive for this mode
@@ -29,9 +31,9 @@ ready                        routing is active for the route
 
 Current implementation status:
 
-- `explicit_proxy`: implemented for local base-URL traffic and HTTP(S) proxy traffic from configured clients. HTTPS body protection for selected AI hosts still requires local CA trust and the CONNECT/TLS adapter.
-- `system_proxy`: macOS PAC routing is implemented in `dam-net-macos` for proxy-capable HTTP/HTTPS traffic. Unknown hosts pass through DAM untouched; HTTPS body visibility for selected AI hosts still requires TLS trust and interception.
-- `tun`: macOS Network Extension control-plane support is implemented in `dam-net-macos`; activation requires the signed native helper/app bundle. Windows and Linux are still behind the same shared backend contracts.
+- `explicit_proxy`: implemented for local base-URL traffic and HTTP(S) proxy traffic from configured clients. HTTPS body protection for configured hosts still requires local CA trust and the CONNECT/TLS adapter.
+- `system_proxy`: macOS PAC routing is implemented in `dam-net-macos` for proxy-capable HTTP/HTTPS traffic. Unknown/non-configured hosts pass through DAM untouched; HTTPS body visibility for configured hosts still requires TLS trust and interception.
+- `tun`: platform capture backend mode. macOS Network Extension control-plane support is implemented in `dam-net-macos`; activation requires the signed native helper/app bundle. Linux and Windows have distinct onboarding contracts under the same setup-plan vocabulary, but their transparent routing backends are still planned and currently direct users to explicit proxy mode.
 
 Protocol adapters are reported separately from capture. HTTP is implemented for the first bidirectional protected LLM traffic, and the Codex ChatGPT-login WebSocket MVP protects outbound unfragmented client text frames. gRPC, email, media/audio, and other chat protocols are profile-level adapter kinds with planned runtime support.
 
@@ -47,6 +49,13 @@ active profile match + not ready -> fail according to the configured failure beh
 ```
 
 PAC routing is not true packet-level full-device capture. `tun`/Network Extension is the primary full-device path: it can classify TCP flows by destination and hand active profile matches to the protected proxy runtime. Unsupported protocols or encrypted bodies still require protocol-specific adapters before DAM can inspect payloads.
+
+Failure behavior is a platform-neutral policy:
+
+- `fail_open` is the consumer default: when DAM is off, paused, unhealthy, unreachable, or not ready for a configured route, traffic passes outside DAM and surfaces as unprotected.
+- `fail_closed` is explicit user/admin or managed-install behavior: configured traffic is blocked when DAM cannot verify protection.
+
+Platform capture backends must apply the policy to new flows and to already-captured flows. Runtime app enablement narrows the active traffic profile; an explicit empty enabled-app selection means no configured flows should be mediated, so platform capture must pass traffic through instead of falling back to bundled defaults. On macOS Network Extension capture, the provider closes active configured flows when the local proxy stops reporting `protected`; the client then reconnects through the current policy instead of staying pinned through DAM while it is paused or unhealthy.
 
 ## Traffic Profiles
 
@@ -68,14 +77,14 @@ xai-api          -> api.x.ai / HTTP
 chatgpt-codex    -> chatgpt.com / WebSocket
 ```
 
-`known_ai_routes()` is now a compatibility view derived from the bundled traffic profile. New mediated services should be added as traffic profile JSON app entries. `[network.ai_routes]` remains as a legacy overlay for existing config files and private provider endpoints that have not yet moved to profile JSON.
+`known_ai_routes()` is now a compatibility view derived from the bundled traffic profile. New mediated services, including private OpenAI-compatible and Anthropic-compatible endpoints, must be added as traffic profile JSON app entries.
 
-For TLS traffic, classification can identify that traffic is probably AI-related, but it cannot protect request bodies without `dam-trust` readiness and a later TLS interception implementation. The explicit decision shape is:
+For TLS traffic, classification can identify that traffic matches a configured profile, but it cannot protect request bodies without `dam-trust` readiness and a later TLS interception implementation. The explicit decision shape for the bundled LLM MVP is:
 
 ```text
-identified AI + HTTPS/WSS -> requires TLS interception before body protection
-identified AI + HTTP/WS   -> protectable without TLS
-unknown host              -> non-AI traffic
+configured LLM + HTTPS/WSS -> requires TLS interception before body protection
+configured LLM + HTTP/WS   -> protectable without TLS
+unknown/non-configured host -> pass-through traffic
 ```
 
 This keeps the future transparent proxy honest: host routing alone is not data protection for encrypted provider requests.
@@ -97,7 +106,7 @@ This keeps the future transparent proxy honest: host routing alone is not data p
 
 - network capture-mode vocabulary;
 - generic traffic profile JSON contracts and runtime app filtering;
-- transparent AI route registry helpers and host classification;
+- traffic profile route registry helpers and host classification;
 - transparent route readiness reporting;
 - non-TLS route-readiness decisions.
 

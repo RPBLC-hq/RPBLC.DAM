@@ -167,7 +167,7 @@ It reports:
 - whether a local CA record is installed;
 - local CA artifact paths when artifacts exist;
 - trusted AI host count;
-- per-route trust readiness for the built-in and configured AI routes recorded in daemon state;
+- per-route trust readiness for the active traffic profile routes recorded in daemon state;
 - trust actions and whether each is implemented or planned.
 
 Use `--state-dir PATH` to inspect a non-default daemon state directory.
@@ -193,10 +193,10 @@ It reports:
 - macOS PAC rollback record path;
 - generated PAC path;
 - whether DAM sees system-proxy routing installed;
-- active traffic-profile hosts plus configured `[network.ai_routes]` legacy overlays when `--config` is supplied;
+- active traffic-profile hosts when `--config` is supplied;
 - per-route system-proxy readiness.
 
-Use `--state-dir PATH` to inspect a non-default daemon state directory. Use `--config PATH` to preview route readiness with configured AI route overlays before starting the daemon or applying system proxy routing.
+Use `--state-dir PATH` to inspect a non-default daemon state directory. Use `--config PATH` to preview route readiness for a custom traffic profile before starting the daemon or applying system proxy routing.
 
 Exit codes:
 

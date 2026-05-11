@@ -6,11 +6,38 @@ Parking-lot items are not current product guarantees. Move an item out of this f
 
 Platform rule: DAM must be designed for macOS, Linux, and Windows. Platform-specific implementations may be staged when they require platform-local development or testing, but partial, delayed, or unavailable platform behavior must remain visible in this file or a module parking-lot doc until implementation, docs, and tests agree on the shipped behavior.
 
+## Pre-Release Network Extension Recovery Gate
+
+Current state: macOS Network Extension setup can leave the user with broken connectivity if activation succeeds far enough to affect routes but does not reach a verified healthy state. In local testing, disabling the Network Extension restored connectivity. A production user should not need to know what a Network Extension is or how to recover it in System Settings.
+
+Release blocker: do not ship the macOS Network Extension path as production-default until DAM owns recovery.
+
+Parked work:
+
+- Add an activation watchdog after the protection layer starts. If the Network Extension does not reach connected status and pass a local network canary within a short timeout, DAM automatically disables/removes the DAM Network Extension configuration and returns onboarding to the correct repair step.
+- Add safe-mode startup detection for interrupted or unverified Network Extension activation. If the previous run did not confirm healthy connectivity, DAM starts with network protection disabled and shows repair/onboarding instead of retrying silently.
+- Add always-available local rescue controls in tray and CLI: disable network protection, remove DAM network configuration, repair network setup, and export diagnostics.
+- Add a user/admin routing failure policy setting before release. Runtime enforcement now defaults to fail-open and closes already-captured Network Extension flows when DAM is paused, unhealthy, unreachable, or otherwise not `protected`; the remaining parked work is exposing fail-open/fail-closed as an explicit setting and managed-install policy.
+- Replace any long spinner in onboarding with explicit states: requested, waiting for macOS approval, configured, enabled, connected, failed, and rolled back.
+- Keep a degraded fallback where DAM can run without system-wide Network Extension protection and clearly says protection is not active.
+- Document the managed-install path for enterprise/MDM pre-approval, while keeping unmanaged Macs guided and recoverable.
+- Add tests or deterministic fixtures that cover broken activation, deleted/disabled configuration, failed canary, restart after failed activation, and successful rollback.
+
+## Onboarding UX Test Automation
+
+Current state: macOS onboarding is covered by Rust unit tests for setup-plan state reconciliation and native helper status parsing, plus manual packaged-app validation on a signed local build. The tray/WebView flow is not yet covered by browser automation because the macOS System Settings prompts and Network Extension manager state need a controlled simulator.
+
+Parked work:
+
+- Add Playwright coverage for the Connect onboarding checklist using mocked `/api/v1/connect` states for each one-action step: startup choice, System Extension approval, reboot, network configuration, manager enablement, manager start, local CA, profile apply, and daemon start.
+- Add a deterministic macOS helper/status fixture so tests can simulate deleted, disabled, enabled-disconnected, and connected Network Extension manager states without changing the developer machine.
+- Verify the tray-width layout and CTA transitions in Playwright screenshots before treating onboarding UX as seamless.
+
 ## Security And Privacy Design Work
 
 ### Full-Device Routing And TLS Trust
 
-Current state: local protection is app-layer routing for supported AI harnesses, explicit proxy paths, the macOS `system_proxy` fallback, and macOS Network Extension control-plane support for `tun`. `dam-net` defines capture-mode/backend vocabulary, protocol adapter readiness, routing readiness, and host-only AI traffic classification for the merged default/config AI route registry. `dam-tray` owns macOS System Extension activation from `DAM.app`, and `dam-net-macos` can install/remove macOS PAC routing for proxy-capable HTTP/HTTPS traffic with rollback and configure Network Extension capture through a signed helper/app bundle. `dam-proxy` passes unknown hosts through untouched and has a daemon-gated HTTP/1.1 CONNECT/TLS runtime plus outbound Codex ChatGPT-login WebSocket client text-frame protection for selected AI hosts when routing, trust, and consent are ready. `dam-daemon` tracks pause/resume protection state so `dam disconnect` can stop redaction without removing routing.
+Current state: local protection is app-layer routing for supported AI harnesses, explicit proxy paths, the macOS `system_proxy` fallback, and macOS Network Extension control-plane support for `tun`. `dam-net` defines capture-mode/backend vocabulary, protocol adapter readiness, routing readiness, and host-only AI traffic classification for the effective traffic profile registry. `dam-tray` owns macOS System Extension activation from `DAM.app`, and `dam-net-macos` can install/remove macOS PAC routing for proxy-capable HTTP/HTTPS traffic with rollback and configure Network Extension capture through a signed helper/app bundle. `dam-proxy` passes unknown hosts through untouched and has a daemon-gated HTTP/1.1 CONNECT/TLS runtime plus outbound Codex ChatGPT-login WebSocket client text-frame protection for active traffic profile hosts when routing, trust, and consent are ready. `dam-daemon` tracks pause/resume protection state so `dam disconnect` can stop redaction without removing routing.
 
 Parked work:
 
@@ -18,8 +45,9 @@ Parked work:
 - Add true full-device capture for UDP and non-HTTP protocols.
 - Replace the current CLI explicit-proxy fallback with process/network-level capture everywhere signed platform capture is available.
 - Install and remove the local DAM CA on Windows/Linux, add CA rotation, and harden interrupted macOS trust mutation recovery.
+- Implement native Linux and Windows onboarding actions behind the current platform-specific setup ids (`linux_capture`, `windows_capture`) instead of reusing macOS Network Extension steps.
 - Extend transparent TLS interception beyond the current HTTP/1.1/WebSocket slice: HTTP/2, inbound/fragmented/compressed WebSocket payloads, multiple requests per tunnel, target-specific consent, and stronger platform coverage.
-- Define degraded, bypass, and blocked states for transparent protection across system proxy and `tun` modes.
+- Define fail-open, fail-closed, degraded, bypass, and blocked states for transparent protection across system proxy and `tun` modes, including which states are user/admin configurable.
 - Define a future short-lived app wrapper, if needed, that starts or reuses the daemon and routes traffic by proxy/system routing without provider base-url mutation.
 - Add platform tests proving sensitive values do not leave before transparent protection is ready.
 

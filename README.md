@@ -341,7 +341,7 @@ Recommended order for the next engineering sessions:
 
 Do not spend the next session on these until their prerequisite slice exists:
 
-- Windows/Linux route installation, UDP capture, non-HTTP protocol adapters, arbitrary web traffic rewriting, or broad TLS interception outside built-in/configured AI hosts.
+- Windows/Linux route installation, UDP capture, non-HTTP protocol adapters, arbitrary web traffic rewriting, or broad TLS interception outside active traffic profile hosts.
 - Fresh inbound streaming/SSE redetection or bounded-latency response transforms before provider streaming semantics have broader fixture coverage.
 - Remote vault/log backends before the local router and pipeline contracts prove stable.
 

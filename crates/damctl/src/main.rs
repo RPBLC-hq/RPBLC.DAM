@@ -891,17 +891,8 @@ fn network_inspect_ai_routes(
         ..dam_config::ConfigOverrides::default()
     })
     .map_err(|error| error.to_string())?;
-    let profile = config.traffic.effective_profile();
-    Ok(dam_net::ai_routes_with_profile_and_overlays(
-        &profile,
-        config.network.ai_routes.iter().map(|route| {
-            dam_net::AiRoute::custom(
-                &route.host,
-                route.provider.clone(),
-                route.target_name.clone(),
-                route.upstream.clone(),
-            )
-        }),
+    Ok(dam_net::ai_routes_from_profile(
+        &config.traffic.effective_profile(),
     ))
 }
 
@@ -2337,8 +2328,14 @@ mod tests {
         assert!(!state_dir.exists());
         let report: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
         assert_eq!(report["state"], "needs_action");
-        assert_eq!(report["steps"].as_array().unwrap()[3]["kind"], "daemon");
-        assert_eq!(report["steps"].as_array().unwrap()[3]["status"], "needed");
+        let first_needed = report["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["status"] == "needed")
+            .unwrap();
+        assert_eq!(first_needed["kind"], "daemon");
+        assert_eq!(first_needed["status"], "needed");
     }
 
     #[test]
@@ -2677,18 +2674,36 @@ mod tests {
     }
 
     #[test]
-    fn network_inspect_uses_configured_ai_routes() {
+    fn network_inspect_uses_configured_traffic_profile_routes() {
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().join("state");
         let config_path = dir.path().join("dam.toml");
         std::fs::write(
+            dir.path().join("enterprise-traffic.json"),
+            r#"
+            {
+              "version": 1,
+              "default_action": "bypass",
+              "apps": [
+                {
+                  "id": "enterprise-ai",
+                  "match": {"domains": ["api.enterprise-ai.example"], "ports": [443]},
+                  "action": "inspect",
+                  "adapter": "http",
+                  "provider": "openai-compatible",
+                  "target_name": "enterprise-ai",
+                  "upstream": "https://api.enterprise-ai.example"
+                }
+              ]
+            }
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
             &config_path,
             r#"
-                [[network.ai_routes]]
-                host = "api.enterprise-ai.example"
-                provider = "openai-compatible"
-                target_name = "enterprise-ai"
-                upstream = "https://api.enterprise-ai.example"
+                [traffic]
+                profile_path = "enterprise-traffic.json"
             "#,
         )
         .unwrap();
@@ -2701,7 +2716,7 @@ mod tests {
 
         assert_eq!(output.code, 0);
         let report: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
-        assert_eq!(report["known_ai_hosts"].as_array().unwrap().len(), 5);
+        assert_eq!(report["known_ai_hosts"].as_array().unwrap().len(), 1);
         assert!(
             report["known_ai_hosts"]
                 .as_array()
@@ -3028,6 +3043,7 @@ mod tests {
                 dam_intercept::TlsInterceptionAdapter::unavailable(),
             ),
             protection_enabled: true,
+            protection_started_at_unix: Some(1_700_000_000),
         }
     }
 }

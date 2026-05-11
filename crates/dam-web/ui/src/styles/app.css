@@ -1,0 +1,1685 @@
+html,
+body,
+#dam-root {
+  min-height: 100%;
+}
+
+body {
+  background: var(--bg);
+}
+
+#dam-root {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.dam-web-frame {
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.dam-app-nav {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  min-height: 56px;
+  padding: 0 var(--space-6);
+  border-bottom: var(--border-1) solid var(--line);
+  background: var(--panel);
+}
+
+.dam-app-nav__spacer,
+.dam-app-nav__rule {
+  flex: 1;
+}
+
+.dam-app-nav__rule {
+  min-width: var(--space-4);
+  height: 1px;
+  background: var(--line);
+}
+
+.dam-app-nav__off {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  border: var(--border-1) solid var(--line);
+  color: var(--soft);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-extrabold);
+  letter-spacing: 0.2em;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.dam-app-nav__protection {
+  min-height: 24px;
+}
+
+.dam-app-nav__pending {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  border: var(--border-1) solid var(--accent);
+  background: var(--bg);
+  color: var(--bright);
+  font-family: var(--font-mono);
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-base),
+              color var(--dur-fast) var(--ease-base);
+}
+
+.dam-app-nav__pending:hover,
+.dam-app-nav__pending:focus-visible {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.dam-app-nav__pending:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dam-app-nav__pending-bracket {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--fw-bold);
+  color: var(--accent);
+  line-height: 1;
+}
+
+.dam-app-nav__pending:hover .dam-app-nav__pending-bracket,
+.dam-app-nav__pending:focus-visible .dam-app-nav__pending-bracket {
+  color: var(--bg);
+}
+
+.dam-app-nav__pending-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+  color: var(--bright);
+  letter-spacing: 0.05em;
+  line-height: 1;
+}
+
+.dam-app-nav__pending:hover .dam-app-nav__pending-count,
+.dam-app-nav__pending:focus-visible .dam-app-nav__pending-count {
+  color: var(--bg);
+}
+
+.dam-app-content {
+  min-height: calc(100vh - 57px);
+  min-height: calc(100dvh - 57px);
+}
+
+.dam-app-content--tray {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.dam-brand-stamp {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.dam-brand-stamp__mark {
+  /* The BracketMark itself drives its size via the `size` prop; this
+     wrapper just lays out the mark + product stamp in the brand bar. */
+  display: inline-flex;
+  align-items: center;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.dam-brand-stamp__mark .rpblc-bracket-mark__bracket,
+.dam-brand-stamp__mark .rpblc-bracket-mark__letter,
+.dam-brand-stamp__mark .rpblc-bracket-mark__colon {
+  transition: color var(--dur-fast) var(--ease-base);
+}
+
+.dam-brand-stamp__mark:hover .rpblc-bracket-mark__bracket,
+.dam-brand-stamp__mark:hover .rpblc-bracket-mark__letter,
+.dam-brand-stamp__mark:hover .rpblc-bracket-mark__colon {
+  color: var(--bg);
+}
+
+.dam-brand-stamp__mark:hover .rpblc-bracket-mark__letter:hover,
+.dam-brand-stamp__mark:hover .rpblc-bracket-mark__bracket:hover {
+  color: var(--bright);
+}
+
+.dam-brand-stamp__mark:hover .rpblc-bracket-mark__colon:hover {
+  color: var(--accent);
+}
+
+.dam-brand-stamp__mark:focus-visible,
+.dam-brand-stamp__product:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dam-brand-stamp__product {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.2em;
+  color: var(--bright);
+  text-decoration: none;
+  text-transform: uppercase;
+  transition: color var(--dur-fast) var(--ease-base);
+}
+
+.dam-brand-stamp__product:hover {
+  color: var(--accent);
+}
+
+.dam-brand-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.dam-tray-frame {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dam-tray-frame--nav-only {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.dam-tray-frame .dam-brand-stamp {
+  gap: var(--space-2);
+}
+
+.dam-tray-frame .dam-brand-stamp__product {
+  font-size: 11px;
+  letter-spacing: 0.2em;
+}
+
+.dam-tray-frame .dam-brand-actions {
+  gap: var(--space-2);
+}
+
+.dam-connect {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* Vertical centering: short content (the disconnected welcome) sits
+     in the visual center of the surface; tall content (setup
+     checklists, protected with pending request + counts) grows the
+     flex container past its min-height and packs normally — flex
+     centering becomes a no-op once the items exceed the container. */
+  justify-content: center;
+  /* Keep the surface bounded on wide web viewports — without a
+     ceiling, the .dam-connect element spans the full window and the
+     inner 28rem column reads as a tiny island in empty space. The
+     ceiling matches the other web surfaces' framing pattern (insights
+     880px, allowed/health 720px, system 880px); 36rem is the right
+     ceiling here because the connect body is short, focused, and
+     centered text — wider than the 28rem inner column for breathing
+     room around the narrative, narrower than the data-dense surfaces
+     so the page reads as a decision tile, not a dashboard. */
+  width: 100%;
+  max-width: 36rem;
+  min-height: inherit;
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-4);
+  color: var(--text);
+}
+
+/* In the tray, the surface is already bounded by the popover's outer
+   frame (430–500px); a max-width here would fight that. The tray
+   override sets `align-items: stretch` and zeros the max-width so the
+   stack can fill the popover edge-to-edge. */
+.dam-tray-frame--nav-only .dam-connect {
+  max-width: none;
+}
+
+.dam-tray-frame--nav-only .dam-connect {
+  flex: 1 1 auto;
+  align-items: stretch;
+  padding: var(--space-5) var(--space-4) var(--space-4);
+  min-height: 0;
+}
+
+.dam-tray-frame--nav-only .dam-connect__stack,
+.dam-tray-frame--nav-only .dam-connect__on,
+.dam-tray-frame--nav-only .dam-connect__setup {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-width: none;
+}
+
+/* The disconnected intro keeps natural height in tray so the parent
+   `.dam-connect`'s `justify-content: center` can vertically balance the
+   welcome block. Stretching the intro (like the other connect bodies)
+   would defeat the centering and pin the content to the top. */
+.dam-tray-frame--nav-only .dam-connect__intro {
+  max-width: none;
+}
+
+/* In the tray, pin the privacy-dividend counts row to the bottom of
+   the connect content, just above the always-visible AppShellFooter.
+   The status line + pending request keep their place at the top; the
+   counts row floats down so the eye lands on protection state first
+   and the dividend lives at the wallet's edge. */
+.dam-tray-frame--nav-only .dam-connect__on .dam-connect__counts {
+  margin-top: auto;
+}
+
+.dam-footer__icon-button {
+  /* Square icon-button in the wallet footer. The character carries the
+     state (⏻ pause), so we bump the glyph size and align the button to
+     a square that matches the brand bar's protection mark. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.dam-blank {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: 100%;
+  padding: var(--space-6) var(--space-4);
+}
+
+.dam-tray-frame--nav-only .dam-blank {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dam-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  width: 100%;
+  max-width: 36rem;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4);
+  color: var(--text);
+}
+
+.dam-tray-frame--nav-only .dam-settings {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--space-5) var(--space-4);
+}
+
+.dam-settings__heading {
+  margin: 0;
+  color: var(--bright);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.dam-settings__hint {
+  margin: 0 0 var(--space-3);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dam-settings__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-1) solid var(--alarm);
+  background: var(--panel);
+}
+
+.dam-settings__confirm-line {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.dam-settings__confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.dam-settings__apps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.dam-settings__notify-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-1) solid var(--accent);
+  background: var(--panel);
+}
+
+.dam-settings__notify-prompt-title {
+  margin: 0;
+  color: var(--bright);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.dam-settings__notify-prompt-body {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dam-settings__notify-prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.dam-settings__danger-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+/* In the tray, the apps card's bottom row stays single-row even at
+   narrow widths — the action here is a Toggle (small fixed control),
+   not a button label that would benefit from full-width treatment.
+   Override the design-system's mobile rule that stretches the action
+   to 100% (which made the Toggle look untethered). */
+.dam-settings__apps .rpblc-app-card__row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+}
+.dam-settings__apps .rpblc-app-card__action,
+.dam-settings__apps .rpblc-app-card__action > * {
+  width: auto;
+}
+.dam-settings__apps .rpblc-app-card__disclosure {
+  align-self: auto;
+}
+
+.dam-settings__app-details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.dam-settings__app-meta {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+}
+
+.dam-settings__app-meta span {
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 10px;
+}
+
+.dam-settings__app-meta code {
+  color: var(--bright);
+  font-family: inherit;
+  word-break: break-all;
+}
+
+.dam-settings__app-warning {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid var(--alarm);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.dam-settings__rows {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.dam-settings__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.dam-settings__row dt {
+  flex: 0 0 auto;
+  min-width: 5rem;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.dam-settings__row dd {
+  margin: 0;
+  color: var(--bright);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.dam-settings__row--block {
+  display: block;
+}
+
+.dam-wallet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  width: 100%;
+  max-width: 36rem;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4);
+  color: var(--text);
+}
+
+.dam-tray-frame--nav-only .dam-wallet {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--space-5) var(--space-4);
+}
+
+.dam-wallet__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.dam-wallet__heading {
+  margin: 0;
+  color: var(--bright);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.dam-wallet__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.dam-wallet__controls .rpblc-search-bar {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.dam-wallet__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.dam-wallet__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 6rem;
+}
+
+/* Each wallet row is its own column container so the active row + its
+   inline detail compose into one surface without the list's between-row
+   gap separating them. The `overflow-anchor` rule lets the browser
+   anchor scroll position to whichever row is most stable during the
+   open/close transition — so adjacent rows reflowing don't drag the
+   focused row off the viewport. */
+.dam-wallet__list {
+  overflow-anchor: auto;
+}
+.dam-wallet__row {
+  display: flex;
+  flex-direction: column;
+  overflow-anchor: auto;
+}
+
+/* Wrapper around the inline detail. Its height animates from 0 to the
+   detail's natural height using the grid-template-rows trick, so
+   adjacent rows reflow smoothly with the open instead of jumping. The
+   active card "extracts" downward, like pulling a card out of a
+   wallet. Timing is "human-pace": ~420ms with a smooth in-out cubic
+   so neither the open nor the close snaps at the end — the gesture
+   reads at the speed a hand moves, not a browser. */
+.dam-wallet__inline-wrap {
+  display: grid;
+  /* `minmax(0, 0fr)` forces the grid track's min to 0. Plain `0fr` lets
+     the auto-min algorithm fall back to the child's min-content size,
+     which leaks ~30–40px of pre-animation height — that was the visible
+     "gap appears before the transition starts". */
+  grid-template-rows: minmax(0, 0fr);
+  min-height: 0;
+  /* The wrapper is the slot the card emerges from; anything above its
+     visible bound (the row's bottom edge) is hidden. */
+  overflow: hidden;
+  transition: grid-template-rows 420ms cubic-bezier(0.65, 0, 0.35, 1);
+}
+.dam-wallet__row--active .dam-wallet__inline-wrap {
+  grid-template-rows: minmax(0, 1fr);
+}
+.dam-wallet__inline-wrap > * {
+  /* Anchor the panel's bottom to the wrapper's bottom so as the track
+     grows downward, the panel slides out with its bottom edge leading.
+     The visible portion is the bottom of the card emerging from the
+     row, not the top of a card that was already sitting there.
+     No opacity fade — the slide IS the metaphor; an opacity fade on
+     top would read as the panel ghosting away instead of physically
+     retracting, and the low-opacity tail at the end of the close was
+     causing the "last few pixels disappear at once" snap. */
+  align-self: end;
+}
+
+.dam-wallet__inline-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  background: var(--panel);
+  /* Sit flush below the active WalletCard, sharing its accent border so
+     the card + detail read as one bordered surface. */
+  border: var(--border-1) solid var(--accent);
+  border-top: 0;
+  padding: var(--space-4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dam-wallet__inline-wrap,
+  .dam-wallet__inline-wrap > * {
+    transition: none;
+  }
+}
+
+/* In the inline context, ValueDetail provides only its inner blocks
+   (meta, sharing roster, action region). Its own surface, header
+   eyebrow, and bracketed value hero are redundant — that information
+   is already in the WalletCard above. The standalone ValueDetail
+   surface is unaffected. */
+.dam-wallet__inline-detail .rpblc-value-detail {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  gap: var(--space-4);
+}
+.dam-wallet__inline-detail .rpblc-value-detail__head,
+.dam-wallet__inline-detail .rpblc-value-detail__hero {
+  display: none;
+}
+
+.dam-wallet__inline-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 6rem;
+  border: var(--border-1) solid var(--accent);
+  border-top: 0;
+  padding: var(--space-4);
+  background: var(--panel);
+}
+
+/* ── Recently Scanned ──────────────────────────────────────────── */
+.dam-activity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  width: 100%;
+  max-width: 36rem;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4);
+  color: var(--text);
+}
+
+.dam-tray-frame--nav-only .dam-activity {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--space-5) var(--space-4);
+}
+
+.dam-activity__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.dam-activity__heading {
+  margin: 0;
+  color: var(--bright);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.dam-activity__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dam-activity__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.dam-activity__row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--panel);
+  border: var(--border-1) solid var(--line);
+}
+
+.dam-activity__lead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+
+.dam-activity__time {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.dam-activity__kind {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.dam-activity__value {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: var(--fw-semibold);
+  color: var(--bright);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dam-activity__actor {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.dam-activity__actor b {
+  color: var(--bright);
+  font-weight: var(--fw-semibold);
+}
+
+.dam-activity__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.dam-activity__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 6rem;
+}
+
+.dam-connect__stack,
+.dam-connect__intro,
+.dam-connect__setup {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 28rem;
+}
+
+.dam-connect__stack {
+  gap: var(--space-5);
+}
+
+/* The welcome variant — disconnected state, single `__intro` child —
+   vertically centers within whatever main-axis space the parent gives
+   it. The `__stack` wrapper absorbs all available height (flex-grow
+   in the tray override) so without this modifier the intro pins to
+   the top, leaving the page top-heavy and the CTA stranded. */
+.dam-connect__stack--welcome {
+  justify-content: center;
+}
+
+.dam-connect__on {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+}
+
+.dam-connect__notice {
+  width: 100%;
+  margin-bottom: var(--space-4);
+}
+
+.dam-connect__intro {
+  align-items: center;
+  gap: var(--space-5);
+  text-align: center;
+  /* The CTA sits at the end of the read flow, so leave a clear gap
+     between the fine print paragraph and the mark — the mark reads
+     as the destination, not as part of the text. */
+  padding: var(--space-6) 0 var(--space-4);
+}
+
+.dam-connect__intro .dam-connect__mark {
+  /* Push the mark below the lede + fine print, not flush with them. */
+  margin-top: var(--space-3);
+}
+
+.dam-connect__mark {
+  /* Bumped from 26px so the mark reads as the page's destination,
+     not as another block of inline text. */
+  font-size: 32px;
+}
+
+.dam-connect__mark .rpblc-connect-mark[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dam-connect__lede,
+.dam-connect__fine {
+  margin: 0;
+}
+
+.dam-connect__lede {
+  max-width: 34em;
+  color: var(--bright);
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.dam-connect__fine {
+  max-width: 44em;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.dam-connect__loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  min-height: 40vh;
+  width: 100%;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.dam-connect__loading--inline {
+  min-height: 116px;
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+}
+
+.dam-connect__status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dam-connect__status-line {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.dam-connect__status-line b {
+  color: var(--bright);
+  font-weight: var(--fw-semibold);
+}
+
+.dam-connect__status-line-mode {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.dam-connect__state-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: var(--space-4);
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.dam-connect__state-mark[data-state='paused'] {
+  color: var(--muted);
+}
+
+.dam-connect__state-mark[data-state='degraded'] {
+  border-left: 2px solid var(--alarm);
+}
+
+.dam-connect__state-mark[data-state='needs_setup'] {
+  border-left: 2px solid var(--accent);
+}
+
+.dam-connect__setup {
+  gap: var(--space-4);
+}
+
+.dam-connect__choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  width: 100%;
+  gap: var(--space-2);
+}
+
+.dam-connect__choice-primary {
+  min-width: 0;
+  justify-self: start;
+}
+
+.dam-connect__choice-skip {
+  justify-self: center;
+}
+
+.dam-connect__heading {
+  margin: 0;
+  color: var(--bright);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.dam-connect__action {
+  align-self: center;
+}
+
+.dam-connect__counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+  list-style: none;
+}
+
+.dam-connect__counts li {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+  text-align: left;
+}
+
+.dam-connect__counts li + li {
+  border-left: var(--border-1) solid var(--line);
+}
+
+/* Count tiles are gateways to their source surfaces; the full square is
+   clickable, not just the label. */
+.dam-connect__counts-cell--link {
+  padding: 0;
+}
+
+.dam-connect__counts-link {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  width: 100%;
+  height: 100%;
+  padding: var(--space-4) var(--space-2);
+  color: inherit;
+  text-decoration: none;
+  transition: background var(--dur-fast) var(--ease-base);
+}
+
+.dam-connect__counts-link:hover,
+.dam-connect__counts-link:focus-visible {
+  background: var(--bg);
+  outline: none;
+}
+
+.dam-connect__counts-link:hover b,
+.dam-connect__counts-link:focus-visible b {
+  color: var(--accent);
+}
+
+.dam-connect__counts b {
+  color: var(--bright);
+  font-family: var(--font-mono);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.dam-connect__counts span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.12em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
+.dam-connect__quiet {
+  min-height: 48px;
+}
+
+@media (max-width: 760px) {
+  .dam-app-nav {
+    gap: var(--space-3);
+    padding: 0 var(--space-4);
+    overflow-x: auto;
+  }
+
+  .dam-connect {
+    padding: var(--space-6) var(--space-4);
+  }
+}
+
+/* ── Web navigation ───────────────────────────────────────────── */
+
+.dam-web-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: var(--space-3);
+}
+
+.dam-web-nav__link {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 var(--space-3);
+  border: var(--border-1) solid transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-decoration: none;
+  text-transform: uppercase;
+  transition: color var(--dur-fast) var(--ease-base),
+              border-color var(--dur-fast) var(--ease-base),
+              background var(--dur-fast) var(--ease-base);
+}
+
+.dam-web-nav__link:hover {
+  color: var(--bright);
+}
+
+.dam-web-nav__link--active {
+  color: var(--bright);
+  border-color: var(--accent);
+}
+
+.dam-web-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.dam-web-menu__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 32px;
+  padding: 0 var(--space-3);
+  border: var(--border-1) solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-base);
+}
+
+.dam-web-menu__trigger:hover,
+.dam-web-menu__trigger[aria-expanded='true'] {
+  color: var(--bright);
+}
+
+.dam-web-menu__trigger--active {
+  color: var(--bright);
+  border-color: var(--accent);
+}
+
+.dam-web-menu__chev {
+  display: inline-block;
+  transform: rotate(90deg);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.dam-web-menu__list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 180px;
+  margin: 0;
+  padding: var(--space-1) 0;
+  list-style: none;
+  background: var(--panel);
+  border: var(--border-1) solid var(--line);
+  z-index: 20;
+}
+
+.dam-web-menu__item {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.12em;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.dam-web-menu__item:hover {
+  background: var(--bg);
+  color: var(--bright);
+}
+
+/* ── Insights ─────────────────────────────────────────────────── */
+
+.dam-insights {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: 880px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5);
+}
+
+.dam-insights__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.dam-insights__heading {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--bright);
+}
+
+.dam-insights__stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.dam-insights__hero .rpblc-stat__value {
+  font-size: 56px;
+}
+
+.dam-insights__empty-title {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--bright);
+  margin-bottom: var(--space-2);
+}
+
+.dam-insights__empty-body {
+  display: block;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.dam-insights__rank {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.dam-insights__rank-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto minmax(0, 2fr);
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+  text-decoration: none;
+  color: var(--text);
+  transition: border-color var(--dur-fast) var(--ease-base);
+}
+
+.dam-insights__rank-row:hover {
+  border-color: var(--accent);
+}
+
+.dam-insights__rank-row--kind {
+  grid-template-columns: minmax(120px, 1fr) auto;
+}
+
+.dam-insights__rank-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--fw-bold);
+  color: var(--accent);
+  letter-spacing: 0.05em;
+}
+
+.dam-insights__rank-count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums;
+  color: var(--bright);
+}
+
+.dam-insights__rank-bar {
+  display: flex;
+  height: 6px;
+  width: 100%;
+  background: var(--bg);
+  border: var(--border-1) solid var(--line);
+}
+
+.dam-insights__rank-bar-fill {
+  display: block;
+  height: 100%;
+}
+
+.dam-insights__rank-bar-fill--redacted {
+  background: var(--accent);
+}
+
+.dam-insights__rank-bar-fill--allowed {
+  background: var(--muted);
+}
+
+.dam-insights__rank-bar-fill--denied {
+  background: var(--alarm);
+}
+
+.dam-insights__rank-legend {
+  grid-column: 1 / -1;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+.dam-insights__events {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.dam-insights__event {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-3);
+  align-items: baseline;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+}
+
+.dam-insights__event-ts {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dam-insights__event-summary {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* ── Allowed ──────────────────────────────────────────────────── */
+
+.dam-allowed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5);
+}
+
+.dam-allowed__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.dam-allowed__heading {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--bright);
+}
+
+.dam-allowed__rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.dam-allowed__rows--archive {
+  margin-top: var(--space-3);
+  opacity: 0.7;
+}
+
+.dam-allowed__archive {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+/* ── Health ───────────────────────────────────────────────────── */
+
+.dam-health {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5);
+}
+
+.dam-health__heading {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--bright);
+}
+
+.dam-health__stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.dam-health__summary {
+  padding: var(--space-4);
+  border: var(--border-1) solid var(--line);
+  border-left-width: 3px;
+  background: var(--panel);
+}
+
+.dam-health__summary--healthy { border-left-color: var(--accent); }
+.dam-health__summary--degraded { border-left-color: var(--accent); }
+.dam-health__summary--not_connected { border-left-color: var(--alarm); }
+
+.dam-health__summary-state {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.dam-health__summary-msg {
+  margin: var(--space-2) 0 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.dam-health__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.dam-health__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  border-bottom: var(--border-1) solid var(--line);
+  margin: 0;
+}
+
+.dam-health__row dt {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.dam-health__row dd {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  margin: 0;
+}
+
+.dam-health__actions {
+  margin-top: var(--space-3);
+  display: flex;
+  gap: var(--space-2);
+}
+
+.dam-health__profiles,
+.dam-health__events {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.dam-health__profile {
+  display: flex;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+}
+
+.dam-health__profile-id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.dam-health__profile-state {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.dam-health__event {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: var(--space-3);
+  align-items: baseline;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-1) solid var(--line);
+  border-left-width: 2px;
+  background: var(--panel);
+}
+
+.dam-health__event--warn { border-left-color: var(--accent); }
+.dam-health__event--error { border-left-color: var(--alarm); }
+
+.dam-health__event-ts {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.dam-health__event-msg {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.dam-health__event-sev {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ── System log ───────────────────────────────────────────────── */
+
+.dam-system {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 880px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5);
+}
+
+.dam-system__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.dam-system__heading {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--bright);
+}
+
+.dam-system__events {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.dam-system__event {
+  border-left: 2px solid transparent;
+  background: var(--panel);
+}
+
+.dam-system__event--warn { border-left-color: var(--accent); }
+.dam-system__event--error { border-left-color: var(--alarm); }
+.dam-system__event--open { border: var(--border-1) solid var(--accent); border-left-width: 2px; }
+.dam-system__event--open.dam-system__event--error { border-color: var(--alarm); }
+
+.dam-system__event-head {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  gap: var(--space-3);
+  align-items: baseline;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.dam-system__event-ts {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.dam-system__event-module {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+  color: var(--accent);
+  letter-spacing: 0.05em;
+}
+
+.dam-system__event-msg {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dam-system__event-sev {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px var(--space-2);
+  border: var(--border-1) solid currentColor;
+}
+
+.dam-system__event-sev--info { color: var(--muted); }
+.dam-system__event-sev--warn { color: var(--accent); }
+.dam-system__event-sev--error { color: var(--alarm); }
+
+.dam-system__event-details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: var(--space-3);
+  border-top: var(--border-1) solid var(--line);
+  background: var(--bg);
+}
+
+.dam-system__event-detail {
+  display: contents;
+}
+
+.dam-system__event-detail dt {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.dam-system__event-detail dd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  margin: 0;
+  word-break: break-all;
+}
+
+.dam-activity__filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}

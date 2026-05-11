@@ -2981,12 +2981,12 @@ mod tests {
         let upstream = spawn_capture_echo_upstream(upstream_seen.clone()).await;
         let mut config = proxy_config(upstream);
         config.proxy.targets[0].name = "enterprise-ai".to_string();
-        let ai_routes = dam_net::ai_routes_with_overlays([dam_net::AiRoute::custom(
+        let ai_routes = vec![dam_net::AiRoute::custom(
             "api.enterprise-ai.example",
             dam_net::OPENAI_COMPATIBLE_PROVIDER,
             "enterprise-ai",
             "https://api.enterprise-ai.example",
-        )]);
+        )];
         let interception = TransparentInterceptionConfig {
             state_dir: tempfile::tempdir().unwrap().keep(),
             network_mode: dam_net::CaptureMode::SystemProxy,

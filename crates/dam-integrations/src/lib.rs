@@ -286,18 +286,23 @@ pub fn read_enabled_integrations(
 pub fn read_effective_enabled_integrations(
     integration_state_dir: &Path,
 ) -> Result<Vec<EnabledIntegrationState>, String> {
+    read_runtime_enabled_integrations(integration_state_dir)
+        .map(|profiles| profiles.unwrap_or_default())
+}
+
+pub fn read_runtime_enabled_integrations(
+    integration_state_dir: &Path,
+) -> Result<Option<Vec<EnabledIntegrationState>>, String> {
     if let Some(profiles) = read_enabled_integrations_file(integration_state_dir)? {
-        return Ok(profiles);
+        return Ok(Some(profiles));
     }
 
-    Ok(read_active_profile(integration_state_dir)?
-        .map(|active| {
-            vec![EnabledIntegrationState {
-                profile_id: active.profile_id,
-                enabled_at_unix: active.selected_at_unix,
-            }]
-        })
-        .unwrap_or_default())
+    Ok(read_active_profile(integration_state_dir)?.map(|active| {
+        vec![EnabledIntegrationState {
+            profile_id: active.profile_id,
+            enabled_at_unix: active.selected_at_unix,
+        }]
+    }))
 }
 
 pub fn enabled_profile_ids(integration_state_dir: &Path) -> Result<Vec<String>, String> {
@@ -307,6 +312,33 @@ pub fn enabled_profile_ids(integration_state_dir: &Path) -> Result<Vec<String>, 
             .map(|profile| profile.profile_id)
             .collect()
     })
+}
+
+pub fn runtime_enabled_profile_ids(
+    integration_state_dir: &Path,
+) -> Result<Option<Vec<String>>, String> {
+    read_runtime_enabled_integrations(integration_state_dir).map(|profiles| {
+        profiles.map(|profiles| {
+            profiles
+                .into_iter()
+                .map(|profile| profile.profile_id)
+                .collect()
+        })
+    })
+}
+
+pub fn traffic_app_ids_for_profile_ids(profile_ids: &[String]) -> Result<Vec<String>, String> {
+    let mut app_ids = Vec::new();
+    for profile_id in profile_ids {
+        let profile = profile(profile_id, DEFAULT_PROXY_URL)
+            .ok_or_else(|| unknown_profile_error(profile_id))?;
+        for app_id in profile.traffic_app_ids {
+            if !app_ids.contains(&app_id) {
+                app_ids.push(app_id);
+            }
+        }
+    }
+    Ok(app_ids)
 }
 
 pub fn set_integration_enabled(
@@ -1244,6 +1276,30 @@ mod tests {
 
         assert!(clear_enabled_integrations(&state_dir).unwrap());
         assert!(!clear_enabled_integrations(&state_dir).unwrap());
+    }
+
+    #[test]
+    fn runtime_enabled_integrations_distinguish_empty_enabled_state_from_absent_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("integrations");
+
+        assert_eq!(runtime_enabled_profile_ids(&state_dir).unwrap(), None);
+
+        set_active_profile("claude-code", &state_dir).unwrap();
+        assert_eq!(
+            runtime_enabled_profile_ids(&state_dir).unwrap(),
+            Some(vec!["claude-code".to_string()])
+        );
+
+        set_integration_enabled("claude-code", false, &state_dir).unwrap();
+        assert_eq!(
+            runtime_enabled_profile_ids(&state_dir).unwrap(),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            traffic_app_ids_for_profile_ids(&["claude-code".to_string()]).unwrap(),
+            vec!["anthropic-api".to_string()]
+        );
     }
 
     #[test]

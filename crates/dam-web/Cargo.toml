@@ -15,8 +15,16 @@ dam-diagnostics.workspace = true
 dam-integrations.workspace = true
 dam-log.workspace = true
 dam-net.workspace = true
+dam-net-macos.workspace = true
 dam-trust.workspace = true
 dam-vault.workspace = true
+futures-util.workspace = true
+libc = "0.2"
 reqwest.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

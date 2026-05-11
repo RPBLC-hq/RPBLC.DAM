@@ -53,12 +53,6 @@ log_write = "warn_continue"
 profile_path = "traffic-profile.json"
 enabled_apps = ["openai-api", "anthropic-api", "chatgpt-codex"]
 
-[[network.ai_routes]]
-host = "api.enterprise-ai.example"
-provider = "openai-compatible"
-target_name = "enterprise-ai"
-upstream = "https://api.enterprise-ai.example"
-
 [web]
 addr = "127.0.0.1:2896"
 
@@ -83,7 +77,36 @@ Supported first-slice provider values are `openai-compatible` and `anthropic`. T
 
 `traffic.enabled_apps` is optional. When present, only those app IDs remain active in the loaded profile. Runtime Connect app selection uses the same mechanism through CLI overrides, so toggling Connect apps changes the active profile subset instead of changing proxy code.
 
-`network.ai_routes` is a legacy compatibility overlay. It is optional and is applied after the effective traffic profile is loaded. Add `[[network.ai_routes]]` entries only for old-style enterprise gateways or private OpenAI-compatible/Anthropic-compatible endpoints that have not yet been converted to traffic profile JSON. If a configured route uses the same normalized host as a profile-derived route, the config route replaces that entry. Duplicate configured hosts are rejected.
+Private enterprise gateways and provider-compatible endpoints are traffic profile apps. Example JSON:
+
+```json
+{
+  "version": 1,
+  "default_action": "bypass",
+  "apps": [
+    {
+      "id": "enterprise-ai",
+      "match": {
+        "domains": ["api.enterprise-ai.example"],
+        "ports": [443],
+        "protocols": ["https", "web_socket"]
+      },
+      "action": "inspect",
+      "adapter": "http",
+      "provider": "openai-compatible",
+      "target_name": "enterprise-ai",
+      "upstream": "https://api.enterprise-ai.example",
+      "steps": [
+        {"id": "detect", "kind": "detect_sensitive_data", "direction": "outbound"},
+        {"id": "tokenize", "kind": "replace_sensitive_data", "direction": "outbound"},
+        {"id": "resolve", "kind": "resolve_references", "direction": "inbound"}
+      ]
+    }
+  ]
+}
+```
+
+`network.ai_routes` has been removed. Config files that still contain `[[network.ai_routes]]` fail validation with a migration message instead of silently dropping private endpoint protection.
 
 `web.addr` and `proxy.listen` must be loopback socket addresses in this local build, for example `127.0.0.1:2896` and `127.0.0.1:7828`.
 

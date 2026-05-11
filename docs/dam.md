@@ -56,6 +56,8 @@ dam network remove-system-proxy [--dry-run|--yes] [--json]
 dam network install-network-extension [--dry-run|--yes] [--json]
 dam network remove-network-extension [--dry-run|--yes] [--json]
 dam network status [--json]
+dam startup status [--json]
+dam startup skip-open-at-login [--json]
 dam disconnect
 dam integrations list [--json]
 dam integrations show <profile> [--json]
@@ -104,6 +106,8 @@ dam trust generate-local-ca
 dam trust install-local-ca
 dam network install-network-extension
 dam network install-system-proxy
+dam startup status
+dam startup skip-open-at-login
 dam integrations show codex-api
 dam integrations apply codex-api
 dam integrations apply codex-api --write
@@ -118,7 +122,7 @@ The previous one-shot `npx @rpblc/dam claude` and `npx @rpblc/dam codex --api` t
 
 ## Current Limits
 
-- `dam connect` can start one daemon with multiple proxy targets when multiple app profiles are enabled. `--profile <id>` selects one explicit profile. `--apply` writes reversible explicit-proxy fallback before connecting; tray/web Connect uses Network Extension capture as the primary path and keeps the fallback for source builds and unsupported environments.
+- `dam connect` can start one daemon with multiple proxy targets when multiple app profiles are enabled. `--profile <id>` selects one explicit profile. `--apply` writes reversible explicit-proxy fallback before connecting; tray/web Connect uses Network Extension capture as the primary path and keeps the fallback for source builds and unsupported environments. If the enabled-profile state exists but contains no profiles, `dam connect` and `dam network install-*` use an explicit empty traffic scope instead of the bundled default routes.
 - `dam logs` reads the local SQLite log and renders concise non-sensitive operation summaries by default. `--operation <id>` shows one operation's event timeline, and `--json` keeps the same data machine-readable for local debugging.
 - `dam disconnect` pauses protection without stopping the daemon. `dam connect` resumes a paused daemon using its existing routing/trust setup. If the connected daemon was launched by a missing or different `dam` executable path/fingerprint, Connect restarts it from the current executable while preserving that setup, so source builds and app updates do not keep running stale proxy code. Use `dam disconnect --stop` before intentionally changing setup.
 - `dam profile set <id>` persists the legacy active local harness profile. The tray/web Settings flow persists enabled app profiles for simultaneous Codex API and Claude Code protection.
@@ -129,11 +133,12 @@ The previous one-shot `npx @rpblc/dam claude` and `npx @rpblc/dam codex --api` t
 - `dam trust install-local-ca` and `dam trust remove-local-ca` preview by default. On macOS only, `--yes` applies the System keychain change and may require administrator approval.
 - `dam network install-network-extension` and `dam network remove-network-extension` preview by default. On macOS, `--yes` requires a signed helper from the app bundle or `DAM_MACOS_NE_HELPER` in source builds; without it, install fails closed. Packaged Connect submits System Extension activation only from `DAM.app`, then the helper configures `tun` capture and writes state only after success.
 - `dam network install-system-proxy` and `dam network remove-system-proxy` preview by default. On macOS, `--yes` applies or removes PAC routing for proxy-capable traffic with rollback state; this remains a fallback and diagnostic mode.
+- `dam startup status` reports whether the startup choice is registered, skipped, or unconfigured. `dam startup skip-open-at-login` records the same choice as the tray Skip button so scripted installs can continue without adding DAM to Open at Login.
 - `dam integrations apply <profile>` previews by default. Add `--write` to edit Claude Code settings or DAM-managed proxy environment files with a rollback record.
 - The one-shot `dam claude`, `dam codex`, and `dam codex --api` launchers have been removed; the background `dam connect` flow can run multiple provider targets in one daemon.
 - Codex API-key mode is protected when Codex keeps its normal OpenAI endpoint and routes through DAM capture/proxy routing. Codex ChatGPT-login mode uses the `codex-chatgpt` profile and outbound WebSocket adapter for `chatgpt.com`.
 - DAM no longer has a default user-facing provider base-URL routing path. Generic SDK profiles use HTTP(S) proxy settings.
-- `--network-mode tun` can report macOS Network Extension capture installed by `dam network install-network-extension`. When route capture, local CA trust, and consent are ready, the daemon uses HTTP/1.1 CONNECT/TLS plus WebSocket handling for built-in and configured AI hosts. `dam connect` preflights routing/trust setup before starting transparent modes; transparent traffic still fails closed if runtime readiness is lost after startup.
+- `--network-mode tun` can report macOS Network Extension capture installed by `dam network install-network-extension`. When route capture, local CA trust, and consent are ready, the daemon uses HTTP/1.1 CONNECT/TLS plus WebSocket handling for active traffic profile hosts. `dam connect` preflights routing/trust setup before starting transparent modes and restarts a compatible running daemon when the enabled app traffic scope changes; transparent traffic still fails closed if runtime readiness is lost after startup.
 - HTTP/2 transparent interception, inbound/fragmented/compressed WebSocket payload protection, UDP, and arbitrary web traffic rewriting remain parked.
 
 ## Tests

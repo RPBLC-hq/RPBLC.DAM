@@ -46,13 +46,10 @@ log_write = "warn_continue"
 # profile_path = "traffic-profile.json"
 # enabled_apps = ["openai-api", "anthropic-api", "chatgpt-codex"]
 
-# Legacy route overlays are still supported for private or provider-compatible
-# endpoints. Prefer traffic profile app JSON for new mediated services.
-# [[network.ai_routes]]
-# host = "api.enterprise-ai.example"
-# provider = "openai-compatible"
-# target_name = "enterprise-ai"
-# upstream = "https://api.enterprise-ai.example"
+# Private, enterprise, or provider-compatible endpoints are modeled as
+# traffic profile JSON apps. Give the app match rules, action = "inspect",
+# adapter = "http", provider, target_name, upstream, and pipeline steps, then
+# point traffic.profile_path at that JSON file.
 
 [web]
 addr = "127.0.0.1:2896"

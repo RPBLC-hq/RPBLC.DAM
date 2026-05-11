@@ -912,7 +912,7 @@ fn filter_then_resolve_roundtrip_survives_reordered_tokens() {
 }
 
 #[tokio::test]
-async fn web_reads_vault_and_logs_populated_by_filter() {
+async fn web_api_reads_vault_and_activity_populated_by_filter() {
     let dir = tempfile::tempdir().unwrap();
     let vault_path = dir.path().join("vault.db");
     let log_path = dir.path().join("log.db");
@@ -953,52 +953,38 @@ async fn web_reads_vault_and_logs_populated_by_filter() {
     let base = format!("http://{addr}");
     wait_for_ok(&format!("{base}/health")).await;
 
-    let no_redirect = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap();
-    let home_response = no_redirect.get(&base).send().await.unwrap();
-    assert_eq!(home_response.status(), reqwest::StatusCode::SEE_OTHER);
-    assert_eq!(
-        home_response
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|value| value.to_str().ok()),
-        Some("/connect")
-    );
+    let home_html = reqwest::get(&base).await.unwrap().text().await.unwrap();
+    assert!(home_html.contains("/assets/bundle.js"));
 
-    let vault_html = reqwest::get(format!("{base}/vault"))
+    let wallet_json = reqwest::get(format!("{base}/api/v1/wallet"))
         .await
         .unwrap()
         .text()
         .await
         .unwrap();
-    assert!(vault_html.contains("Vault"));
-    assert!(vault_html.contains("alice@example.com"));
-    assert!(vault_html.contains("123-45-6789"));
+    assert!(wallet_json.contains("\"ok\":true"));
+    assert!(wallet_json.contains("alice@example.com"));
+    assert!(wallet_json.contains("123-45-6789"));
 
-    let log_html = reqwest::get(format!("{base}/logs"))
+    let activity_json = reqwest::get(format!("{base}/api/v1/activity"))
         .await
         .unwrap()
         .text()
         .await
         .unwrap();
-    assert!(log_html.contains("DAM Logs"));
-    assert!(log_html.contains("vault_write"));
-    assert!(log_html.contains("redaction"));
-    assert!(!log_html.contains("alice@example.com"));
-    assert!(!log_html.contains("123-45-6789"));
+    assert!(activity_json.contains("\"ok\":true"));
+    assert!(activity_json.contains("sealed"));
+    assert!(!activity_json.contains("alice@example.com"));
+    assert!(!activity_json.contains("123-45-6789"));
 
-    let diagnostics_html = reqwest::get(format!("{base}/diagnostics"))
+    let health_json = reqwest::get(format!("{base}/api/v1/health"))
         .await
         .unwrap()
         .text()
         .await
         .unwrap();
-    assert!(diagnostics_html.contains("DAM Diagnostics"));
-    assert!(diagnostics_html.contains("Config Check"));
-    assert!(diagnostics_html.contains("Proxy Status"));
-    assert!(diagnostics_html.contains("proxy is disabled"));
+    assert!(health_json.contains("\"ok\":true"));
+    assert!(health_json.contains("not_connected"));
 }
 
 #[tokio::test]

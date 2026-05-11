@@ -18,7 +18,7 @@ struct DAMMacosNEHelper {
             }
             print(message)
         } catch {
-            fputs("dam-macos-ne-helper: \(error)\n", stderr)
+            fputs("dam-macos-ne-helper: \(error.localizedDescription)\n", stderr)
             Foundation.exit(1)
         }
     }

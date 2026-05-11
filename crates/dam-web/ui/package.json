@@ -4,16 +4,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
+    "build": "tsc --noEmit && vite build",
+    "dev": "vite",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {},
-  "devDependencies": {
-    "@vitejs/plugin-react": "4.3.4",
-    "@types/react": "18.3.12",
-    "@types/react-dom": "18.3.1",
+  "dependencies": {
+    "@tanstack/react-query": "^5.59.0",
+    "@tanstack/react-router": "^1.78.0",
     "react": "18.3.1",
-    "react-dom": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.0",
+    "@types/react": "18.3.28",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "4.3.4",
     "typescript": "5.6.3",
     "vite": "5.4.10"
   }

@@ -163,17 +163,32 @@ profile_path = "traffic-profile.json"
 enabled_apps = ["openai-api", "anthropic-api", "chatgpt-codex"]
 ```
 
-Legacy transparent route overlay example:
+Private OpenAI-compatible endpoint profile example:
 
-```toml
-[[network.ai_routes]]
-host = "api.enterprise-ai.example"
-provider = "openai-compatible"
-target_name = "enterprise-ai"
-upstream = "https://api.enterprise-ai.example"
+```json
+{
+  "version": 1,
+  "default_action": "bypass",
+  "apps": [
+    {
+      "id": "enterprise-ai",
+      "match": {"domains": ["api.enterprise-ai.example"], "ports": [443]},
+      "action": "inspect",
+      "adapter": "http",
+      "provider": "openai-compatible",
+      "target_name": "enterprise-ai",
+      "upstream": "https://api.enterprise-ai.example",
+      "steps": [
+        {"id": "detect", "kind": "detect_sensitive_data", "direction": "outbound"},
+        {"id": "tokenize", "kind": "replace_sensitive_data", "direction": "outbound"},
+        {"id": "resolve", "kind": "resolve_references", "direction": "inbound"}
+      ]
+    }
+  ]
+}
 ```
 
-The traffic profile controls transparent host recognition and adapter intent. Legacy route overlays remain available for old configs. Active forwarding targets are configured separately through `[[proxy.targets]]`. The local proxy can host multiple targets in one process and selects the OpenAI-compatible or Anthropic route from request path/header shape or the transparent route match.
+The traffic profile controls transparent host recognition and adapter intent. Active forwarding targets are configured separately through `[[proxy.targets]]`; the daemon also adds active profile routes as non-secret proxy targets for transparent matching. The local proxy can host multiple targets in one process and selects the OpenAI-compatible or Anthropic route from request path/header shape or the transparent route match.
 
 Secrets must be supplied through environment variables or deployment secret stores, not plaintext config files. For local proxy/interception flows, omit `api_key_env` so DAM forwards caller-owned auth headers instead of injecting a provider key.
 

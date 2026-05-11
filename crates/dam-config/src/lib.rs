@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs;
 use std::net::SocketAddr;
@@ -19,7 +19,6 @@ pub struct DamConfig {
     pub policy: PolicyConfig,
     pub failure: FailureConfig,
     pub traffic: TrafficConfig,
-    pub network: NetworkConfig,
     pub web: WebConfig,
     pub proxy: ProxyConfig,
 }
@@ -296,19 +295,6 @@ impl TrafficConfig {
             .map(|app_ids| self.profile.with_runtime_enabled_apps(app_ids))
             .unwrap_or_else(|| self.profile.clone())
     }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NetworkConfig {
-    pub ai_routes: Vec<AiRouteConfig>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AiRouteConfig {
-    pub host: String,
-    pub provider: String,
-    pub target_name: String,
-    pub upstream: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -698,12 +684,13 @@ fn merge_raw(
     }
 
     if let Some(network) = raw.network
-        && let Some(ai_routes) = network.ai_routes
+        && network.ai_routes.is_some()
     {
-        config.network.ai_routes = ai_routes
-            .into_iter()
-            .map(parse_ai_route)
-            .collect::<Vec<_>>();
+        return Err(ConfigError::invalid_value(
+            "network.ai_routes",
+            "<configured>",
+            "network.ai_routes was removed; define private or enterprise AI endpoints as traffic profile JSON apps and set traffic.profile_path",
+        ));
     }
 
     if let Some(web) = raw.web
@@ -993,7 +980,6 @@ fn validate(config: &DamConfig) -> Result<(), ConfigError> {
     }
 
     validate_traffic(&config.traffic)?;
-    validate_network_ai_routes(&config.network.ai_routes)?;
 
     if config.web.addr.trim().is_empty() {
         return Err(ConfigError::MissingRequired { field: "web.addr" });
@@ -1070,58 +1056,6 @@ fn validate_traffic(traffic: &TrafficConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_network_ai_routes(routes: &[AiRouteConfig]) -> Result<(), ConfigError> {
-    let mut hosts = BTreeSet::new();
-    for route in routes {
-        if route.host.trim().is_empty() {
-            return Err(ConfigError::MissingRequired {
-                field: "network.ai_routes.host",
-            });
-        }
-        let normalized = normalize_host(&route.host);
-        if normalized.is_empty() {
-            return Err(ConfigError::invalid_value(
-                "network.ai_routes.host",
-                route.host.clone(),
-                "expected a hostname",
-            ));
-        }
-        if !hosts.insert(normalized) {
-            return Err(ConfigError::invalid_value(
-                "network.ai_routes.host",
-                route.host.clone(),
-                "duplicate AI route host",
-            ));
-        }
-        if route.provider.trim().is_empty() {
-            return Err(ConfigError::MissingRequired {
-                field: "network.ai_routes.provider",
-            });
-        }
-        if !matches!(
-            route.provider.as_str(),
-            OPENAI_COMPATIBLE_PROVIDER | ANTHROPIC_PROVIDER
-        ) {
-            return Err(ConfigError::invalid_value(
-                "network.ai_routes.provider",
-                route.provider.clone(),
-                "expected openai-compatible or anthropic",
-            ));
-        }
-        if route.target_name.trim().is_empty() {
-            return Err(ConfigError::MissingRequired {
-                field: "network.ai_routes.target_name",
-            });
-        }
-        if route.upstream.trim().is_empty() {
-            return Err(ConfigError::MissingRequired {
-                field: "network.ai_routes.upstream",
-            });
-        }
-    }
-    Ok(())
-}
-
 fn require_loopback_socket(field: &'static str, value: &str) -> Result<(), ConfigError> {
     let addr = value
         .parse::<SocketAddr>()
@@ -1147,15 +1081,6 @@ fn parse_proxy_target(raw: RawProxyTargetConfig) -> Result<ProxyTargetConfig, Co
         api_key_env: raw.api_key_env.and_then(non_empty),
         api_key: None,
     })
-}
-
-fn parse_ai_route(raw: RawAiRouteConfig) -> AiRouteConfig {
-    AiRouteConfig {
-        host: raw.host.unwrap_or_default(),
-        provider: raw.provider.unwrap_or_default(),
-        target_name: raw.target_name.unwrap_or_default(),
-        upstream: raw.upstream.unwrap_or_default(),
-    }
 }
 
 fn load_traffic_profile(path: &Path) -> Result<dam_net::TrafficProfile, ConfigError> {
@@ -1237,27 +1162,6 @@ fn non_empty(value: String) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
-}
-
-fn normalize_host(host: &str) -> String {
-    let trimmed = host.trim().trim_end_matches('.');
-    let without_scheme = trimmed
-        .strip_prefix("https://")
-        .or_else(|| trimmed.strip_prefix("http://"))
-        .or_else(|| trimmed.strip_prefix("wss://"))
-        .or_else(|| trimmed.strip_prefix("ws://"))
-        .unwrap_or(trimmed);
-    let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
-    let host_only = host_port
-        .strip_prefix('[')
-        .and_then(|value| value.split_once(']').map(|(host, _)| host))
-        .unwrap_or_else(|| {
-            host_port
-                .split_once(':')
-                .map(|(host, _)| host)
-                .unwrap_or(host_port)
-        });
-    host_only.to_ascii_lowercase()
 }
 
 fn parse_bool(field: &'static str, value: &str) -> Result<bool, ConfigError> {
@@ -1400,16 +1304,7 @@ struct RawTrafficConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawNetworkConfig {
-    ai_routes: Option<Vec<RawAiRouteConfig>>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawAiRouteConfig {
-    host: Option<String>,
-    provider: Option<String>,
-    target_name: Option<String>,
-    upstream: Option<String>,
+    ai_routes: Option<Vec<toml::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1469,7 +1364,6 @@ mod tests {
         assert_eq!(config.traffic.profile.apps.len(), 4);
         assert_eq!(config.traffic.profile.apps[0].id, "openai-api");
         assert!(config.traffic.enabled_app_ids.is_none());
-        assert!(config.network.ai_routes.is_empty());
         assert_eq!(config.web.addr, "127.0.0.1:2896");
         assert!(!config.proxy.enabled);
         assert_eq!(config.proxy.listen, "127.0.0.1:7828");
@@ -1565,12 +1459,6 @@ mod tests {
                 profile_path = "traffic-profile.json"
                 enabled_apps = ["mail-example"]
 
-                [[network.ai_routes]]
-                host = "api.enterprise-ai.example"
-                provider = "openai-compatible"
-                target_name = "enterprise-ai"
-                upstream = "https://api.enterprise-ai.example"
-
                 [web]
                 addr = "127.0.0.1:9000"
 
@@ -1627,16 +1515,6 @@ mod tests {
         assert_eq!(
             dam_net::ai_routes_from_profile(&config.traffic.effective_profile())[0].host,
             "mail.example.com"
-        );
-        assert_eq!(config.network.ai_routes.len(), 1);
-        assert_eq!(
-            config.network.ai_routes[0],
-            AiRouteConfig {
-                host: "api.enterprise-ai.example".to_string(),
-                provider: "openai-compatible".to_string(),
-                target_name: "enterprise-ai".to_string(),
-                upstream: "https://api.enterprise-ai.example".to_string(),
-            }
         );
         assert_eq!(config.web.addr, "127.0.0.1:9000");
         assert!(config.proxy.enabled);
@@ -1861,49 +1739,76 @@ mod tests {
     }
 
     #[test]
-    fn network_ai_routes_reject_duplicate_hosts_and_unknown_provider() {
+    fn traffic_profile_json_models_private_ai_endpoint() {
         let dir = tempfile::tempdir().unwrap();
-        let duplicate_path = dir.path().join("duplicate.toml");
+        let config_path = dir.path().join("dam.toml");
         fs::write(
-            &duplicate_path,
+            dir.path().join("enterprise-traffic.json"),
             r#"
-                [[network.ai_routes]]
-                host = "https://api.enterprise-ai.example/v1"
-                provider = "openai-compatible"
-                target_name = "enterprise-ai"
-                upstream = "https://api.enterprise-ai.example"
-
-                [[network.ai_routes]]
-                host = "API.ENTERPRISE-AI.EXAMPLE:443"
-                provider = "anthropic"
-                target_name = "enterprise-ai-alt"
-                upstream = "https://api.enterprise-ai.example"
+            {
+              "version": 1,
+              "default_action": "bypass",
+              "apps": [
+                {
+                  "id": "enterprise-ai",
+                  "match": {
+                    "domains": ["api.enterprise-ai.example"],
+                    "ports": [443],
+                    "protocols": ["https", "web_socket"]
+                  },
+                  "action": "inspect",
+                  "adapter": "http",
+                  "provider": "openai-compatible",
+                  "target_name": "enterprise-ai",
+                  "upstream": "https://api.enterprise-ai.example",
+                  "steps": [
+                    {"id": "detect", "kind": "detect_sensitive_data", "direction": "outbound"},
+                    {"id": "tokenize", "kind": "replace_sensitive_data", "direction": "outbound"},
+                    {"id": "resolve", "kind": "resolve_references", "direction": "inbound"}
+                  ]
+                }
+              ]
+            }
             "#,
         )
         .unwrap();
-        let error = load_with_env(
+        fs::write(
+            &config_path,
+            r#"
+                [traffic]
+                profile_path = "enterprise-traffic.json"
+                enabled_apps = ["enterprise-ai"]
+            "#,
+        )
+        .unwrap();
+
+        let config = load_with_env(
             &ConfigOverrides {
-                config_path: Some(duplicate_path),
+                config_path: Some(config_path),
                 ..ConfigOverrides::default()
             },
             env(&[]),
         )
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            ConfigError::InvalidValue {
-                field: "network.ai_routes.host",
-                ..
-            }
-        ));
+        .unwrap();
+        let routes = dam_net::ai_routes_from_profile(&config.traffic.effective_profile());
 
-        let provider_path = dir.path().join("provider.toml");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].host, "api.enterprise-ai.example");
+        assert_eq!(routes[0].provider, "openai-compatible");
+        assert_eq!(routes[0].target_name, "enterprise-ai");
+        assert_eq!(routes[0].upstream, "https://api.enterprise-ai.example");
+    }
+
+    #[test]
+    fn network_ai_routes_config_is_rejected_with_profile_migration_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("dam.toml");
         fs::write(
-            &provider_path,
+            &config_path,
             r#"
                 [[network.ai_routes]]
                 host = "api.enterprise-ai.example"
-                provider = "openai-compat"
+                provider = "openai-compatible"
                 target_name = "enterprise-ai"
                 upstream = "https://api.enterprise-ai.example"
             "#,
@@ -1911,7 +1816,7 @@ mod tests {
         .unwrap();
         let error = load_with_env(
             &ConfigOverrides {
-                config_path: Some(provider_path),
+                config_path: Some(config_path),
                 ..ConfigOverrides::default()
             },
             env(&[]),
@@ -1920,10 +1825,11 @@ mod tests {
         assert!(matches!(
             error,
             ConfigError::InvalidValue {
-                field: "network.ai_routes.provider",
+                field: "network.ai_routes",
                 ..
             }
         ));
+        assert!(error.to_string().contains("traffic profile JSON apps"));
     }
 
     #[test]

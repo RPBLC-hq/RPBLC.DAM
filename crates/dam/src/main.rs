@@ -13,6 +13,10 @@ use serde::Serialize;
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:7828";
 const DEFAULT_LOG_PATH: &str = "log.db";
+const DAM_WEB_BIN_ENV: &str = "DAM_WEB_BIN";
+const LOGIN_ITEM_MARKER_RELPATH: &str = "startup/login-item.txt";
+const LOGIN_ITEM_SKIP_MARKER_RELPATH: &str = "startup/login-item-skipped.txt";
+const LAUNCH_AGENT_PLIST_RELPATH: &str = "Library/LaunchAgents/com.rpblc.dam-tray.plist";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Cli {
@@ -28,9 +32,16 @@ enum CommandKind {
     Profile(ProfileArgs),
     Trust(TrustArgs),
     Network(NetworkArgs),
+    Startup(StartupArgs),
     Integrations(IntegrationArgs),
+    Web(WebArgs),
     DaemonRun(dam_daemon::ProxyOptions),
     Help,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WebArgs {
+    args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -111,6 +122,12 @@ enum NetworkArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum StartupArgs {
+    Status { json: bool },
+    SkipOpenAtLogin { json: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum IntegrationArgs {
     List {
         json: bool,
@@ -179,6 +196,15 @@ struct ProfileStatusView {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct StartupStatusView {
+    state: &'static str,
+    message: String,
+    platform: &'static str,
+    state_dir: PathBuf,
+    marker: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct LocalCaGenerateView {
     state: &'static str,
     artifact: dam_trust::LocalCaArtifact,
@@ -195,7 +221,14 @@ struct LocalCaDeleteView {
 struct ConnectProfileExpansion {
     args: Vec<String>,
     selected_profile_ids: Vec<String>,
+    traffic_app_ids: Option<Vec<String>>,
     apply_profile_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ConnectProfileSelection {
+    profile_ids: Vec<String>,
+    explicit_selection: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -220,7 +253,7 @@ async fn main() {
 async fn run() -> Result<i32, String> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let enabled_connect_profiles = enabled_profiles_for_connect_parse(&args)?;
-    match parse_cli_with_active_profiles(args, enabled_connect_profiles)? {
+    match parse_cli_with_connect_profiles(args, enabled_connect_profiles)? {
         Cli {
             command: CommandKind::Help,
         } => {
@@ -249,8 +282,14 @@ async fn run() -> Result<i32, String> {
             command: CommandKind::Network(args),
         } => network_command(args),
         Cli {
+            command: CommandKind::Startup(args),
+        } => startup_command(args),
+        Cli {
             command: CommandKind::Integrations(args),
         } => integrations(args).await,
+        Cli {
+            command: CommandKind::Web(args),
+        } => web_command(args),
         Cli {
             command: CommandKind::DaemonRun(args),
         } => daemon_run(args).await,
@@ -262,11 +301,11 @@ async fn connect(mut args: ConnectArgs) -> Result<i32, String> {
 
     match dam_daemon::daemon_status().map_err(|error| error.to_string())? {
         dam_daemon::DaemonStatus::Connected(state) => {
-            if !args.apply_profile_ids.is_empty()
-                && !daemon_proxy_targets_match(&state, &config.proxy.targets)
+            if !daemon_proxy_targets_match(&state, &config.proxy.targets)
+                || !daemon_transparent_routes_match(&state, &config)
             {
                 ensure_connect_transparent_prerequisites(&args.proxy, &config, None)?;
-                println!("DAM profile target setup changed; restarting daemon");
+                println!("DAM profile traffic scope changed; restarting daemon");
                 stop_connected_daemon(&state).await?;
             } else if !daemon_executable_matches_current(&state)? {
                 if connect_setup_change_requested(&state, &args.proxy) && state.protection_enabled {
@@ -473,6 +512,43 @@ fn daemon_proxy_targets_match(
         .collect::<BTreeSet<_>>();
 
     current_targets == requested_targets
+}
+
+fn daemon_transparent_routes_match(
+    state: &dam_daemon::DaemonState,
+    config: &dam_config::DamConfig,
+) -> bool {
+    let current_routes = state
+        .transparent_ai_routes
+        .iter()
+        .map(route_identity)
+        .collect::<BTreeSet<_>>();
+    let requested_routes = dam_net::ai_routes_from_profile(&config.traffic.effective_profile())
+        .iter()
+        .map(route_identity)
+        .collect::<BTreeSet<_>>();
+
+    current_routes == requested_routes
+}
+
+fn route_identity(route: &dam_net::AiRoute) -> (String, String, String, String, &'static str) {
+    (
+        route.host.clone(),
+        route.provider.clone(),
+        route.target_name.clone(),
+        route.upstream.clone(),
+        ai_traffic_kind_tag(route.kind),
+    )
+}
+
+fn ai_traffic_kind_tag(kind: dam_net::AiTrafficKind) -> &'static str {
+    match kind {
+        dam_net::AiTrafficKind::OpenAiApi => "openai_api",
+        dam_net::AiTrafficKind::AnthropicApi => "anthropic_api",
+        dam_net::AiTrafficKind::XaiApi => "xai_api",
+        dam_net::AiTrafficKind::ChatGptCodexBackend => "chatgpt_codex_backend",
+        dam_net::AiTrafficKind::Custom => "custom",
+    }
 }
 
 fn legacy_daemon_proxy_target_set(
@@ -889,7 +965,7 @@ fn network_command(args: NetworkArgs) -> Result<i32, String> {
                 ..dam_config::ConfigOverrides::default()
             })
             .map_err(|error| error.to_string())?;
-            let hosts = configured_ai_hosts(&config);
+            let hosts = configured_ai_hosts_for_state(&config, &state_dir)?;
             let result = if yes {
                 dam_net_macos::install_system_proxy_for_hosts(&state_dir, &proxy_url, &hosts)
             } else {
@@ -919,7 +995,7 @@ fn network_command(args: NetworkArgs) -> Result<i32, String> {
                 ..dam_config::ConfigOverrides::default()
             })
             .map_err(|error| error.to_string())?;
-            let hosts = configured_ai_hosts(&config);
+            let hosts = configured_ai_hosts_for_state(&config, &state_dir)?;
             let result = if yes {
                 dam_net_macos::install_network_extension_for_hosts(&state_dir, &hosts)
             } else {
@@ -950,22 +1026,134 @@ fn network_command(args: NetworkArgs) -> Result<i32, String> {
     Ok(0)
 }
 
-fn configured_ai_hosts(config: &dam_config::DamConfig) -> Vec<String> {
-    let profile = config.traffic.effective_profile();
-    dam_net::ai_routes_with_profile_and_overlays(
-        &profile,
-        config.network.ai_routes.iter().map(|route| {
-            dam_net::AiRoute::custom(
-                &route.host,
-                route.provider.clone(),
-                route.target_name.clone(),
-                route.upstream.clone(),
-            )
-        }),
+fn startup_command(args: StartupArgs) -> Result<i32, String> {
+    let state_dir = dam_daemon::state_paths()
+        .map(|paths| paths.state_dir)
+        .map_err(|error| error.to_string())?;
+    match args {
+        StartupArgs::Status { json } => {
+            let view = startup_status_view(&state_dir);
+            print_startup_status_view(&view, json)?;
+        }
+        StartupArgs::SkipOpenAtLogin { json } => {
+            write_startup_skip_marker(&state_dir)?;
+            let view = startup_status_view(&state_dir);
+            print_startup_status_view(&view, json)?;
+        }
+    }
+    Ok(0)
+}
+
+fn startup_status_view(state_dir: &Path) -> StartupStatusView {
+    let registered_marker = state_dir.join(LOGIN_ITEM_MARKER_RELPATH);
+    let skip_marker = state_dir.join(LOGIN_ITEM_SKIP_MARKER_RELPATH);
+    let legacy_marker = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .map(|home| home.join(LAUNCH_AGENT_PLIST_RELPATH));
+
+    if registered_marker.exists() {
+        return StartupStatusView {
+            state: "registered",
+            message: "DAM is marked to open at login".to_string(),
+            platform: std::env::consts::OS,
+            state_dir: state_dir.to_path_buf(),
+            marker: Some(registered_marker),
+        };
+    }
+
+    if let Some(legacy_marker) = legacy_marker.filter(|path| path.exists()) {
+        return StartupStatusView {
+            state: "registered",
+            message: "DAM has a legacy launch agent registration".to_string(),
+            platform: std::env::consts::OS,
+            state_dir: state_dir.to_path_buf(),
+            marker: Some(legacy_marker),
+        };
+    }
+
+    if skip_marker.exists() {
+        return StartupStatusView {
+            state: "skipped",
+            message: "Open at Login was skipped for this install".to_string(),
+            platform: std::env::consts::OS,
+            state_dir: state_dir.to_path_buf(),
+            marker: Some(skip_marker),
+        };
+    }
+
+    StartupStatusView {
+        state: "unconfigured",
+        message: if cfg!(target_os = "macos") {
+            "Choose whether DAM should open at login".to_string()
+        } else {
+            "This platform does not currently require a DAM startup setup step".to_string()
+        },
+        platform: std::env::consts::OS,
+        state_dir: state_dir.to_path_buf(),
+        marker: None,
+    }
+}
+
+fn write_startup_skip_marker(state_dir: &Path) -> Result<PathBuf, String> {
+    let marker_path = state_dir.join(LOGIN_ITEM_SKIP_MARKER_RELPATH);
+    if let Some(parent) = marker_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create startup marker dir: {error}"))?;
+    }
+    std::fs::write(&marker_path, "skipped\n")
+        .map_err(|error| format!("write {}: {error}", marker_path.display()))?;
+    Ok(marker_path)
+}
+
+fn print_startup_status_view(view: &StartupStatusView, json: bool) -> Result<(), String> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(view)
+                .map_err(|error| format!("failed to serialize startup status: {error}"))?
+        );
+    } else {
+        print!("{}", render_startup_status_view(view));
+    }
+    Ok(())
+}
+
+fn render_startup_status_view(view: &StartupStatusView) -> String {
+    let marker = view
+        .marker
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "none".to_string());
+    format!(
+        "state: {}\nmessage: {}\nplatform: {}\nstate_dir: {}\nmarker: {}\n",
+        view.state,
+        view.message,
+        view.platform,
+        view.state_dir.display(),
+        marker
     )
-    .into_iter()
-    .map(|route| route.host)
-    .collect()
+}
+
+fn configured_ai_hosts(config: &dam_config::DamConfig) -> Vec<String> {
+    dam_net::ai_routes_from_profile(&config.traffic.effective_profile())
+        .into_iter()
+        .map(|route| route.host)
+        .collect()
+}
+
+fn configured_ai_hosts_for_state(
+    config: &dam_config::DamConfig,
+    state_dir: &Path,
+) -> Result<Vec<String>, String> {
+    let mut config = config.clone();
+    let integration_state_dir = state_dir.join("integrations");
+    if let Some(profile_ids) =
+        dam_integrations::runtime_enabled_profile_ids(&integration_state_dir)?
+    {
+        config.traffic.enabled_app_ids = Some(traffic_app_ids_for_profiles(&profile_ids)?);
+    }
+    Ok(configured_ai_hosts(&config))
 }
 
 async fn integrations(args: IntegrationArgs) -> Result<i32, String> {
@@ -1059,14 +1247,62 @@ async fn daemon_run(args: dam_daemon::ProxyOptions) -> Result<i32, String> {
     Ok(0)
 }
 
-#[cfg(test)]
-fn parse_cli(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
-    parse_cli_with_active_profiles(args, Vec::new())
+fn web_command(args: WebArgs) -> Result<i32, String> {
+    let binary = dam_web_binary();
+    let status = StdCommand::new(&binary)
+        .args(args.args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|error| format!("failed to start dam-web from {}: {error}", binary.display()))?;
+
+    Ok(status.code().unwrap_or(1))
 }
 
+fn dam_web_binary() -> PathBuf {
+    if let Some(path) = std::env::var_os(DAM_WEB_BIN_ENV)
+        && !path.is_empty()
+    {
+        return PathBuf::from(path);
+    }
+    if let Ok(current) = std::env::current_exe()
+        && let Some(parent) = current.parent()
+    {
+        let sibling = parent.join(native_binary_name("dam-web"));
+        if sibling.is_file() {
+            return sibling;
+        }
+    }
+    PathBuf::from(native_binary_name("dam-web"))
+}
+
+fn native_binary_name(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+#[cfg(test)]
+fn parse_cli(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
+    parse_cli_with_connect_profiles(args, ConnectProfileSelection::default())
+}
+
+#[cfg(test)]
 fn parse_cli_with_active_profiles(
     args: impl IntoIterator<Item = String>,
     active_profile_ids: Vec<String>,
+) -> Result<Cli, String> {
+    parse_cli_with_connect_profiles(
+        args,
+        ConnectProfileSelection {
+            explicit_selection: !active_profile_ids.is_empty(),
+            profile_ids: active_profile_ids,
+        },
+    )
+}
+
+fn parse_cli_with_connect_profiles(
+    args: impl IntoIterator<Item = String>,
+    connect_profiles: ConnectProfileSelection,
 ) -> Result<Cli, String> {
     let args = args.into_iter().collect::<Vec<_>>();
     let Some(command) = args.first() else {
@@ -1079,34 +1315,41 @@ fn parse_cli_with_active_profiles(
         "-h" | "--help" | "help" => Ok(Cli {
             command: CommandKind::Help,
         }),
-        "connect" => parse_connect_command(&args[1..], &active_profile_ids),
+        "connect" => parse_connect_command(&args[1..], connect_profiles),
         "disconnect" => parse_disconnect_command(&args[1..]),
         "status" => parse_status_command(&args[1..]),
         "logs" => parse_logs_command(&args[1..]),
         "profile" => parse_profile_command(&args[1..]),
         "trust" => parse_trust_command(&args[1..]),
         "network" => parse_network_command(&args[1..]),
+        "startup" => parse_startup_command(&args[1..]),
         "integrations" => parse_integrations_command(&args[1..]),
+        "web" => Ok(Cli {
+            command: CommandKind::Web(WebArgs {
+                args: args[1..].to_vec(),
+            }),
+        }),
         "daemon-run" => parse_daemon_run_command(&args[1..]),
         other => Err(format!("unknown command: {other}\n{}", usage())),
     }
 }
 
-fn parse_connect_command(args: &[String], active_profile_ids: &[String]) -> Result<Cli, String> {
+fn parse_connect_command(
+    args: &[String],
+    connect_profiles: ConnectProfileSelection,
+) -> Result<Cli, String> {
     if matches!(args.first().map(String::as_str), Some("-h" | "--help")) {
         println!("{}", usage_connect());
         std::process::exit(0);
     }
 
-    let expanded = expand_connect_profile_args(args, active_profile_ids)?;
+    let expanded = expand_connect_profile_args(args, &connect_profiles)?;
     let mut proxy = dam_daemon::parse_proxy_options(expanded.args)?;
     if expanded.selected_profile_ids.len() > 1 && proxy.targets.is_none() {
         proxy.targets = Some(proxy_targets_for_profiles(&expanded.selected_profile_ids)?);
     }
-    if !expanded.selected_profile_ids.is_empty() {
-        proxy.traffic_app_ids = Some(traffic_app_ids_for_profiles(
-            &expanded.selected_profile_ids,
-        )?);
+    if expanded.traffic_app_ids.is_some() {
+        proxy.traffic_app_ids = expanded.traffic_app_ids;
     }
     for profile_id in &expanded.selected_profile_ids {
         validate_connect_apply_profile_matches_proxy(profile_id, &proxy)?;
@@ -1160,6 +1403,57 @@ fn parse_status_command(args: &[String]) -> Result<Cli, String> {
 
     Ok(Cli {
         command: CommandKind::Status(parsed),
+    })
+}
+
+fn parse_startup_command(args: &[String]) -> Result<Cli, String> {
+    if args.is_empty() || matches!(args.first().map(String::as_str), Some("-h" | "--help")) {
+        println!("{}", usage_startup());
+        std::process::exit(0);
+    }
+
+    match args[0].as_str() {
+        "status" => parse_startup_status(&args[1..]),
+        "skip-open-at-login" => parse_startup_skip_open_at_login(&args[1..]),
+        command => Err(format!("unknown startup command: {command}")),
+    }
+}
+
+fn parse_startup_status(args: &[String]) -> Result<Cli, String> {
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "-h" | "--help" => {
+                println!("{}", usage_startup_status());
+                std::process::exit(0);
+            }
+            arg => return Err(format!("unknown startup status argument: {arg}")),
+        }
+    }
+    Ok(Cli {
+        command: CommandKind::Startup(StartupArgs::Status { json }),
+    })
+}
+
+fn parse_startup_skip_open_at_login(args: &[String]) -> Result<Cli, String> {
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "-h" | "--help" => {
+                println!("{}", usage_startup_skip_open_at_login());
+                std::process::exit(0);
+            }
+            arg => {
+                return Err(format!(
+                    "unknown startup skip-open-at-login argument: {arg}"
+                ));
+            }
+        }
+    }
+    Ok(Cli {
+        command: CommandKind::Startup(StartupArgs::SkipOpenAtLogin { json }),
     })
 }
 
@@ -1682,11 +1976,12 @@ fn parse_integrations_rollback(args: &[String]) -> Result<Cli, String> {
 
 fn expand_connect_profile_args(
     args: &[String],
-    active_profile_ids: &[String],
+    connect_profiles: &ConnectProfileSelection,
 ) -> Result<ConnectProfileExpansion, String> {
     let mut expanded = Vec::new();
     let mut remaining = Vec::new();
     let mut selected_profile_ids = Vec::new();
+    let mut traffic_selection_explicit = connect_profiles.explicit_selection;
     let mut apply = false;
     let mut i = 0;
     while i < args.len() {
@@ -1706,6 +2001,7 @@ fn expand_connect_profile_args(
                     })?;
                 expanded.extend(profile.connect_args);
                 selected_profile_ids.push(id.to_string());
+                traffic_selection_explicit = true;
             }
             "--apply" => apply = true,
             arg => remaining.push(arg.to_string()),
@@ -1713,8 +2009,8 @@ fn expand_connect_profile_args(
         i += 1;
     }
 
-    if selected_profile_ids.is_empty() && !active_profile_ids.is_empty() {
-        selected_profile_ids = active_profile_ids.to_vec();
+    if selected_profile_ids.is_empty() && !connect_profiles.profile_ids.is_empty() {
+        selected_profile_ids = connect_profiles.profile_ids.clone();
         if selected_profile_ids.len() == 1 {
             let id = &selected_profile_ids[0];
             let profile = dam_integrations::profile(id, dam_integrations::DEFAULT_PROXY_URL)
@@ -1728,7 +2024,7 @@ fn expand_connect_profile_args(
         }
     }
 
-    if apply && selected_profile_ids.is_empty() && active_profile_ids.is_empty() {
+    if apply && selected_profile_ids.is_empty() {
         return Err(
             "--apply requires --profile <id> or enabled profiles in `dam profile status`"
                 .to_string(),
@@ -1751,9 +2047,15 @@ fn expand_connect_profile_args(
     } else {
         Vec::new()
     };
+    let traffic_app_ids = if traffic_selection_explicit {
+        Some(traffic_app_ids_for_profiles(&selected_profile_ids)?)
+    } else {
+        None
+    };
     Ok(ConnectProfileExpansion {
         args: expanded,
         selected_profile_ids,
+        traffic_app_ids,
         apply_profile_ids,
     })
 }
@@ -2458,30 +2760,34 @@ fn active_profile_for_status() -> (Option<dam_integrations::ActiveProfileState>,
     }
 }
 
-fn enabled_profiles_for_connect_parse(args: &[String]) -> Result<Vec<String>, String> {
+fn enabled_profiles_for_connect_parse(args: &[String]) -> Result<ConnectProfileSelection, String> {
     if !matches!(args.first().map(String::as_str), Some("connect")) {
-        return Ok(Vec::new());
+        return Ok(ConnectProfileSelection::default());
     }
     let connect_args = &args[1..];
     if matches!(
         connect_args.first().map(String::as_str),
         Some("-h" | "--help")
     ) {
-        return Ok(Vec::new());
+        return Ok(ConnectProfileSelection::default());
     }
     if connect_args.iter().any(|arg| arg == "--profile") {
-        return Ok(Vec::new());
+        return Ok(ConnectProfileSelection::default());
     }
 
     let state_dir = integration_state_dir()?;
-    let profiles = dam_integrations::enabled_profile_ids(&state_dir)?;
+    let runtime_profiles = dam_integrations::runtime_enabled_profile_ids(&state_dir)?;
+    let profiles = runtime_profiles.clone().unwrap_or_default();
     if profiles.is_empty() && connect_args.iter().any(|arg| arg == "--apply") {
         Err(
             "--apply requires --profile <id> or enabled profiles in `dam profile status`"
                 .to_string(),
         )
     } else {
-        Ok(profiles)
+        Ok(ConnectProfileSelection {
+            profile_ids: profiles,
+            explicit_selection: runtime_profiles.is_some(),
+        })
     }
 }
 
@@ -2621,6 +2927,9 @@ fn ensure_connect_transparent_prerequisites(
     {
         return Ok(());
     }
+    if configured_ai_hosts(config).is_empty() {
+        return Ok(());
+    }
 
     let plan = dam_diagnostics::setup_plan(
         config,
@@ -2637,6 +2946,11 @@ fn ensure_connect_transparent_prerequisites(
             step.kind,
             dam_diagnostics::SetupStepKind::SystemProxy
                 | dam_diagnostics::SetupStepKind::NetworkExtension
+                | dam_diagnostics::SetupStepKind::NetworkExtensionConfiguration
+                | dam_diagnostics::SetupStepKind::NetworkExtensionEnable
+                | dam_diagnostics::SetupStepKind::NetworkExtensionStart
+                | dam_diagnostics::SetupStepKind::LinuxTransparentProxy
+                | dam_diagnostics::SetupStepKind::WindowsFilteringPlatform
                 | dam_diagnostics::SetupStepKind::LocalCa
         );
         if enforced
@@ -2856,7 +3170,7 @@ fn severity_tag(severity: dam_api::DiagnosticSeverity) -> &'static str {
 }
 
 fn usage() -> &'static str {
-    "Usage: dam <command>\n\nCommands:\n  connect       Start or resume the background DAM proxy daemon\n  status        Show background DAM protection status\n  logs          Show concise local DAM operation logs\n  profile       Select and inspect the active harness profile\n  trust         Manage local trust artifacts and approved local trust changes\n  network       Manage local network routing plans and approved changes\n  disconnect    Pause DAM protection, or stop the daemon with --stop\n  integrations  List and inspect known harness integration profiles\n\nRun `dam connect --help`, `dam logs --help`, `dam profile --help`, `dam trust --help`, `dam network --help`, or `dam integrations --help` for command options."
+    "Usage: dam <command>\n\nCommands:\n  connect       Start or resume the background DAM proxy daemon\n  web           Start the local DAM web UI\n  status        Show background DAM protection status\n  logs          Show concise local DAM operation logs\n  profile       Select and inspect the active harness profile\n  trust         Manage local trust artifacts and approved local trust changes\n  network       Manage local network routing plans and approved changes\n  startup       Inspect or record local startup setup choices\n  disconnect    Pause DAM protection, or stop the daemon with --stop\n  integrations  List and inspect known harness integration profiles\n\nRun `dam connect --help`, `dam web --help`, `dam logs --help`, `dam profile --help`, `dam trust --help`, `dam network --help`, `dam startup --help`, or `dam integrations --help` for command options."
 }
 
 fn usage_connect() -> &'static str {
@@ -2916,7 +3230,7 @@ fn usage_network() -> &'static str {
 }
 
 fn usage_network_install_system_proxy() -> &'static str {
-    "Usage: dam network install-system-proxy [--config PATH] [--dry-run|--yes] [--json]\n\nPreviews macOS PAC system proxy routing by default. Use --yes to route proxy-capable HTTP and HTTPS traffic to DAM. Unknown hosts pass through untouched; configured AI hosts are protected only when routing, trust, consent, and the TLS adapter are all ready."
+    "Usage: dam network install-system-proxy [--config PATH] [--dry-run|--yes] [--json]\n\nPreviews macOS PAC system proxy routing by default. Use --yes to route proxy-capable HTTP and HTTPS traffic to DAM. Unknown hosts pass through untouched; active traffic profile hosts are protected only when routing, trust, consent, and the TLS adapter are all ready."
 }
 
 fn usage_network_remove_system_proxy() -> &'static str {
@@ -2933,6 +3247,18 @@ fn usage_network_remove_network_extension() -> &'static str {
 
 fn usage_network_status() -> &'static str {
     "Usage: dam network status [--json]\n\nShows macOS Network Extension capture state for DAM tun mode."
+}
+
+fn usage_startup() -> &'static str {
+    "Usage: dam startup <command>\n\nCommands:\n  status              Show the local startup setup choice\n  skip-open-at-login  Record that Open at Login was intentionally skipped"
+}
+
+fn usage_startup_status() -> &'static str {
+    "Usage: dam startup status [--json]\n\nShows whether DAM startup setup is registered, skipped, or still unconfigured."
+}
+
+fn usage_startup_skip_open_at_login() -> &'static str {
+    "Usage: dam startup skip-open-at-login [--json]\n\nRecords the same choice as the tray Skip button so scripted installs can continue setup without adding DAM to Open at Login."
 }
 
 fn usage_integrations() -> &'static str {
@@ -2973,6 +3299,23 @@ mod tests {
             assert!(!error.contains("dam codex"));
             assert!(!error.contains("dam claude"));
         }
+    }
+
+    #[test]
+    fn parses_web_forwarding_command() {
+        let cli = parse_cli([
+            "web".to_string(),
+            "--config".to_string(),
+            "dam.example.toml".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.command,
+            CommandKind::Web(WebArgs {
+                args: vec!["--config".to_string(), "dam.example.toml".to_string()],
+            })
+        );
     }
 
     #[test]
@@ -3099,6 +3442,29 @@ mod tests {
         assert_eq!(args.proxy.upstream, ANTHROPIC_UPSTREAM);
         assert_eq!(args.proxy.network_mode, dam_net::CaptureMode::Tun);
         assert_eq!(args.proxy.trust_mode, dam_trust::TrustMode::LocalCa);
+    }
+
+    #[test]
+    fn parses_connect_with_explicit_empty_enabled_profiles_as_empty_traffic_scope() {
+        let cli = parse_cli_with_connect_profiles(
+            [
+                "connect".to_string(),
+                "--listen".to_string(),
+                "127.0.0.1:9000".to_string(),
+            ],
+            ConnectProfileSelection {
+                profile_ids: Vec::new(),
+                explicit_selection: true,
+            },
+        )
+        .unwrap();
+
+        let CommandKind::Connect(args) = cli.command else {
+            panic!("expected connect");
+        };
+        assert_eq!(args.apply_profile_ids, Vec::<String>::new());
+        assert_eq!(args.proxy.listen, "127.0.0.1:9000");
+        assert_eq!(args.proxy.traffic_app_ids, Some(Vec::new()));
     }
 
     #[test]
@@ -3314,6 +3680,7 @@ mod tests {
         assert!(error.contains("--config"));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn connect_preflight_blocks_missing_network_extension_setup() {
         let dir = tempfile::tempdir().unwrap();
@@ -3336,6 +3703,31 @@ mod tests {
         assert!(error.contains("Network Extension capture needs to be installed"));
         assert!(error.contains("dam network install-network-extension"));
         assert!(error.contains("--config"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn connect_preflight_blocks_missing_network_extension_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        dam_net_macos::record_system_extension_ready(
+            &state_dir,
+            "com.rpblc.dam.network-extension",
+            None,
+            vec!["api.openai.com".to_string()],
+        )
+        .unwrap();
+        let options = dam_daemon::ProxyOptions {
+            network_mode: dam_net::CaptureMode::Tun,
+            ..dam_daemon::ProxyOptions::default()
+        };
+        let config = dam_daemon::proxy_config(&options).unwrap();
+
+        let error = ensure_connect_transparent_prerequisites(&options, &config, Some(state_dir))
+            .unwrap_err();
+
+        assert!(error.contains("configuration"));
+        assert!(error.contains("dam network install-network-extension"));
     }
 
     #[test]
@@ -3812,6 +4204,42 @@ mod tests {
     }
 
     #[test]
+    fn parses_startup_commands() {
+        let status = parse_cli([
+            "startup".to_string(),
+            "status".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+        let skip = parse_cli([
+            "startup".to_string(),
+            "skip-open-at-login".to_string(),
+            "--json".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            status.command,
+            CommandKind::Startup(StartupArgs::Status { json: true })
+        );
+        assert_eq!(
+            skip.command,
+            CommandKind::Startup(StartupArgs::SkipOpenAtLogin { json: true })
+        );
+    }
+
+    #[test]
+    fn startup_skip_open_at_login_records_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = write_startup_skip_marker(dir.path()).unwrap();
+
+        assert!(marker.exists());
+        let view = startup_status_view(dir.path());
+        assert_eq!(view.state, "skipped");
+        assert_eq!(view.marker, Some(marker));
+    }
+
+    #[test]
     fn local_ca_generate_and_delete_outputs_do_not_install_local_trust() {
         let dir = tempfile::tempdir().unwrap();
 
@@ -3902,6 +4330,7 @@ mod tests {
             transparent_ai_trust_readiness: Vec::new(),
             transparent_ai_interception_readiness: Vec::new(),
             protection_enabled,
+            protection_started_at_unix: if protection_enabled { Some(0) } else { None },
         }
     }
 }

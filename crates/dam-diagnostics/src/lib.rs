@@ -54,8 +54,22 @@ impl SetupPlanState {
 #[serde(rename_all = "snake_case")]
 pub enum SetupStepKind {
     ProfileApply,
+    /// Register the menu-bar app to launch at user login. Comes before
+    /// any step that requires a reboot (NE install) so the user
+    /// doesn't lose DAM after restart.
+    LaunchAtLogin,
     SystemProxy,
     NetworkExtension,
+    NetworkExtensionConfiguration,
+    NetworkExtensionEnable,
+    NetworkExtensionStart,
+    LinuxTransparentProxy,
+    WindowsFilteringPlatform,
+    /// macOS Network Extension was approved by the user but the system
+    /// needs a reboot to finish activating it. Surfaced as its own
+    /// step so the SPA's checklist shows reboot as the next clean
+    /// action, not as a hard error masquerading as the install step.
+    NetworkExtensionReboot,
     LocalCa,
     Daemon,
 }
@@ -64,8 +78,15 @@ impl SetupStepKind {
     pub fn tag(self) -> &'static str {
         match self {
             Self::ProfileApply => "profile_apply",
+            Self::LaunchAtLogin => "launch_at_login",
             Self::SystemProxy => "system_proxy",
             Self::NetworkExtension => "network_extension",
+            Self::NetworkExtensionConfiguration => "network_extension_configuration",
+            Self::NetworkExtensionEnable => "network_extension_enable",
+            Self::NetworkExtensionStart => "network_extension_start",
+            Self::LinuxTransparentProxy => "linux_transparent_proxy",
+            Self::WindowsFilteringPlatform => "windows_filtering_platform",
+            Self::NetworkExtensionReboot => "network_extension_reboot",
             Self::LocalCa => "local_ca",
             Self::Daemon => "daemon",
         }
@@ -194,16 +215,39 @@ pub fn setup_plan(
     let active_profile = dam_integrations::read_active_profile(&integration_state_dir)?;
     let enabled_profiles =
         dam_integrations::read_effective_enabled_integrations(&integration_state_dir)?;
-    let steps = vec![
-        profile_setup_step(&enabled_profiles, &integration_state_dir, &proxy_url),
-        system_proxy_setup_step(
-            options.network_mode,
-            &state_dir,
-            options.config_path.as_ref(),
-        ),
-        local_ca_setup_step(options.trust_mode, &state_dir),
-        daemon_setup_step(options.network_mode, options.trust_mode, &state_dir),
+    let effective_config = config_with_runtime_enabled_apps(config, &integration_state_dir)?;
+    let has_active_routes =
+        !dam_net::ai_routes_from_profile(&effective_config.traffic.effective_profile()).is_empty();
+    let mut steps = vec![
+        // The startup step lands before any platform capture setup
+        // deliberately: capture installation can require a system
+        // reboot, and if the native shell is not registered to return
+        // after restart the user loses the installer mid-flow.
+        // Registering or explicitly skipping first keeps recovery
+        // deterministic.
+        launch_at_login_setup_step(&state_dir, options.network_mode),
     ];
+    steps.extend(routing_setup_steps(
+        options.network_mode,
+        &state_dir,
+        options.config_path.as_ref(),
+        has_active_routes,
+    ));
+    steps.push(local_ca_setup_step(
+        options.trust_mode,
+        &state_dir,
+        has_active_routes,
+    ));
+    steps.push(profile_setup_step(
+        &enabled_profiles,
+        &integration_state_dir,
+        &proxy_url,
+    ));
+    steps.push(daemon_setup_step(
+        options.network_mode,
+        options.trust_mode,
+        &state_dir,
+    ));
 
     let state = if steps
         .iter()
@@ -231,6 +275,20 @@ pub fn setup_plan(
         active_profile,
         steps,
     })
+}
+
+fn config_with_runtime_enabled_apps(
+    config: &dam_config::DamConfig,
+    integration_state_dir: &std::path::Path,
+) -> Result<dam_config::DamConfig, String> {
+    let mut config = config.clone();
+    if let Some(profile_ids) = dam_integrations::runtime_enabled_profile_ids(integration_state_dir)?
+    {
+        config.traffic.enabled_app_ids = Some(dam_integrations::traffic_app_ids_for_profile_ids(
+            &profile_ids,
+        )?);
+    }
+    Ok(config)
 }
 
 fn profile_setup_step(
@@ -381,6 +439,75 @@ fn profile_setup_step(
     }
 }
 
+/// Marker written after DAM registers its app bundle with macOS Login
+/// Items through `SMAppService`. A legacy LaunchAgent path is still
+/// accepted so upgraded installs do not regress before the user clicks
+/// the new startup step again.
+const LOGIN_ITEM_MARKER_RELPATH: &str = "startup/login-item.txt";
+const LOGIN_ITEM_SKIP_MARKER_RELPATH: &str = "startup/login-item-skipped.txt";
+const LAUNCH_AGENT_PLIST_RELPATH: &str = "Library/LaunchAgents/com.rpblc.dam-tray.plist";
+
+fn launch_at_login_setup_step(
+    state_dir: &std::path::Path,
+    network_mode: dam_net::CaptureMode,
+) -> SetupStep {
+    if network_mode != dam_net::CaptureMode::Tun {
+        return SetupStep {
+            kind: SetupStepKind::LaunchAtLogin,
+            status: SetupStepStatus::Skipped,
+            message: "launch-at-login is only required before Network Extension setup".to_string(),
+            command: None,
+            requires_confirmation: false,
+            changes_system: false,
+        };
+    }
+    if !cfg!(target_os = "macos") {
+        return SetupStep {
+            kind: SetupStepKind::LaunchAtLogin,
+            status: SetupStepStatus::Skipped,
+            message: "launch-at-login is only registered on macOS".to_string(),
+            command: None,
+            requires_confirmation: false,
+            changes_system: false,
+        };
+    }
+    let marker_registered = state_dir.join(LOGIN_ITEM_MARKER_RELPATH).exists();
+    let legacy_registered = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(LAUNCH_AGENT_PLIST_RELPATH).exists())
+        .unwrap_or(false);
+    let registered = marker_registered || legacy_registered;
+    if registered {
+        SetupStep {
+            kind: SetupStepKind::LaunchAtLogin,
+            status: SetupStepStatus::Done,
+            message: "DAM is registered to open at login".to_string(),
+            command: None,
+            requires_confirmation: false,
+            changes_system: false,
+        }
+    } else if state_dir.join(LOGIN_ITEM_SKIP_MARKER_RELPATH).exists() {
+        SetupStep {
+            kind: SetupStepKind::LaunchAtLogin,
+            status: SetupStepStatus::Done,
+            message: "Open at Login was skipped for this install".to_string(),
+            command: None,
+            requires_confirmation: false,
+            changes_system: false,
+        }
+    } else {
+        SetupStep {
+            kind: SetupStepKind::LaunchAtLogin,
+            status: SetupStepStatus::Needed,
+            message: "Choose whether DAM should open at login before setup asks macOS to restart."
+                .to_string(),
+            command: None,
+            requires_confirmation: false,
+            changes_system: true,
+        }
+    }
+}
+
 fn system_proxy_setup_step(
     network_mode: dam_net::CaptureMode,
     state_dir: &std::path::Path,
@@ -395,36 +522,14 @@ fn system_proxy_setup_step(
             requires_confirmation: false,
             changes_system: false,
         },
-        dam_net::CaptureMode::Tun => {
-            if dam_net_macos::network_extension_active(state_dir) {
-                return SetupStep {
-                    kind: SetupStepKind::NetworkExtension,
-                    status: SetupStepStatus::Done,
-                    message: "macOS Network Extension capture is active".to_string(),
-                    command: None,
-                    requires_confirmation: false,
-                    changes_system: false,
-                };
-            }
-            let mut command = vec![
-                "dam".to_string(),
-                "network".to_string(),
-                "install-network-extension".to_string(),
-            ];
-            if let Some(config_path) = config_path {
-                command.push("--config".to_string());
-                command.push(config_path.display().to_string());
-            }
-            command.push("--yes".to_string());
-            SetupStep {
-                kind: SetupStepKind::NetworkExtension,
-                status: SetupStepStatus::Needed,
-                message: "macOS Network Extension capture needs to be installed".to_string(),
-                command: Some(command),
-                requires_confirmation: true,
-                changes_system: true,
-            }
-        }
+        dam_net::CaptureMode::Tun => SetupStep {
+            kind: SetupStepKind::SystemProxy,
+            status: SetupStepStatus::Skipped,
+            message: "system proxy routing is not used in tun mode".to_string(),
+            command: None,
+            requires_confirmation: false,
+            changes_system: false,
+        },
         dam_net::CaptureMode::SystemProxy => {
             if dam_net_macos::system_proxy_installed(state_dir) {
                 return SetupStep {
@@ -458,7 +563,258 @@ fn system_proxy_setup_step(
     }
 }
 
-fn local_ca_setup_step(trust_mode: dam_trust::TrustMode, state_dir: &std::path::Path) -> SetupStep {
+fn routing_setup_steps(
+    network_mode: dam_net::CaptureMode,
+    state_dir: &std::path::Path,
+    config_path: Option<&PathBuf>,
+    has_active_routes: bool,
+) -> Vec<SetupStep> {
+    if !has_active_routes {
+        return vec![SetupStep {
+            kind: SetupStepKind::SystemProxy,
+            status: SetupStepStatus::Skipped,
+            message: "platform capture is not required while no app profiles are enabled"
+                .to_string(),
+            command: None,
+            requires_confirmation: false,
+            changes_system: false,
+        }];
+    }
+    if network_mode == dam_net::CaptureMode::Tun {
+        tun_capture_setup_steps(dam_net::CapturePlatform::current(), state_dir, config_path)
+    } else {
+        vec![system_proxy_setup_step(
+            network_mode,
+            state_dir,
+            config_path,
+        )]
+    }
+}
+
+fn tun_capture_setup_steps(
+    platform: dam_net::CapturePlatform,
+    state_dir: &std::path::Path,
+    config_path: Option<&PathBuf>,
+) -> Vec<SetupStep> {
+    match platform {
+        dam_net::CapturePlatform::Macos => network_extension_setup_steps(state_dir, config_path),
+        dam_net::CapturePlatform::Linux => vec![platform_capture_planned_step(
+            SetupStepKind::LinuxTransparentProxy,
+            "Linux transparent capture onboarding is planned; use explicit proxy mode on Linux for now.",
+        )],
+        dam_net::CapturePlatform::Windows => vec![platform_capture_planned_step(
+            SetupStepKind::WindowsFilteringPlatform,
+            "Windows Filtering Platform onboarding is planned; use explicit proxy mode on Windows for now.",
+        )],
+        dam_net::CapturePlatform::Unknown => vec![platform_capture_planned_step(
+            SetupStepKind::SystemProxy,
+            "transparent capture onboarding is not available on this platform; use explicit proxy mode for now.",
+        )],
+    }
+}
+
+fn platform_capture_planned_step(kind: SetupStepKind, message: &str) -> SetupStep {
+    SetupStep {
+        kind,
+        status: SetupStepStatus::Blocked,
+        message: message.to_string(),
+        command: Some(vec![
+            "dam".to_string(),
+            "connect".to_string(),
+            "--network-mode".to_string(),
+            "explicit_proxy".to_string(),
+            "--trust-mode".to_string(),
+            "disabled".to_string(),
+        ]),
+        requires_confirmation: false,
+        changes_system: true,
+    }
+}
+
+fn network_extension_setup_steps(
+    state_dir: &std::path::Path,
+    config_path: Option<&PathBuf>,
+) -> Vec<SetupStep> {
+    let status = dam_net_macos::network_extension_status(state_dir).ok();
+    let record = status.as_ref().and_then(|status| status.record.as_ref());
+    let manager = status
+        .as_ref()
+        .and_then(|status| status.manager_status.as_ref());
+    let activation_method = record.map(|record| record.activation_method.as_str());
+    let install_command = network_extension_install_command(config_path);
+
+    if dam_net_macos::network_extension_pending_reboot(state_dir)
+        || activation_method == Some("system_extension_pending_reboot")
+    {
+        return vec![
+            network_extension_step(
+                SetupStepKind::NetworkExtension,
+                SetupStepStatus::Done,
+                "DAM Network Protection system extension is approved",
+                None,
+            ),
+            network_extension_step(
+                SetupStepKind::NetworkExtensionReboot,
+                SetupStepStatus::Needed,
+                "Restart macOS to finish the Network Extension system change. DAM will re-check setup after restart.",
+                None,
+            ),
+            network_extension_step(
+                SetupStepKind::NetworkExtensionConfiguration,
+                SetupStepStatus::Needed,
+                "Add the DAM Network Protection configuration in macOS",
+                Some(install_command.clone()),
+            ),
+            network_extension_step(
+                SetupStepKind::NetworkExtensionEnable,
+                SetupStepStatus::Needed,
+                "Enable DAM Network Protection in System Settings",
+                Some(install_command.clone()),
+            ),
+            network_extension_step(
+                SetupStepKind::NetworkExtensionStart,
+                SetupStepStatus::Needed,
+                "Enable protection layer",
+                Some(install_command),
+            ),
+        ];
+    }
+
+    if record.is_none() || activation_method == Some("system_extension_needs_user_approval") {
+        return vec![
+            network_extension_step(
+                SetupStepKind::NetworkExtension,
+                SetupStepStatus::Needed,
+                "macOS Network Extension capture needs to be installed and approved",
+                Some(install_command.clone()),
+            ),
+            network_extension_step(
+                SetupStepKind::NetworkExtensionConfiguration,
+                SetupStepStatus::Needed,
+                "Add the DAM Network Protection configuration in macOS",
+                Some(install_command.clone()),
+            ),
+            network_extension_step(
+                SetupStepKind::NetworkExtensionEnable,
+                SetupStepStatus::Needed,
+                "Enable DAM Network Protection in System Settings",
+                Some(install_command.clone()),
+            ),
+            network_extension_step(
+                SetupStepKind::NetworkExtensionStart,
+                SetupStepStatus::Needed,
+                "Enable protection layer",
+                Some(install_command),
+            ),
+        ];
+    }
+
+    let manager_configured = manager.map(|status| status.configured).unwrap_or_else(|| {
+        !matches!(
+            activation_method,
+            Some("system_extension_ready_needs_network_configuration")
+        )
+    });
+    let manager_enabled = manager.map(|status| status.enabled).unwrap_or_else(|| {
+        !matches!(
+            activation_method,
+            Some("network_extension_configured_needs_enable")
+        )
+    });
+    let manager_connected = status
+        .as_ref()
+        .is_some_and(|status| status.plan.backend_status.active)
+        || manager.is_some_and(|status| status.connected);
+
+    vec![
+        network_extension_step(
+            SetupStepKind::NetworkExtension,
+            SetupStepStatus::Done,
+            "DAM Network Protection system extension is approved",
+            None,
+        ),
+        network_extension_step(
+            SetupStepKind::NetworkExtensionConfiguration,
+            if manager_configured {
+                SetupStepStatus::Done
+            } else {
+                SetupStepStatus::Needed
+            },
+            "Add the DAM Network Protection configuration in macOS",
+            Some(install_command.clone()),
+        ),
+        network_extension_step(
+            SetupStepKind::NetworkExtensionEnable,
+            if !manager_configured {
+                SetupStepStatus::Needed
+            } else if manager_enabled {
+                SetupStepStatus::Done
+            } else {
+                SetupStepStatus::Needed
+            },
+            "Enable DAM Network Protection in System Settings",
+            Some(install_command.clone()),
+        ),
+        network_extension_step(
+            SetupStepKind::NetworkExtensionStart,
+            if !manager_configured || !manager_enabled {
+                SetupStepStatus::Needed
+            } else if manager_connected {
+                SetupStepStatus::Done
+            } else {
+                SetupStepStatus::Needed
+            },
+            "Enable protection layer",
+            Some(install_command),
+        ),
+    ]
+}
+
+fn network_extension_step(
+    kind: SetupStepKind,
+    status: SetupStepStatus,
+    message: &str,
+    command: Option<Vec<String>>,
+) -> SetupStep {
+    SetupStep {
+        kind,
+        status,
+        message: message.to_string(),
+        command,
+        requires_confirmation: matches!(status, SetupStepStatus::Needed),
+        changes_system: matches!(status, SetupStepStatus::Needed),
+    }
+}
+
+fn network_extension_install_command(config_path: Option<&PathBuf>) -> Vec<String> {
+    let mut command = vec![
+        "dam".to_string(),
+        "network".to_string(),
+        "install-network-extension".to_string(),
+    ];
+    if let Some(config_path) = config_path {
+        command.push("--config".to_string());
+        command.push(config_path.display().to_string());
+    }
+    command.push("--yes".to_string());
+    command
+}
+
+fn local_ca_setup_step(
+    trust_mode: dam_trust::TrustMode,
+    state_dir: &std::path::Path,
+    has_active_routes: bool,
+) -> SetupStep {
+    if !has_active_routes {
+        return SetupStep {
+            kind: SetupStepKind::LocalCa,
+            status: SetupStepStatus::Skipped,
+            message: "local CA trust is not required while no app profiles are enabled".to_string(),
+            command: None,
+            requires_confirmation: false,
+            changes_system: false,
+        };
+    }
     match trust_mode {
         dam_trust::TrustMode::Disabled => SetupStep {
             kind: SetupStepKind::LocalCa,
@@ -588,7 +944,7 @@ fn daemon_setup_step(
     SetupStep {
         kind: SetupStepKind::Daemon,
         status: SetupStepStatus::Needed,
-        message: format!("daemon is {status}; start DAM"),
+        message: format!("DAM is {status}; start DAM"),
         command: Some(command),
         requires_confirmation: false,
         changes_system: false,
@@ -1426,7 +1782,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.state, SetupPlanState::NeedsAction);
-        assert!(plan.message.contains("daemon is disconnected"));
+        assert!(plan.message.contains("DAM is disconnected"));
         assert!(plan.steps.iter().any(|step| {
             step.kind == SetupStepKind::ProfileApply && step.status == SetupStepStatus::Skipped
         }));
@@ -1518,6 +1874,7 @@ mod tests {
         assert!(step.changes_system);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn setup_plan_reports_network_extension_setup_when_tun_requested() {
         let dir = tempfile::tempdir().unwrap();
@@ -1553,6 +1910,138 @@ mod tests {
         );
         assert!(step.requires_confirmation);
         assert!(step.changes_system);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn setup_plan_reports_network_extension_configuration_after_system_extension_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let config = proxy_config("https://api.openai.com", "openai-compatible");
+        dam_net_macos::record_system_extension_ready(
+            &state_dir,
+            "com.rpblc.dam.network-extension",
+            None,
+            vec!["api.openai.com".to_string()],
+        )
+        .unwrap();
+
+        let plan = setup_plan(
+            &config,
+            &SetupPlanOptions {
+                state_dir: Some(state_dir),
+                config_path: Some(PathBuf::from("dam.example.toml")),
+                network_mode: dam_net::CaptureMode::Tun,
+                ..SetupPlanOptions::default()
+            },
+        )
+        .unwrap();
+
+        let step = plan
+            .steps
+            .iter()
+            .find(|step| step.kind == SetupStepKind::NetworkExtensionConfiguration)
+            .unwrap();
+        assert_eq!(step.status, SetupStepStatus::Needed);
+        assert_eq!(
+            step.command,
+            Some(vec![
+                "dam".to_string(),
+                "network".to_string(),
+                "install-network-extension".to_string(),
+                "--config".to_string(),
+                "dam.example.toml".to_string(),
+                "--yes".to_string()
+            ])
+        );
+        assert!(step.requires_confirmation);
+        assert!(step.changes_system);
+        assert!(step.message.contains("configuration"));
+    }
+
+    #[test]
+    fn tun_capture_setup_steps_are_platform_specific_for_linux_and_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let linux_steps =
+            tun_capture_setup_steps(dam_net::CapturePlatform::Linux, dir.path(), None);
+        let windows_steps =
+            tun_capture_setup_steps(dam_net::CapturePlatform::Windows, dir.path(), None);
+
+        assert_eq!(linux_steps[0].kind, SetupStepKind::LinuxTransparentProxy);
+        assert_eq!(linux_steps[0].status, SetupStepStatus::Blocked);
+        assert!(linux_steps[0].message.contains("Linux"));
+        assert_eq!(
+            windows_steps[0].kind,
+            SetupStepKind::WindowsFilteringPlatform
+        );
+        assert_eq!(windows_steps[0].status, SetupStepStatus::Blocked);
+        assert!(windows_steps[0].message.contains("Windows"));
+        assert_eq!(
+            linux_steps[0].command,
+            Some(vec![
+                "dam".to_string(),
+                "connect".to_string(),
+                "--network-mode".to_string(),
+                "explicit_proxy".to_string(),
+                "--trust-mode".to_string(),
+                "disabled".to_string()
+            ])
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn setup_plan_marks_launch_at_login_done_from_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        std::fs::create_dir_all(state_dir.join("startup")).unwrap();
+        std::fs::write(state_dir.join(LOGIN_ITEM_MARKER_RELPATH), "registered\n").unwrap();
+        let config = proxy_config("https://api.openai.com", "openai-compatible");
+
+        let plan = setup_plan(
+            &config,
+            &SetupPlanOptions {
+                state_dir: Some(state_dir),
+                network_mode: dam_net::CaptureMode::Tun,
+                ..SetupPlanOptions::default()
+            },
+        )
+        .unwrap();
+
+        let step = plan
+            .steps
+            .iter()
+            .find(|step| step.kind == SetupStepKind::LaunchAtLogin)
+            .unwrap();
+        assert_eq!(step.status, SetupStepStatus::Done);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn setup_plan_marks_launch_at_login_done_from_skip_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        std::fs::create_dir_all(state_dir.join("startup")).unwrap();
+        std::fs::write(state_dir.join(LOGIN_ITEM_SKIP_MARKER_RELPATH), "skipped\n").unwrap();
+        let config = proxy_config("https://api.openai.com", "openai-compatible");
+
+        let plan = setup_plan(
+            &config,
+            &SetupPlanOptions {
+                state_dir: Some(state_dir),
+                network_mode: dam_net::CaptureMode::Tun,
+                ..SetupPlanOptions::default()
+            },
+        )
+        .unwrap();
+
+        let step = plan
+            .steps
+            .iter()
+            .find(|step| step.kind == SetupStepKind::LaunchAtLogin)
+            .unwrap();
+        assert_eq!(step.status, SetupStepStatus::Done);
+        assert!(step.message.contains("skipped"));
     }
 
     #[tokio::test]

@@ -232,11 +232,6 @@ impl AiRoute {
     ) -> Self {
         Self::new(AiTrafficKind::Custom, host, provider, target_name, upstream)
     }
-
-    fn normalized(mut self) -> Self {
-        self.host = normalize_host(&self.host);
-        self
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,29 +268,6 @@ pub fn known_ai_hosts() -> Vec<String> {
         .into_iter()
         .map(|route| route.host)
         .collect()
-}
-
-pub fn ai_routes_with_overlays(overlays: impl IntoIterator<Item = AiRoute>) -> Vec<AiRoute> {
-    ai_routes_with_profile_and_overlays(&llm_mvp_profile(), overlays)
-}
-
-pub fn ai_routes_with_profile_and_overlays(
-    profile: &TrafficProfile,
-    overlays: impl IntoIterator<Item = AiRoute>,
-) -> Vec<AiRoute> {
-    let mut routes = ai_routes_from_profile(profile);
-    for overlay in overlays {
-        let overlay = overlay.normalized();
-        if overlay.host.is_empty() {
-            continue;
-        }
-        if let Some(existing) = routes.iter_mut().find(|route| route.host == overlay.host) {
-            *existing = overlay;
-        } else {
-            routes.push(overlay);
-        }
-    }
-    routes
 }
 
 pub fn normalize_ai_host(host: &str) -> String {
@@ -493,23 +465,39 @@ mod tests {
     }
 
     #[test]
-    fn custom_routes_extend_and_override_default_route_registry() {
-        let routes = ai_routes_with_overlays([
-            AiRoute::custom(
-                "api.internal-ai.example:443",
-                OPENAI_COMPATIBLE_PROVIDER,
-                "internal-ai",
-                "https://api.internal-ai.example",
-            ),
-            AiRoute::custom(
-                "https://api.openai.com/v1",
-                OPENAI_COMPATIBLE_PROVIDER,
-                "openai-private-edge",
-                "https://openai.internal.example",
-            ),
-        ]);
+    fn traffic_profile_routes_model_private_and_provider_edge_hosts() {
+        let profile = traffic_profile_from_json_str(
+            r#"
+            {
+              "version": 1,
+              "default_action": "bypass",
+              "apps": [
+                {
+                  "id": "internal-ai",
+                  "match": {"domains": ["api.internal-ai.example:443"]},
+                  "action": "inspect",
+                  "adapter": "http",
+                  "provider": "openai-compatible",
+                  "target_name": "internal-ai",
+                  "upstream": "https://api.internal-ai.example"
+                },
+                {
+                  "id": "openai-private-edge",
+                  "match": {"domains": ["https://api.openai.com/v1"]},
+                  "action": "inspect",
+                  "adapter": "http",
+                  "provider": "openai-compatible",
+                  "target_name": "openai-private-edge",
+                  "upstream": "https://openai.internal.example"
+                }
+              ]
+            }
+            "#,
+        )
+        .unwrap();
+        let routes = ai_routes_from_profile(&profile);
 
-        assert_eq!(routes.len(), 5);
+        assert_eq!(routes.len(), 2);
         assert_eq!(
             classify_ai_host_with_routes("api.internal-ai.example", &routes)
                 .unwrap()
@@ -625,12 +613,12 @@ mod tests {
 
     #[test]
     fn transparent_readiness_accepts_custom_route_sets() {
-        let routes = ai_routes_with_overlays([AiRoute::custom(
+        let routes = vec![AiRoute::custom(
             "api.enterprise-ai.example",
             OPENAI_COMPATIBLE_PROVIDER,
             "enterprise-ai",
             "https://api.enterprise-ai.example",
-        )]);
+        )];
 
         let readiness = transparent_capture_readiness_for_ai_routes(
             &routes,
@@ -639,7 +627,7 @@ mod tests {
             false,
         );
 
-        assert_eq!(readiness.len(), 5);
+        assert_eq!(readiness.len(), 1);
         assert!(
             readiness
                 .iter()

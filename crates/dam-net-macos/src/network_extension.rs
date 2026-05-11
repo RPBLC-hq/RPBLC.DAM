@@ -17,9 +17,11 @@ const TEAM_ID_ENV: &str = "DAM_MACOS_NE_TEAM_ID";
 const PROXY_HOST_ENV: &str = "DAM_MACOS_NE_PROXY_HOST";
 const PROXY_PORT_ENV: &str = "DAM_MACOS_NE_PROXY_PORT";
 const EXCLUDED_SIGNING_IDS_ENV: &str = "DAM_MACOS_NE_EXCLUDED_SIGNING_IDS";
+const ROUTING_FAILURE_POLICY_ENV: &str = "DAM_MACOS_NE_ROUTING_FAILURE_POLICY";
 const DEFAULT_BUNDLE_ID: &str = "com.rpblc.dam.network-extension";
 const DEFAULT_PROXY_HOST: &str = "127.0.0.1";
 const DEFAULT_PROXY_PORT: &str = "7828";
+const DEFAULT_ROUTING_FAILURE_POLICY: &str = "fail_open";
 const DEFAULT_EXCLUDED_SIGNING_IDENTIFIERS: &[&str] = &[
     "com.rpblc.dam",
     "com.rpblc.dam.daemon",
@@ -86,6 +88,13 @@ pub enum MacosNetworkExtensionError {
         stderr: String,
     },
 
+    #[error("Network Extension needs user approval: {message}")]
+    HelperNeedsApproval {
+        program: String,
+        args: String,
+        message: String,
+    },
+
     #[error("system clock is before unix epoch")]
     Clock,
 }
@@ -115,6 +124,15 @@ pub struct MacosNetworkExtensionStateRecord {
     pub installed_at_unix: u64,
     pub active: bool,
     pub activation_method: String,
+    /// True when the macOS system extension was approved by the user
+    /// but a system reboot is still required to finish activating it.
+    /// Records persist this so the SPA's setup checklist can surface
+    /// the reboot as its own step instead of presenting the install
+    /// click as a hard failure that has to be re-clicked. Defaults
+    /// to false for backward-compat with records written before this
+    /// field existed.
+    #[serde(default)]
+    pub pending_reboot: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,7 +190,17 @@ pub struct MacosNetworkExtensionResult {
     pub state: MacosNetworkExtensionResultState,
     pub plan: MacosNetworkExtensionPlan,
     pub record: Option<MacosNetworkExtensionStateRecord>,
+    pub manager_status: Option<MacosNetworkExtensionManagerStatus>,
     pub system_routes_changed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacosNetworkExtensionManagerStatus {
+    pub configured: bool,
+    pub enabled: bool,
+    pub connection_status: String,
+    pub connected: bool,
+    pub message: String,
 }
 
 pub fn network_extension_installed(state_dir: impl AsRef<Path>) -> bool {
@@ -190,6 +218,124 @@ pub fn network_extension_active(state_dir: impl AsRef<Path>) -> bool {
         .unwrap_or(false)
 }
 
+pub fn network_extension_needs_network_configuration(state_dir: impl AsRef<Path>) -> bool {
+    read_record(&MacosNetworkExtensionPaths::for_state_dir(state_dir))
+        .ok()
+        .flatten()
+        .map(|record| {
+            !record.active
+                && record.activation_method == "system_extension_ready_needs_network_configuration"
+        })
+        .unwrap_or(false)
+}
+
+/// True when DAM has recorded that the macOS system extension was
+/// approved but the user has not yet rebooted to finish activating it.
+/// Used by `dam-diagnostics` to emit the reboot as its own setup step.
+pub fn network_extension_pending_reboot(state_dir: impl AsRef<Path>) -> bool {
+    read_record(&MacosNetworkExtensionPaths::for_state_dir(state_dir))
+        .ok()
+        .flatten()
+        .map(|record| pending_reboot_record_is_current(&record, macos_boot_unix()))
+        .unwrap_or(false)
+}
+
+/// Record that macOS finished the System Extension transition but
+/// DAM still needs to configure and verify the Network Extension
+/// manager before capture is considered active.
+pub fn record_system_extension_ready(
+    state_dir: impl AsRef<Path>,
+    bundle_identifier: impl Into<String>,
+    team_identifier: Option<String>,
+    ai_hosts: Vec<String>,
+) -> Result<(), MacosNetworkExtensionError> {
+    let paths = MacosNetworkExtensionPaths::for_state_dir(state_dir);
+    let bundle_identifier = bundle_identifier.into();
+    if let Some(existing) = read_record(&paths)?
+        && !system_extension_ready_should_replace(&existing, &bundle_identifier)
+    {
+        return Ok(());
+    }
+    let record = MacosNetworkExtensionStateRecord {
+        version: STATE_VERSION,
+        bundle_identifier,
+        team_identifier,
+        ai_hosts,
+        installed_at_unix: unix_timestamp().unwrap_or(0),
+        active: false,
+        activation_method: "system_extension_ready_needs_network_configuration".to_string(),
+        pending_reboot: false,
+    };
+    write_state_record(&paths, &record)
+}
+
+fn system_extension_ready_should_replace(
+    record: &MacosNetworkExtensionStateRecord,
+    bundle_identifier: &str,
+) -> bool {
+    if record.bundle_identifier != bundle_identifier {
+        return true;
+    }
+    matches!(
+        record.activation_method.as_str(),
+        "system_extension_needs_user_approval" | "system_extension_pending_reboot"
+    )
+}
+
+/// Record that macOS still needs explicit user approval for the
+/// System Extension activation request. This clears stale reboot
+/// markers so the setup checklist does not keep asking for a restart
+/// after macOS has moved back to an approval state.
+pub fn record_system_extension_needs_approval(
+    state_dir: impl AsRef<Path>,
+    bundle_identifier: impl Into<String>,
+    team_identifier: Option<String>,
+    ai_hosts: Vec<String>,
+) -> Result<(), MacosNetworkExtensionError> {
+    let paths = MacosNetworkExtensionPaths::for_state_dir(state_dir);
+    let record = MacosNetworkExtensionStateRecord {
+        version: STATE_VERSION,
+        bundle_identifier: bundle_identifier.into(),
+        team_identifier,
+        ai_hosts,
+        installed_at_unix: unix_timestamp().unwrap_or(0),
+        active: false,
+        activation_method: "system_extension_needs_user_approval".to_string(),
+        pending_reboot: false,
+    };
+    write_state_record(&paths, &record)
+}
+
+/// Persist a "pending reboot" record after macOS reports that a System
+/// Extension transition will complete after restart. This covers both
+/// activation and removal transitions. Subsequent setup reads see this
+/// flag and surface reboot as its own checklist step. After reboot,
+/// DAM re-checks the live System Extension and Network Extension
+/// manager state before marking any prior step complete.
+pub fn record_pending_reboot(
+    state_dir: impl AsRef<Path>,
+    bundle_identifier: impl Into<String>,
+    team_identifier: Option<String>,
+    ai_hosts: Vec<String>,
+) -> Result<(), MacosNetworkExtensionError> {
+    let paths = MacosNetworkExtensionPaths::for_state_dir(state_dir);
+    let installed_at_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let record = MacosNetworkExtensionStateRecord {
+        version: 1,
+        bundle_identifier: bundle_identifier.into(),
+        team_identifier,
+        ai_hosts,
+        installed_at_unix,
+        active: false,
+        activation_method: "system_extension_pending_reboot".to_string(),
+        pending_reboot: true,
+    };
+    write_state_record(&paths, &record)
+}
+
 pub fn preview_install_network_extension(
     state_dir: impl AsRef<Path>,
 ) -> Result<MacosNetworkExtensionResult, MacosNetworkExtensionError> {
@@ -205,13 +351,26 @@ pub fn preview_install_network_extension_for_hosts(
     let plan = install_plan_for_hosts(state_dir, ai_hosts)?;
     let record = read_record(&plan.paths)?;
     Ok(MacosNetworkExtensionResult {
-        state: match record.as_ref().map(|record| record.active) {
-            Some(true) => MacosNetworkExtensionResultState::AlreadyInstalled,
-            Some(false) => MacosNetworkExtensionResultState::NeedsApproval,
-            None => MacosNetworkExtensionResultState::Preview,
+        state: if plan.can_execute {
+            MacosNetworkExtensionResultState::Preview
+        } else if plan.ai_hosts.is_empty()
+            && record.as_ref().is_some_and(|record| {
+                !record.active
+                    && normalized_ai_hosts(&record.ai_hosts).is_empty()
+                    && record.activation_method == "network_extension_empty_scope_no_capture"
+            })
+        {
+            MacosNetworkExtensionResultState::AlreadyInstalled
+        } else {
+            match record.as_ref().map(|record| record.active) {
+                Some(true) => MacosNetworkExtensionResultState::AlreadyInstalled,
+                Some(false) => MacosNetworkExtensionResultState::NeedsApproval,
+                None => MacosNetworkExtensionResultState::Preview,
+            }
         },
         record,
         plan,
+        manager_status: None,
         system_routes_changed: false,
     })
 }
@@ -228,33 +387,80 @@ pub fn install_network_extension_for_hosts(
     ai_hosts: &[String],
 ) -> Result<MacosNetworkExtensionResult, MacosNetworkExtensionError> {
     ensure_macos()?;
-    let plan = install_plan_for_hosts(&state_dir, ai_hosts)?;
+    let mut plan = install_plan_for_hosts(&state_dir, ai_hosts)?;
     if !plan.can_execute {
-        if !plan.backend_status.active && plan.commands.is_empty() {
+        let record = read_record(&plan.paths)?;
+        let capture_scope_matches = record
+            .as_ref()
+            .map(|record| normalized_ai_hosts(&record.ai_hosts) == plan.ai_hosts)
+            .unwrap_or(false);
+        if (!plan.backend_status.active || !capture_scope_matches) && plan.commands.is_empty() {
             return Err(MacosNetworkExtensionError::MissingHelper {
                 bundle_identifier: plan.bundle_identifier,
             });
         }
         return Ok(MacosNetworkExtensionResult {
             state: MacosNetworkExtensionResultState::AlreadyInstalled,
-            record: read_record(&plan.paths)?,
+            record,
             plan,
+            manager_status: None,
             system_routes_changed: false,
         });
     }
 
     for command in &plan.commands {
-        run_helper_command(command)?;
+        if let Err(error) = run_helper_command(command) {
+            match error {
+                MacosNetworkExtensionError::HelperNeedsApproval { message, .. } => {
+                    let record = MacosNetworkExtensionStateRecord {
+                        version: STATE_VERSION,
+                        bundle_identifier: plan.bundle_identifier.clone(),
+                        team_identifier: plan.team_identifier.clone(),
+                        ai_hosts: plan.ai_hosts.clone(),
+                        installed_at_unix: unix_timestamp()?,
+                        active: false,
+                        activation_method:
+                            "app_owned_system_extension_native_helper_needs_user_approval"
+                                .to_string(),
+                        pending_reboot: false,
+                    };
+                    write_state_record(&plan.paths, &record)?;
+                    plan.message = if message.is_empty() {
+                        "macOS Network Extension activation is waiting for user approval"
+                            .to_string()
+                    } else {
+                        message
+                    };
+                    plan.backend_status =
+                        backend_status_from_record(Some(&record), plan.message.clone());
+                    return Ok(MacosNetworkExtensionResult {
+                        state: MacosNetworkExtensionResultState::NeedsApproval,
+                        plan,
+                        record: Some(record),
+                        manager_status: None,
+                        system_routes_changed: true,
+                    });
+                }
+                other => return Err(other),
+            }
+        }
     }
 
+    let active = !plan.ai_hosts.is_empty();
+    let activation_method = if active {
+        "app_owned_system_extension_native_helper_config"
+    } else {
+        "network_extension_empty_scope_no_capture"
+    };
     let record = MacosNetworkExtensionStateRecord {
         version: STATE_VERSION,
         bundle_identifier: plan.bundle_identifier.clone(),
         team_identifier: plan.team_identifier.clone(),
         ai_hosts: plan.ai_hosts.clone(),
         installed_at_unix: unix_timestamp()?,
-        active: true,
-        activation_method: "app_owned_system_extension_native_helper_config".to_string(),
+        active,
+        activation_method: activation_method.to_string(),
+        pending_reboot: false,
     };
     write_state_record(&plan.paths, &record)?;
 
@@ -262,6 +468,17 @@ pub fn install_network_extension_for_hosts(
         state: MacosNetworkExtensionResultState::Installed,
         plan,
         record: Some(record),
+        manager_status: Some(MacosNetworkExtensionManagerStatus {
+            configured: true,
+            enabled: active,
+            connection_status: if active { "connected" } else { "disabled" }.to_string(),
+            connected: active,
+            message: if active {
+                "macOS Network Extension live status: enabled connected".to_string()
+            } else {
+                "macOS Network Extension live status: disabled for empty app scope".to_string()
+            },
+        }),
         system_routes_changed: true,
     })
 }
@@ -280,6 +497,7 @@ pub fn preview_remove_network_extension(
         },
         record,
         plan,
+        manager_status: None,
         system_routes_changed: false,
     })
 }
@@ -295,6 +513,7 @@ pub fn remove_network_extension(
             state: MacosNetworkExtensionResultState::NotInstalled,
             plan,
             record: None,
+            manager_status: None,
             system_routes_changed: false,
         });
     }
@@ -313,6 +532,7 @@ pub fn remove_network_extension(
         state: MacosNetworkExtensionResultState::Removed,
         plan,
         record,
+        manager_status: None,
         system_routes_changed: true,
     })
 }
@@ -323,36 +543,204 @@ pub fn network_extension_status(
     let paths = MacosNetworkExtensionPaths::for_state_dir(state_dir);
     let mut record = read_record(&paths)?;
     let mut live_message = None;
-    if let Some(existing) = record.as_mut() {
-        let command = helper_command(
-            "status",
-            &existing.bundle_identifier,
-            existing.team_identifier.as_deref(),
-            &[],
-        )
-        .into_iter()
-        .next();
-        if let Some(command) = command {
-            let status = run_helper_status_command(&command)?;
-            live_message = Some(status.message.clone());
-            existing.active = status.active;
-            write_state_record(&paths, existing)?;
-        } else {
-            existing.active = false;
-            live_message = Some(
-                "macOS Network Extension helper is unavailable; live capture status cannot be verified"
-                    .to_string(),
-            );
-            write_state_record(&paths, existing)?;
-        }
+    let mut manager_status = None;
+    let bundle_identifier = record
+        .as_ref()
+        .map(|record| record.bundle_identifier.clone())
+        .unwrap_or_else(bundle_identifier);
+    let team_identifier = record
+        .as_ref()
+        .and_then(|record| record.team_identifier.clone())
+        .or_else(team_identifier);
+    let command = helper_command(
+        "status",
+        &bundle_identifier,
+        team_identifier.as_deref(),
+        &[],
+    )
+    .into_iter()
+    .next();
+    if let Some(command) = command {
+        let status = run_helper_status_command(&command)?;
+        live_message = Some(status.message.clone());
+        manager_status = Some(status.clone());
+        reconcile_record_with_manager_status(
+            &paths,
+            &mut record,
+            &bundle_identifier,
+            team_identifier.clone(),
+            status,
+        )?;
+    } else if let Some(existing) = record.as_mut() {
+        existing.active = false;
+        live_message = Some(
+            "macOS Network Extension helper is unavailable; live capture status cannot be verified"
+                .to_string(),
+        );
+        write_state_record(&paths, existing)?;
     }
-    let plan = status_plan(paths, record.as_ref(), live_message);
+    let plan = status_plan(
+        paths,
+        record.as_ref(),
+        manager_status.as_ref(),
+        live_message,
+    );
     Ok(MacosNetworkExtensionResult {
         state: MacosNetworkExtensionResultState::Status,
         plan,
         record,
+        manager_status,
         system_routes_changed: false,
     })
+}
+
+fn reconcile_record_with_manager_status(
+    paths: &MacosNetworkExtensionPaths,
+    record: &mut Option<MacosNetworkExtensionStateRecord>,
+    bundle_identifier: &str,
+    team_identifier: Option<String>,
+    status: MacosNetworkExtensionManagerStatus,
+) -> Result<(), MacosNetworkExtensionError> {
+    let method = manager_status_activation_method(record.as_ref(), bundle_identifier, &status);
+    if let Some(existing) = record.as_mut() {
+        existing.active = status.connected;
+        existing.pending_reboot = method == "system_extension_pending_reboot";
+        existing.activation_method = method.to_string();
+        write_state_record(paths, existing)?;
+        return Ok(());
+    }
+
+    if status.configured {
+        let new_record = MacosNetworkExtensionStateRecord {
+            version: STATE_VERSION,
+            bundle_identifier: bundle_identifier.to_string(),
+            team_identifier,
+            ai_hosts: Vec::new(),
+            installed_at_unix: unix_timestamp().unwrap_or(0),
+            active: status.connected,
+            activation_method: method.to_string(),
+            pending_reboot: false,
+        };
+        write_state_record(paths, &new_record)?;
+        *record = Some(new_record);
+    }
+    Ok(())
+}
+
+fn manager_status_activation_method(
+    record: Option<&MacosNetworkExtensionStateRecord>,
+    bundle_identifier: &str,
+    status: &MacosNetworkExtensionManagerStatus,
+) -> &'static str {
+    if !status.configured {
+        if record.is_some() {
+            return match system_extension_state(bundle_identifier) {
+                MacosSystemExtensionState::Enabled => {
+                    "system_extension_ready_needs_network_configuration"
+                }
+                MacosSystemExtensionState::WaitingForReboot => "system_extension_pending_reboot",
+                MacosSystemExtensionState::WaitingForUser | MacosSystemExtensionState::Unknown => {
+                    "system_extension_needs_user_approval"
+                }
+            };
+        }
+        return "system_extension_ready_needs_network_configuration";
+    }
+    if status.connected {
+        "app_owned_system_extension_native_helper_config"
+    } else if !status.enabled {
+        "network_extension_configured_needs_enable"
+    } else {
+        "network_extension_enabled_needs_start"
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MacosSystemExtensionState {
+    Enabled,
+    WaitingForUser,
+    WaitingForReboot,
+    Unknown,
+}
+
+fn system_extension_state(bundle_identifier: &str) -> MacosSystemExtensionState {
+    let output = Command::new("/usr/bin/systemextensionsctl")
+        .arg("list")
+        .output();
+    let Ok(output) = output else {
+        return MacosSystemExtensionState::Unknown;
+    };
+    if !output.status.success() {
+        return MacosSystemExtensionState::Unknown;
+    }
+    parse_system_extension_state(
+        &String::from_utf8_lossy(&output.stdout),
+        bundle_identifier,
+        bundled_system_extension_build(bundle_identifier),
+    )
+}
+
+fn parse_system_extension_state(
+    output: &str,
+    bundle_identifier: &str,
+    bundled_build: Option<u64>,
+) -> MacosSystemExtensionState {
+    let Some(line) = output.lines().find(|line| {
+        line.split_whitespace()
+            .any(|part| part == bundle_identifier)
+    }) else {
+        return MacosSystemExtensionState::Unknown;
+    };
+    if line.contains("[activated enabled]") {
+        if installed_build_is_stale(line, bundled_build) {
+            return MacosSystemExtensionState::Unknown;
+        }
+        MacosSystemExtensionState::Enabled
+    } else if line.contains("[activated waiting for user]") {
+        MacosSystemExtensionState::WaitingForUser
+    } else if line.contains("waiting") && line.contains("reboot") {
+        MacosSystemExtensionState::WaitingForReboot
+    } else {
+        MacosSystemExtensionState::Unknown
+    }
+}
+
+fn installed_build_is_stale(systemextensionsctl_line: &str, bundled_build: Option<u64>) -> bool {
+    let Some(bundled_build) = bundled_build else {
+        return false;
+    };
+    parse_systemextensionsctl_build(systemextensionsctl_line)
+        .map(|installed_build| installed_build < bundled_build)
+        .unwrap_or(false)
+}
+
+fn parse_systemextensionsctl_build(line: &str) -> Option<u64> {
+    let version = line.split_once('(')?.1.split_once(')')?.0;
+    let build = version.split_once('/')?.1;
+    build.parse().ok()
+}
+
+fn bundled_system_extension_build(bundle_identifier: &str) -> Option<u64> {
+    let exe = std::env::current_exe().ok()?;
+    let contents_dir = exe.parent()?.parent()?;
+    let info_plist = contents_dir
+        .join("Library")
+        .join("SystemExtensions")
+        .join(format!("{bundle_identifier}.systemextension"))
+        .join("Contents")
+        .join("Info.plist");
+    let xml = fs::read_to_string(info_plist).ok()?;
+    parse_plist_string_value(&xml, "CFBundleVersion")?
+        .parse()
+        .ok()
+}
+
+fn parse_plist_string_value(xml: &str, key: &str) -> Option<String> {
+    let key_marker = format!("<key>{key}</key>");
+    let after_key = xml.split_once(&key_marker)?.1;
+    let after_string = after_key.split_once("<string>")?.1;
+    let value = after_string.split_once("</string>")?.0;
+    Some(value.trim().to_string())
 }
 
 fn install_plan_for_hosts(
@@ -365,6 +753,16 @@ fn install_plan_for_hosts(
     let bundle_identifier = bundle_identifier();
     let team_identifier = team_identifier();
     let installed = record.as_ref().is_some_and(|record| record.active);
+    let capture_scope_matches = record
+        .as_ref()
+        .map(|record| normalized_ai_hosts(&record.ai_hosts) == ai_hosts)
+        .unwrap_or(false);
+    let empty_scope_recorded = ai_hosts.is_empty()
+        && record.as_ref().is_some_and(|record| {
+            !record.active
+                && normalized_ai_hosts(&record.ai_hosts).is_empty()
+                && record.activation_method == "network_extension_empty_scope_no_capture"
+        });
     let pending_approval = record.as_ref().is_some_and(|record| !record.active);
     let commands = helper_command(
         "install",
@@ -373,9 +771,29 @@ fn install_plan_for_hosts(
         &ai_hosts,
     );
     let support = support();
-    let can_execute =
-        support == MacosNetworkExtensionSupport::Implemented && !installed && !commands.is_empty();
-    let message = if installed {
+    let can_execute = support == MacosNetworkExtensionSupport::Implemented
+        && !empty_scope_recorded
+        && (!installed || !capture_scope_matches)
+        && !commands.is_empty();
+    let message = if ai_hosts.is_empty() {
+        if empty_scope_recorded {
+            "macOS Network Extension capture is disabled because no app profiles are enabled"
+                .to_string()
+        } else if commands.is_empty() {
+            "packaged macOS Network Extension helper is required before capture can be disabled for an empty app scope"
+                .to_string()
+        } else {
+            "will disable macOS Network Extension capture because no app profiles are enabled"
+                .to_string()
+        }
+    } else if installed && !capture_scope_matches {
+        if commands.is_empty() {
+            "packaged macOS Network Extension helper is required before capture scope can be updated"
+                .to_string()
+        } else {
+            "will update DAM macOS Network Extension capture to the current app scope".to_string()
+        }
+    } else if installed {
         "macOS Network Extension capture is already recorded active".to_string()
     } else if pending_approval {
         "macOS Network Extension activation is waiting for user approval".to_string()
@@ -462,6 +880,7 @@ fn remove_plan(
 fn status_plan(
     paths: MacosNetworkExtensionPaths,
     record: Option<&MacosNetworkExtensionStateRecord>,
+    manager_status: Option<&MacosNetworkExtensionManagerStatus>,
     live_message: Option<String>,
 ) -> MacosNetworkExtensionPlan {
     let commands = record
@@ -480,6 +899,12 @@ fn status_plan(
             .map(|record| {
                 if record.active {
                     "macOS Network Extension capture is recorded active"
+                } else if manager_status.is_some_and(|status| !status.configured) {
+                    "macOS Network Extension manager configuration is missing"
+                } else if manager_status.is_some_and(|status| !status.enabled) {
+                    "macOS Network Extension manager is configured but disabled"
+                } else if manager_status.is_some_and(|status| status.enabled && !status.connected) {
+                    "macOS Network Extension manager is enabled but not connected"
                 } else {
                     "macOS Network Extension capture is recorded inactive"
                 }
@@ -581,8 +1006,16 @@ fn helper_command(
     if action == "install" {
         args.extend(["--proxy-host".to_string(), proxy_host()]);
         args.extend(["--proxy-port".to_string(), proxy_port()]);
-        for host in ai_hosts {
-            args.extend(["--protect-host".to_string(), host.to_string()]);
+        args.extend([
+            "--routing-failure-policy".to_string(),
+            routing_failure_policy(),
+        ]);
+        if ai_hosts.is_empty() {
+            args.push("--no-protected-hosts".to_string());
+        } else {
+            for host in ai_hosts {
+                args.extend(["--protect-host".to_string(), host.to_string()]);
+            }
         }
         for identifier in excluded_signing_identifiers() {
             args.extend(["--exclude-signing-id".to_string(), identifier]);
@@ -599,29 +1032,33 @@ fn helper_path() -> Option<PathBuf> {
         return Some(PathBuf::from(helper));
     }
 
-    let exe = env::current_exe().ok()?;
-    let exe_dir = exe.parent()?;
-    helper_path_candidates(exe_dir)
-        .into_iter()
-        .find(|path| path.is_file())
+    #[cfg(test)]
+    {
+        return None;
+    }
+
+    #[cfg(not(test))]
+    {
+        let exe = env::current_exe().ok()?;
+        let exe_dir = exe.parent()?;
+        helper_path_candidates(exe_dir)
+            .into_iter()
+            .find(|path| path.is_file())
+    }
 }
 
 fn helper_path_candidates(exe_dir: &Path) -> Vec<PathBuf> {
-    let mut candidates = vec![
-        exe_dir.join("dam-macos-ne-helper"),
-        exe_dir.join("Helpers").join("dam-macos-ne-helper"),
-    ];
-    if let Some(contents_dir) = exe_dir.parent() {
-        candidates.push(
-            contents_dir
-                .join("Helpers")
-                .join("DAMMacosNEHelper.app")
-                .join("Contents")
-                .join("MacOS")
-                .join("dam-macos-ne-helper"),
-        );
-    }
-    candidates
+    let Some(contents_dir) = exe_dir.parent() else {
+        return Vec::new();
+    };
+    vec![
+        contents_dir
+            .join("Helpers")
+            .join("DAMMacosNEHelper.app")
+            .join("Contents")
+            .join("MacOS")
+            .join("dam-macos-ne-helper"),
+    ]
 }
 
 fn run_helper_command(
@@ -636,12 +1073,11 @@ fn run_helper_command(
         })?;
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if stdout.starts_with("needs_user_approval ") {
-            return Err(MacosNetworkExtensionError::HelperFailed {
+        if let Some(message) = stdout.strip_prefix("needs_user_approval ") {
+            return Err(MacosNetworkExtensionError::HelperNeedsApproval {
                 program: command.program.clone(),
                 args: command.args.join(" "),
-                status: "needs_user_approval".to_string(),
-                stderr: stdout,
+                message: message.trim().to_string(),
             });
         }
         return Ok(());
@@ -658,15 +1094,9 @@ fn run_helper_command(
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HelperLiveStatus {
-    active: bool,
-    message: String,
-}
-
 fn run_helper_status_command(
     command: &MacosNetworkExtensionCommand,
-) -> Result<HelperLiveStatus, MacosNetworkExtensionError> {
+) -> Result<MacosNetworkExtensionManagerStatus, MacosNetworkExtensionError> {
     let output = Command::new(&command.program)
         .args(&command.args)
         .output()
@@ -686,15 +1116,31 @@ fn run_helper_status_command(
     Ok(parse_helper_status(&stdout))
 }
 
-fn parse_helper_status(output: &str) -> HelperLiveStatus {
+fn parse_helper_status(output: &str) -> MacosNetworkExtensionManagerStatus {
     let lower = output.to_ascii_lowercase();
-    let active = lower.split_whitespace().any(|part| part == "connected");
+    let parts = lower.split_whitespace().collect::<Vec<_>>();
+    let configured = parts
+        .first()
+        .is_some_and(|part| *part == "enabled" || *part == "disabled");
+    let enabled = parts.first().is_some_and(|part| *part == "enabled");
+    let connection_status = if parts.first().is_some_and(|part| *part == "not_installed") {
+        "not_installed".to_string()
+    } else {
+        parts.get(2).copied().unwrap_or("unknown").to_string()
+    };
+    let connected = configured && connection_status == "connected";
     let message = if output.trim().is_empty() {
         "macOS Network Extension helper returned an empty live status".to_string()
     } else {
         format!("macOS Network Extension live status: {}", output.trim())
     };
-    HelperLiveStatus { active, message }
+    MacosNetworkExtensionManagerStatus {
+        configured,
+        enabled,
+        connection_status,
+        connected,
+        message,
+    }
 }
 
 #[cfg(unix)]
@@ -841,6 +1287,14 @@ fn proxy_port() -> String {
         .unwrap_or_else(|| DEFAULT_PROXY_PORT.to_string())
 }
 
+fn routing_failure_policy() -> String {
+    env::var(ROUTING_FAILURE_POLICY_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| matches!(value.as_str(), "fail_open" | "fail_closed"))
+        .unwrap_or_else(|| DEFAULT_ROUTING_FAILURE_POLICY.to_string())
+}
+
 fn excluded_signing_identifiers() -> Vec<String> {
     env::var(EXCLUDED_SIGNING_IDS_ENV)
         .ok()
@@ -883,6 +1337,44 @@ fn unix_timestamp() -> Result<u64, MacosNetworkExtensionError> {
         .map_err(|_| MacosNetworkExtensionError::Clock)
 }
 
+fn pending_reboot_record_is_current(
+    record: &MacosNetworkExtensionStateRecord,
+    boot_unix: Option<u64>,
+) -> bool {
+    if !record.pending_reboot || record.active {
+        return false;
+    }
+    boot_unix
+        .map(|boot_unix| record.installed_at_unix >= boot_unix)
+        .unwrap_or(true)
+}
+
+fn macos_boot_unix() -> Option<u64> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let output = Command::new("/usr/sbin/sysctl")
+        .args(["-n", "kern.boottime"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    parse_macos_boottime_seconds(&stdout)
+}
+
+fn parse_macos_boottime_seconds(output: &str) -> Option<u64> {
+    let after_sec = output.split_once("sec")?.1;
+    let after_equals = after_sec.split_once('=')?.1;
+    let digits: String = after_equals
+        .chars()
+        .skip_while(|ch| ch.is_whitespace())
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -894,6 +1386,7 @@ mod tests {
     struct HelperEnvGuard {
         _lock: MutexGuard<'static, ()>,
         _temp: Option<tempfile::TempDir>,
+        previous: Option<std::ffi::OsString>,
     }
 
     impl HelperEnvGuard {
@@ -915,12 +1408,14 @@ mod tests {
 
         fn with_helper_path(path: &Path) -> Self {
             let lock = HELPER_ENV_LOCK.lock().unwrap();
+            let previous = env::var_os(HELPER_ENV);
             unsafe {
                 env::set_var(HELPER_ENV, path);
             }
             Self {
                 _lock: lock,
                 _temp: None,
+                previous,
             }
         }
     }
@@ -928,14 +1423,28 @@ mod tests {
     impl Drop for HelperEnvGuard {
         fn drop(&mut self) {
             unsafe {
-                env::remove_var(HELPER_ENV);
+                match &self.previous {
+                    Some(value) => env::set_var(HELPER_ENV, value),
+                    None => env::remove_var(HELPER_ENV),
+                }
             }
         }
     }
 
     #[test]
     fn status_reports_needs_install_without_state() {
+        use std::os::unix::fs::PermissionsExt;
+
         let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("status-helper.sh");
+        fs::write(
+            &helper,
+            "#!/bin/sh\nif [ \"$1\" = \"status\" ]; then echo \"not_installed com.rpblc.dam.network-extension\"; fi\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let _helper = HelperEnvGuard::with_helper_path(&helper);
+
         let result = network_extension_status(dir.path()).unwrap();
 
         assert_eq!(result.state, MacosNetworkExtensionResultState::Status);
@@ -944,6 +1453,22 @@ mod tests {
             dam_net::CaptureBackendReadiness::NeedsInstall
         );
         assert!(!result.plan.backend_status.active);
+    }
+
+    #[test]
+    fn system_extension_ready_record_requires_network_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+
+        record_system_extension_ready(
+            dir.path(),
+            DEFAULT_BUNDLE_ID,
+            None,
+            vec!["api.openai.com".to_string()],
+        )
+        .unwrap();
+
+        assert!(network_extension_needs_network_configuration(dir.path()));
+        assert!(!network_extension_active(dir.path()));
     }
 
     #[test]
@@ -966,7 +1491,7 @@ mod tests {
     }
 
     #[test]
-    fn helper_needs_user_approval_fails_without_recording_pending_state() {
+    fn helper_needs_user_approval_records_inactive_pending_state() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
@@ -979,13 +1504,26 @@ mod tests {
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
 
         let _helper = HelperEnvGuard::with_helper_path(&helper);
-        let error =
+        let result =
             install_network_extension_for_hosts(dir.path(), &["api.openai.com".to_string()])
-                .unwrap_err();
+                .unwrap();
 
-        assert!(error.to_string().contains("needs_user_approval"));
-        assert!(!network_extension_installed(dir.path()));
+        assert_eq!(
+            result.state,
+            MacosNetworkExtensionResultState::NeedsApproval
+        );
+        assert!(
+            result
+                .plan
+                .message
+                .contains("approve DAM Network Protection")
+        );
+        assert!(network_extension_installed(dir.path()));
         assert!(!network_extension_active(dir.path()));
+        assert_eq!(
+            result.record.unwrap().activation_method,
+            "app_owned_system_extension_native_helper_needs_user_approval"
+        );
     }
 
     #[cfg(unix)]
@@ -1025,6 +1563,12 @@ mod tests {
         assert!(command.args.contains(&"127.0.0.1".to_string()));
         assert!(command.args.contains(&"--proxy-port".to_string()));
         assert!(command.args.contains(&"7828".to_string()));
+        assert!(
+            command
+                .args
+                .contains(&"--routing-failure-policy".to_string())
+        );
+        assert!(command.args.contains(&"fail_open".to_string()));
         assert!(command.args.contains(&"--protect-host".to_string()));
         assert!(command.args.contains(&"api.openai.com".to_string()));
         assert!(command.args.contains(&"--exclude-signing-id".to_string()));
@@ -1032,12 +1576,40 @@ mod tests {
     }
 
     #[test]
-    fn helper_path_candidates_include_packaged_helper_app_wrapper() {
+    fn install_plan_passes_explicit_empty_protected_hosts_to_helper() {
+        let _helper = HelperEnvGuard::install();
+        let dir = tempfile::tempdir().unwrap();
+        let result = preview_install_network_extension_for_hosts(dir.path(), &[]).unwrap();
+        let command = result.plan.commands.first().unwrap();
+
+        assert!(command.args.contains(&"--no-protected-hosts".to_string()));
+        assert!(!command.args.contains(&"--protect-host".to_string()));
+        assert!(result.plan.ai_hosts.is_empty());
+    }
+
+    #[test]
+    fn install_reconfigures_active_capture_when_host_scope_changes() {
+        let _helper = HelperEnvGuard::install();
+        let dir = tempfile::tempdir().unwrap();
+        install_network_extension_for_hosts(dir.path(), &["api.openai.com".to_string()]).unwrap();
+
+        let result = install_network_extension_for_hosts(dir.path(), &[]).unwrap();
+
+        assert_eq!(result.state, MacosNetworkExtensionResultState::Installed);
+        assert!(result.record.unwrap().ai_hosts.is_empty());
+        assert!(!network_extension_active(dir.path()));
+    }
+
+    #[test]
+    fn helper_path_candidates_use_packaged_helper_app_wrapper() {
         let candidates = helper_path_candidates(Path::new("/Applications/DAM.app/Contents/MacOS"));
 
-        assert!(candidates.contains(&PathBuf::from(
-            "/Applications/DAM.app/Contents/Helpers/DAMMacosNEHelper.app/Contents/MacOS/dam-macos-ne-helper"
-        )));
+        assert_eq!(
+            candidates,
+            vec![PathBuf::from(
+                "/Applications/DAM.app/Contents/Helpers/DAMMacosNEHelper.app/Contents/MacOS/dam-macos-ne-helper"
+            )]
+        );
     }
 
     #[test]
@@ -1082,6 +1654,155 @@ mod tests {
     }
 
     #[test]
+    fn status_records_configured_disabled_manager_state() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        record_system_extension_ready(dir.path(), DEFAULT_BUNDLE_ID, None, Vec::new()).unwrap();
+        let helper = dir.path().join("status-helper.sh");
+        fs::write(
+            &helper,
+            "#!/bin/sh\nif [ \"$1\" = \"status\" ]; then echo \"disabled com.rpblc.dam.network-extension disconnected\"; fi\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let _helper = HelperEnvGuard::with_helper_path(&helper);
+
+        let status = network_extension_status(dir.path()).unwrap();
+        let record = status.record.unwrap();
+
+        assert_eq!(
+            record.activation_method,
+            "network_extension_configured_needs_enable"
+        );
+        assert!(!record.active);
+        let manager = status.manager_status.unwrap();
+        assert!(manager.configured);
+        assert!(!manager.enabled);
+    }
+
+    #[test]
+    fn status_records_enabled_disconnected_manager_state() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        record_system_extension_ready(dir.path(), DEFAULT_BUNDLE_ID, None, Vec::new()).unwrap();
+        let helper = dir.path().join("status-helper.sh");
+        fs::write(
+            &helper,
+            "#!/bin/sh\nif [ \"$1\" = \"status\" ]; then echo \"enabled com.rpblc.dam.network-extension disconnected\"; fi\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let _helper = HelperEnvGuard::with_helper_path(&helper);
+
+        let status = network_extension_status(dir.path()).unwrap();
+        let record = status.record.unwrap();
+
+        assert_eq!(
+            record.activation_method,
+            "network_extension_enabled_needs_start"
+        );
+        assert!(!record.active);
+        let manager = status.manager_status.unwrap();
+        assert!(manager.configured);
+        assert!(manager.enabled);
+        assert!(!manager.connected);
+    }
+
+    #[test]
+    fn system_extension_ready_does_not_downgrade_manager_start_state() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        record_system_extension_ready(dir.path(), DEFAULT_BUNDLE_ID, None, Vec::new()).unwrap();
+        let helper = dir.path().join("status-helper.sh");
+        fs::write(
+            &helper,
+            "#!/bin/sh\nif [ \"$1\" = \"status\" ]; then echo \"enabled com.rpblc.dam.network-extension disconnected\"; fi\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let _helper = HelperEnvGuard::with_helper_path(&helper);
+        network_extension_status(dir.path()).unwrap();
+
+        record_system_extension_ready(dir.path(), DEFAULT_BUNDLE_ID, None, Vec::new()).unwrap();
+        let record = read_record(&MacosNetworkExtensionPaths::for_state_dir(dir.path()))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            record.activation_method,
+            "network_extension_enabled_needs_start"
+        );
+        assert!(!record.active);
+    }
+
+    #[test]
+    fn status_reconciles_deleted_manager_to_system_extension_step_without_live_extension() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let active_helper = HelperEnvGuard::install();
+        let dir = tempfile::tempdir().unwrap();
+        install_network_extension(dir.path()).unwrap();
+        drop(active_helper);
+
+        let helper = dir.path().join("status-helper.sh");
+        fs::write(
+            &helper,
+            "#!/bin/sh\nif [ \"$1\" = \"status\" ]; then echo \"not_installed com.rpblc.dam.network-extension\"; fi\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let _helper = HelperEnvGuard::with_helper_path(&helper);
+
+        let status = network_extension_status(dir.path()).unwrap();
+        let record = status.record.unwrap();
+
+        assert_eq!(
+            record.activation_method,
+            "system_extension_needs_user_approval"
+        );
+        assert!(!record.active);
+        let manager = status.manager_status.unwrap();
+        assert!(!manager.configured);
+    }
+
+    #[test]
+    fn parses_live_enabled_system_extension_when_build_is_current() {
+        let output = concat!(
+            "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]\n",
+            "*\t*\t2T6856RWGV\tcom.rpblc.dam.network-extension (1.0.2/3)\tDAM Network Protection\t[activated enabled]\n",
+        );
+
+        assert_eq!(
+            parse_system_extension_state(output, DEFAULT_BUNDLE_ID, Some(3)),
+            MacosSystemExtensionState::Enabled
+        );
+    }
+
+    #[test]
+    fn stale_or_disabled_system_extension_requires_activation() {
+        let stale = concat!(
+            "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]\n",
+            "*\t*\t2T6856RWGV\tcom.rpblc.dam.network-extension (1.0.1/2)\tDAM Network Protection\t[activated enabled]\n",
+        );
+        let disabled = concat!(
+            "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]\n",
+            "*\t2T6856RWGV\tcom.rpblc.dam.network-extension (1.0.2/3)\tDAM Network Protection\t[activated disabled]\n",
+        );
+
+        assert_eq!(
+            parse_system_extension_state(stale, DEFAULT_BUNDLE_ID, Some(3)),
+            MacosSystemExtensionState::Unknown
+        );
+        assert_eq!(
+            parse_system_extension_state(disabled, DEFAULT_BUNDLE_ID, Some(3)),
+            MacosSystemExtensionState::Unknown
+        );
+    }
+
+    #[test]
     fn remove_requires_helper_when_record_exists() {
         let _helper = HelperEnvGuard::install();
         let dir = tempfile::tempdir().unwrap();
@@ -1094,5 +1815,32 @@ mod tests {
 
         assert!(error.to_string().contains("helper is required"));
         assert!(network_extension_installed(dir.path()));
+    }
+
+    #[test]
+    fn pending_reboot_record_expires_after_next_boot() {
+        let record = MacosNetworkExtensionStateRecord {
+            version: STATE_VERSION,
+            bundle_identifier: DEFAULT_BUNDLE_ID.to_string(),
+            team_identifier: None,
+            ai_hosts: Vec::new(),
+            installed_at_unix: 2_000,
+            active: false,
+            activation_method: "system_extension_pending_reboot".to_string(),
+            pending_reboot: true,
+        };
+
+        assert!(pending_reboot_record_is_current(&record, Some(1_000)));
+        assert!(!pending_reboot_record_is_current(&record, Some(3_000)));
+    }
+
+    #[test]
+    fn parses_macos_boottime_seconds() {
+        assert_eq!(
+            parse_macos_boottime_seconds(
+                "{ sec = 1778370000, usec = 44877 } Mon May  9 14:20:25 2026"
+            ),
+            Some(1_778_370_000)
+        );
     }
 }

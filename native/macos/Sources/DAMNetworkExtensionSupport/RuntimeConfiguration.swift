@@ -1,5 +1,12 @@
 import Foundation
 
+public enum DAMRoutingFailurePolicy: String, Equatable, Sendable {
+    case failOpen = "fail_open"
+    case failClosed = "fail_closed"
+
+    public static let defaultPolicy: DAMRoutingFailurePolicy = .failOpen
+}
+
 public struct DAMProxyRuntimeConfiguration: Equatable, Sendable {
     public static let defaultProxyHost = "127.0.0.1"
     public static let defaultProxyPort: UInt16 = 7828
@@ -24,17 +31,20 @@ public struct DAMProxyRuntimeConfiguration: Equatable, Sendable {
     public var proxyPort: UInt16
     public var protectedHosts: [String]
     public var excludedSigningIdentifiers: [String]
+    public var routingFailurePolicy: DAMRoutingFailurePolicy
 
     public init(
         proxyHost: String = Self.defaultProxyHost,
         proxyPort: UInt16 = Self.defaultProxyPort,
         protectedHosts: [String] = Self.defaultProtectedHosts,
-        excludedSigningIdentifiers: [String] = Self.defaultExcludedSigningIdentifiers
+        excludedSigningIdentifiers: [String] = Self.defaultExcludedSigningIdentifiers,
+        routingFailurePolicy: DAMRoutingFailurePolicy = DAMRoutingFailurePolicy.defaultPolicy
     ) {
         self.proxyHost = normalizeProxyHost(proxyHost)
         self.proxyPort = proxyPort
         self.protectedHosts = normalizeHosts(protectedHosts)
         self.excludedSigningIdentifiers = normalizeIdentifiers(excludedSigningIdentifiers)
+        self.routingFailurePolicy = routingFailurePolicy
     }
 
     public init(providerConfiguration: [String: Any]?) {
@@ -42,12 +52,15 @@ public struct DAMProxyRuntimeConfiguration: Equatable, Sendable {
         let proxyPort = providerConfiguration?[DAMProviderConfigurationKey.proxyPort] as? Int
         let protectedHosts = providerConfiguration?[DAMProviderConfigurationKey.protectedHosts] as? [String]
         let excludedSigningIdentifiers = providerConfiguration?[DAMProviderConfigurationKey.excludedSigningIdentifiers] as? [String]
+        let routingFailurePolicy = (providerConfiguration?[DAMProviderConfigurationKey.routingFailurePolicy] as? String)
+            .flatMap(DAMRoutingFailurePolicy.init(rawValue:))
 
         self.init(
             proxyHost: proxyHost ?? Self.defaultProxyHost,
             proxyPort: UInt16(clamping: proxyPort ?? Int(Self.defaultProxyPort)),
             protectedHosts: protectedHosts ?? Self.defaultProtectedHosts,
-            excludedSigningIdentifiers: excludedSigningIdentifiers ?? Self.defaultExcludedSigningIdentifiers
+            excludedSigningIdentifiers: excludedSigningIdentifiers ?? Self.defaultExcludedSigningIdentifiers,
+            routingFailurePolicy: routingFailurePolicy ?? DAMRoutingFailurePolicy.defaultPolicy
         )
     }
 
@@ -57,6 +70,7 @@ public struct DAMProxyRuntimeConfiguration: Equatable, Sendable {
             DAMProviderConfigurationKey.proxyPort: Int(proxyPort),
             DAMProviderConfigurationKey.protectedHosts: protectedHosts,
             DAMProviderConfigurationKey.excludedSigningIdentifiers: excludedSigningIdentifiers,
+            DAMProviderConfigurationKey.routingFailurePolicy: routingFailurePolicy.rawValue,
         ]
     }
 
@@ -87,6 +101,7 @@ public enum DAMProviderConfigurationKey {
     public static let proxyPort = "damProxyPort"
     public static let protectedHosts = "damProtectedHosts"
     public static let excludedSigningIdentifiers = "damExcludedSigningIdentifiers"
+    public static let routingFailurePolicy = "damRoutingFailurePolicy"
 }
 
 public func normalizeHost(_ host: String) -> String {

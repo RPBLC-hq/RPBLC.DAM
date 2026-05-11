@@ -5,6 +5,13 @@ license.workspace = true
 version.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+dam-config.workspace = true
+dam-daemon.workspace = true
+dam-diagnostics.workspace = true
+dam-net.workspace = true
+dam-net-macos.workspace = true
+dam-trust.workspace = true
+muda = { version = "0.17", default-features = false }
 tao = { version = "0.35", default-features = false, features = ["rwh_06"] }
 tray-icon = { version = "0.22", default-features = false }
 wry = { version = "0.55", default-features = false, features = ["os-webview"] }

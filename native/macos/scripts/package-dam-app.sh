@@ -297,16 +297,26 @@ HELPER_APP="$HELPERS/DAMMacosNEHelper.app"
 HELPER_CONTENTS="$HELPER_APP/Contents"
 HELPER_MACOS="$HELPER_CONTENTS/MacOS"
 HELPER_BIN="$HELPER_MACOS/dam-macos-ne-helper"
+HELPER_SYSTEM_EXTENSIONS="$HELPER_CONTENTS/Library/SystemExtensions"
+HELPER_EXT="$HELPER_SYSTEM_EXTENSIONS/$EXT_BUNDLE_ID.systemextension"
 EXT="$SYSTEM_EXTENSIONS/$EXT_BUNDLE_ID.systemextension"
 EXT_CONTENTS="$EXT/Contents"
 EXT_MACOS="$EXT_CONTENTS/MacOS"
 SWIFT_BUILD="$NATIVE/.build/arm64-apple-macosx/release"
 
 rm -rf "$APP"
-mkdir -p "$MACOS" "$RESOURCES" "$HELPER_MACOS" "$EXT_MACOS"
+mkdir -p "$MACOS" "$RESOURCES" "$HELPER_MACOS" "$EXT_MACOS" "$HELPER_SYSTEM_EXTENSIONS"
 
 cp "$NATIVE/InfoPlists/DAM.Info.plist" "$CONTENTS/Info.plist"
 cp "$NATIVE/InfoPlists/DAMMacosNEHelper.Info.plist" "$HELPER_CONTENTS/Info.plist"
+# Bundle icon. Rendered from `RPBLC.Design/brand/assets/app-icon.svg`
+# via `qlmanage` + `iconutil` and committed to
+# `native/macos/Resources/AppIcon.icns`. Referenced from
+# `DAM.Info.plist` via `CFBundleIconFile=AppIcon` so macOS picks the
+# right size for Finder, Dock, Login Items, and Launchpad.
+if [[ -f "$NATIVE/Resources/AppIcon.icns" ]]; then
+  cp "$NATIVE/Resources/AppIcon.icns" "$RESOURCES/AppIcon.icns"
+fi
 materialize_template "$NATIVE/InfoPlists/DAMTransparentProxyProvider.Info.plist" "$EXT_CONTENTS/Info.plist"
 plutil -lint "$HELPER_CONTENTS/Info.plist" >/dev/null
 plutil -lint "$EXT_CONTENTS/Info.plist" >/dev/null
@@ -326,9 +336,9 @@ cp "$SWIFT_BUILD/dam-macos-ne-helper" "$HELPER_BIN"
 echo "Linking transparent proxy provider bundle executable..."
 xcrun swiftc \
   -emit-executable \
-  -parse-as-library \
   -module-name DAMTransparentProxyProvider \
   -I "$SWIFT_BUILD/Modules" \
+  "$NATIVE/Sources/DAMTransparentProxyProvider/main.swift" \
   "$NATIVE/Sources/DAMTransparentProxyProvider/DAMTransparentProxyProvider.swift" \
   "$NATIVE/Sources/DAMTransparentProxyProvider/FlowEndpoint.swift" \
   "$NATIVE/Sources/DAMTransparentProxyProvider/TCPFlowProxy.swift" \
@@ -336,20 +346,22 @@ xcrun swiftc \
   "$SWIFT_BUILD/DAMNetworkExtensionSupport.build/RuntimeConfiguration.swift.o" \
   -framework Network \
   -framework NetworkExtension \
-  -Xlinker -e \
-  -Xlinker _NSExtensionMain \
   -o "$EXT_MACOS/DAMTransparentProxyProvider"
+ditto "$EXT" "$HELPER_EXT"
 
 echo "Signing nested executables..."
 for bin in dam dam-web dam-proxy dam-mcp dam-daemon; do
   sign_code "$APP_IDENTITY" "$MACOS/$bin"
 done
 sign_code "$APP_IDENTITY" --identifier "$APP_BUNDLE_ID" --entitlements "$APP_ENTITLEMENTS" "$HELPER_BIN"
-sign_code "$APP_IDENTITY" --entitlements "$APP_ENTITLEMENTS" "$HELPER_APP"
 sign_code "$APP_IDENTITY" --entitlements "$APP_ENTITLEMENTS" "$MACOS/dam-tray"
 
 echo "Signing system extension..."
 sign_code "$EXT_IDENTITY" --entitlements "$EXT_ENTITLEMENTS" "$EXT"
+sign_code "$EXT_IDENTITY" --entitlements "$EXT_ENTITLEMENTS" "$HELPER_EXT"
+
+echo "Signing helper app..."
+sign_code "$APP_IDENTITY" --entitlements "$APP_ENTITLEMENTS" "$HELPER_APP"
 
 echo "Signing app bundle..."
 sign_code "$APP_IDENTITY" --entitlements "$APP_ENTITLEMENTS" "$APP"
@@ -365,6 +377,8 @@ require_signed_entitlement_contains "$HELPER_APP" "com.apple.developer.networkin
 require_signed_entitlement_contains "$HELPER_BIN" "com.apple.developer.system-extension.install" "true"
 require_signed_entitlement_contains "$HELPER_BIN" "com.apple.security.application-groups" "$APP_GROUP_ID"
 require_signed_entitlement_contains "$HELPER_BIN" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
+require_signed_entitlement_contains "$HELPER_EXT" "com.apple.security.application-groups" "$APP_GROUP_ID"
+require_signed_entitlement_contains "$HELPER_EXT" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
 require_signed_entitlement_contains "$MACOS/dam-tray" "com.apple.security.application-groups" "$APP_GROUP_ID"
 require_signed_entitlement_contains "$MACOS/dam-tray" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"
 require_signed_entitlement_contains "$EXT" "com.apple.developer.networking.networkextension" "$EXT_NETWORK_ENTITLEMENT"

@@ -1,0 +1,126 @@
+/* ════════════════════════════════════════════════════════════════
+   RPBLC.Design — Tokens
+   The frozen contract. Every consumer surface relies on these names.
+   See contracts/tokens-contract.md and decisions/ADR-003.
+   ════════════════════════════════════════════════════════════════ */
+
+:root {
+  color-scheme: dark;
+
+  /* ── Color: surface ── */
+  --bg: #0a0a08;
+  --panel: #12120f;
+  --line: #1e1d1a;
+  --line-dark: #181714;
+  --dark: #2c2a22;
+  --soft: #3d3a32;
+  --secondary: #6b6355;
+  --muted: #78736a;
+  --text: #dedad2;
+  --bright: #ffffff;
+  --accent: #b8965a;
+  /* Optical-corrected accents.
+     --accent-bright: the colon at favicon scale; a saturation bump so the
+     gold dot survives at <=24px without being lost into the letterform.
+     --accent-strong: primary-CTA fill that holds contrast against cream
+     surfaces in light theme. In dark theme it equals --accent. */
+  --accent-bright: #d4ad68;
+  --accent-strong: #b8965a;
+  /* Primary CTA tokens — abstract over theme so the strong call-to-action
+     reads as the right thing on each surface. In dark, the CTA is the gold
+     itself (--accent-strong on --bg). In light, gold cannot fill a CTA at
+     full size without darkening into brown (see decisions/ADR-010), so the
+     CTA flips to ink — --bright on --bg cream — and gold becomes the hover
+     bloom. Components consume these names; the per-theme values below carry
+     the intent. Do not hardcode --accent-strong on a button. */
+  --cta-bg: var(--accent-strong);
+  --cta-fg: var(--bg);
+  --cta-border: var(--accent-strong);
+  --cta-bg-hover: var(--bg);
+  --cta-fg-hover: var(--accent-strong);
+  --cta-border-hover: var(--accent-strong);
+  --flash-bg: #f5f0e8;
+  --flash-warm: #ede8de;
+  --nav-bg: rgba(10, 10, 8, 0.92);
+  /* --alarm: the only chromatic outsider — a brick desaturated toward the
+     gold/cream palette so error states never out-shout the brand.
+     --error is kept as an alias for back-compat. */
+  --alarm: #b8523f;
+  --error: var(--alarm);
+
+  /* ── Typography ── */
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-sans: 'Manrope', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --fw-extrabold: 800;
+
+  /* ── Spacing ── */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-9: 40px;
+  --space-10: 48px;
+  --space-12: 64px;
+
+  /* ── Motion ── */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 300ms;
+  --dur-slower: 500ms;
+  --ease-base: ease;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ── Geometry ── */
+  --radius-0: 0;
+  --radius-1: 2px;
+  --border-1: 1px;
+  --border-2: 2px;
+  /* The single brand stroke. BracketMark, VaultFrame, Button and any future
+     framed surface all reference this so the brand reads as drawn by one
+     hand. Em-relative; tiny absolute fallback for <1em chrome. */
+  --stroke-brand: 0.0625em;
+  --stroke-brand-px: 1px;
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #faf8f2;
+  --panel: #ffffff;
+  --line: #e2ddd4;
+  --line-dark: #e2ddd4;
+  --dark: #d6d2ca;
+  --soft: #c4bfb6;
+  --secondary: #6b6355;
+  --muted: #6b6355;
+  --text: #2c2a22;
+  --bright: #0a0a08;
+  --accent: #b8965a;
+  /* Light theme: --accent stays gold for the brand colon.
+     --accent-strong drops two stops so primary CTAs hold contrast on cream.
+     --accent-bright deepens for small marks against light surfaces. */
+  --accent-bright: #8a6a36;
+  --accent-strong: #6e5326;
+  /* Light theme CTA flips to ink — see :root note. Hover blooms to gold so
+     the gesture still feels like the brand committing weight. */
+  --cta-bg: var(--bright);
+  --cta-fg: var(--bg);
+  --cta-border: var(--bright);
+  --cta-bg-hover: var(--accent);
+  --cta-fg-hover: var(--bright);
+  --cta-border-hover: var(--accent);
+  --flash-bg: #f0ebe2;
+  --flash-warm: #e2ddd4;
+  --nav-bg: rgba(250, 248, 242, 0.92);
+  --alarm: #9a3a26;
+  --error: var(--alarm);
+}

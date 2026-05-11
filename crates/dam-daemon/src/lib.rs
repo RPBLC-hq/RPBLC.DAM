@@ -131,6 +131,8 @@ pub struct DaemonState {
     pub transparent_ai_interception_readiness: Vec<dam_intercept::RouteTlsInterceptionReadiness>,
     #[serde(default = "default_protection_enabled")]
     pub protection_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protection_started_at_unix: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +144,19 @@ pub enum DaemonStatus {
 
 fn default_protection_enabled() -> bool {
     true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProtectionState {
+    pub enabled: bool,
+    pub changed_at_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct ProtectionControlFile {
+    enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    changed_at_unix: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,6 +318,9 @@ pub fn parse_proxy_options(args: impl IntoIterator<Item = String>) -> Result<Pro
                     .get_or_insert_with(Vec::new)
                     .push(app_id.to_string());
             }
+            "--no-traffic-apps" => {
+                options.traffic_app_ids = Some(Vec::new());
+            }
             "--db" => {
                 i += 1;
                 options.vault_path = PathBuf::from(required_value(&args, i, "--db")?);
@@ -357,8 +375,12 @@ pub fn proxy_options_to_args(options: &ProxyOptions) -> Vec<String> {
         args.extend(["--upstream".to_string(), options.upstream.clone()]);
     }
     if let Some(app_ids) = &options.traffic_app_ids {
-        for app_id in app_ids {
-            args.extend(["--traffic-app".to_string(), app_id.clone()]);
+        if app_ids.is_empty() {
+            args.push("--no-traffic-apps".to_string());
+        } else {
+            for app_id in app_ids {
+                args.extend(["--traffic-app".to_string(), app_id.clone()]);
+            }
         }
     }
     args.extend(["--db".to_string(), options.vault_path.display().to_string()]);
@@ -593,10 +615,17 @@ pub fn protection_control_path() -> Result<PathBuf, DaemonError> {
 }
 
 pub fn protection_enabled() -> Result<bool, DaemonError> {
+    protection_state().map(|state| state.enabled)
+}
+
+pub fn protection_state() -> Result<ProtectionState, DaemonError> {
     let path = protection_control_path()?;
     match fs::read_to_string(&path) {
-        Ok(value) => Ok(!value.trim().eq_ignore_ascii_case("disabled")),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Ok(value) => Ok(parse_protection_state(&value)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(ProtectionState {
+            enabled: true,
+            changed_at_unix: None,
+        }),
         Err(source) => Err(DaemonError::ReadState { path, source }),
     }
 }
@@ -608,17 +637,59 @@ pub fn set_protection_enabled(enabled: bool) -> Result<(), DaemonError> {
         source,
     })?;
     let protection_path = paths.state_dir.join(PROTECTION_FILE);
-    let value = if enabled { "enabled\n" } else { "disabled\n" };
+    let now = unix_timestamp()?;
+    let previous = match fs::read_to_string(&protection_path) {
+        Ok(value) => Some(parse_protection_state(&value)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => None,
+        Err(source) => {
+            return Err(DaemonError::ReadState {
+                path: protection_path,
+                source,
+            });
+        }
+    };
+    let changed_at_unix = previous
+        .filter(|state| state.enabled == enabled)
+        .and_then(|state| state.changed_at_unix)
+        .or(Some(now));
+    let control = ProtectionControlFile {
+        enabled,
+        changed_at_unix,
+    };
+    let value = serde_json::to_string_pretty(&control)
+        .map_err(DaemonError::SerializeState)
+        .map(|raw| format!("{raw}\n"))?;
     atomic_write(&protection_path, value.as_bytes()).map_err(|source| DaemonError::WriteState {
-        path: protection_path,
+        path: protection_path.clone(),
         source,
     })?;
 
     if let Some(mut state) = read_state_from(&paths.state_file)? {
         state.protection_enabled = enabled;
+        state.protection_started_at_unix = if enabled { changed_at_unix } else { None };
         write_state_to(&paths.state_file, &state)?;
     }
     Ok(())
+}
+
+fn parse_protection_state(raw: &str) -> ProtectionState {
+    if let Ok(control) = serde_json::from_str::<ProtectionControlFile>(raw) {
+        return ProtectionState {
+            enabled: control.enabled,
+            changed_at_unix: control.changed_at_unix,
+        };
+    }
+
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "disabled" => ProtectionState {
+            enabled: false,
+            changed_at_unix: None,
+        },
+        _ => ProtectionState {
+            enabled: true,
+            changed_at_unix: None,
+        },
+    }
 }
 
 pub fn remove_state() -> Result<(), DaemonError> {
@@ -887,6 +958,12 @@ fn state_from_config(
     );
     let (executable_path, executable_sha256) = current_executable_identity();
 
+    let protection = protection_state().unwrap_or(ProtectionState {
+        enabled: true,
+        changed_at_unix: None,
+    });
+    let started_at_unix = unix_timestamp()?;
+
     Ok(DaemonState {
         version: STATE_VERSION,
         pid: std::process::id(),
@@ -916,14 +993,19 @@ fn state_from_config(
             .iter()
             .map(DaemonProxyTargetState::from)
             .collect(),
-        started_at_unix: unix_timestamp()?,
+        started_at_unix,
         network_mode,
         transparent_ai_routes,
         transparent_ai_routing_readiness,
         trust,
         transparent_ai_trust_readiness,
         transparent_ai_interception_readiness,
-        protection_enabled: protection_enabled().unwrap_or(true),
+        protection_enabled: protection.enabled,
+        protection_started_at_unix: if protection.enabled {
+            protection.changed_at_unix.or(Some(started_at_unix))
+        } else {
+            None
+        },
     })
 }
 
@@ -993,18 +1075,7 @@ fn transparent_interception_config(
 }
 
 fn configured_ai_routes(config: &dam_config::DamConfig) -> Vec<dam_net::AiRoute> {
-    let profile = config.traffic.effective_profile();
-    dam_net::ai_routes_with_profile_and_overlays(
-        &profile,
-        config.network.ai_routes.iter().map(|route| {
-            dam_net::AiRoute::custom(
-                &route.host,
-                route.provider.clone(),
-                route.target_name.clone(),
-                route.upstream.clone(),
-            )
-        }),
-    )
+    dam_net::ai_routes_from_profile(&config.traffic.effective_profile())
 }
 
 fn extend_trust_scope(trust: &mut dam_trust::TrustState, routes: &[dam_net::AiRoute]) {
@@ -1111,6 +1182,21 @@ mod tests {
     }
 
     #[test]
+    fn proxy_options_round_trip_explicit_empty_traffic_apps() {
+        let options = ProxyOptions {
+            traffic_app_ids: Some(Vec::new()),
+            ..ProxyOptions::default()
+        };
+        let args = proxy_options_to_args(&options);
+
+        assert!(args.contains(&"--no-traffic-apps".to_string()));
+        assert_eq!(
+            parse_proxy_options(args).unwrap().traffic_app_ids,
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
     fn parses_network_mode_option() {
         let options =
             parse_proxy_options(["--network-mode".to_string(), "system-proxy".to_string()])
@@ -1193,21 +1279,34 @@ mod tests {
     }
 
     #[test]
-    fn configured_ai_routes_include_default_and_config_routes() {
+    fn configured_ai_routes_follow_custom_traffic_profile() {
         let mut config = dam_config::DamConfig::default();
-        config.network.ai_routes.push(dam_config::AiRouteConfig {
-            host: "https://api.enterprise-ai.example/v1".to_string(),
-            provider: "openai-compatible".to_string(),
-            target_name: "enterprise-ai".to_string(),
-            upstream: "https://api.enterprise-ai.example".to_string(),
-        });
+        config.traffic.profile = dam_net::traffic_profile_from_json_str(
+            r#"
+            {
+              "version": 1,
+              "default_action": "bypass",
+              "apps": [
+                {
+                  "id": "enterprise-ai",
+                  "match": {"domains": ["api.enterprise-ai.example"], "ports": [443]},
+                  "action": "inspect",
+                  "adapter": "http",
+                  "provider": "openai-compatible",
+                  "target_name": "enterprise-ai",
+                  "upstream": "https://api.enterprise-ai.example"
+                }
+              ]
+            }
+            "#,
+        )
+        .unwrap();
 
         let routes = configured_ai_routes(&config);
 
-        assert_eq!(routes.len(), 5);
-        assert!(routes.iter().any(|route| {
-            route.host == "api.enterprise-ai.example" && route.target_name == "enterprise-ai"
-        }));
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].host, "api.enterprise-ai.example");
+        assert_eq!(routes[0].target_name, "enterprise-ai");
     }
 
     #[test]
@@ -1241,6 +1340,38 @@ mod tests {
         let paths = state_paths_from_env(None, Some(PathBuf::from("/home/example"))).unwrap();
 
         assert_eq!(paths.state_dir, PathBuf::from("/home/example/.dam"));
+    }
+
+    #[test]
+    fn protection_state_parses_legacy_and_timestamped_control_files() {
+        assert_eq!(
+            parse_protection_state("disabled\n"),
+            ProtectionState {
+                enabled: false,
+                changed_at_unix: None,
+            }
+        );
+        assert_eq!(
+            parse_protection_state("enabled\n"),
+            ProtectionState {
+                enabled: true,
+                changed_at_unix: None,
+            }
+        );
+        assert_eq!(
+            parse_protection_state(r#"{"enabled":true,"changed_at_unix":42}"#),
+            ProtectionState {
+                enabled: true,
+                changed_at_unix: Some(42),
+            }
+        );
+        assert_eq!(
+            parse_protection_state(r#"{"enabled":false,"changed_at_unix":84}"#),
+            ProtectionState {
+                enabled: false,
+                changed_at_unix: Some(84),
+            }
+        );
     }
 
     #[test]
@@ -1290,6 +1421,7 @@ mod tests {
                 dam_intercept::TlsInterceptionAdapter::unavailable(),
             ),
             protection_enabled: true,
+            protection_started_at_unix: Some(42),
         };
 
         write_state_to(&path, &state).unwrap();

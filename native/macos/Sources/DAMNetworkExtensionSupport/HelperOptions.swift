@@ -34,6 +34,7 @@ public enum DAMHelperArgumentError: Error, CustomStringConvertible, Equatable {
     case missingValue(String)
     case missingBundleIdentifier
     case invalidProxyPort(String)
+    case invalidRoutingFailurePolicy(String)
     case unknownArgument(String)
 
     public var description: String {
@@ -48,6 +49,8 @@ public enum DAMHelperArgumentError: Error, CustomStringConvertible, Equatable {
             return "missing required --bundle-id"
         case .invalidProxyPort(let value):
             return "invalid --proxy-port value: \(value)"
+        case .invalidRoutingFailurePolicy(let value):
+            return "invalid --routing-failure-policy value: \(value)"
         case .unknownArgument(let value):
             return "unknown argument: \(value)"
         }
@@ -68,7 +71,9 @@ public func parseHelperOptions(_ arguments: [String]) throws -> DAMHelperOptions
     var proxyHost = DAMProxyRuntimeConfiguration.defaultProxyHost
     var proxyPort = DAMProxyRuntimeConfiguration.defaultProxyPort
     var protectedHosts: [String] = []
+    var usesDefaultProtectedHosts = true
     var excludedSigningIdentifiers: [String] = []
+    var routingFailurePolicy = DAMRoutingFailurePolicy.defaultPolicy
 
     var index = arguments.index(after: arguments.startIndex)
     while index < arguments.endIndex {
@@ -100,9 +105,19 @@ public func parseHelperOptions(_ arguments: [String]) throws -> DAMHelperOptions
             }
             proxyPort = port
         case "--protect-host":
+            usesDefaultProtectedHosts = false
             protectedHosts.append(try nextValue())
+        case "--no-protected-hosts":
+            usesDefaultProtectedHosts = false
+            protectedHosts.removeAll()
         case "--exclude-signing-id":
             excludedSigningIdentifiers.append(try nextValue())
+        case "--routing-failure-policy":
+            let raw = try nextValue()
+            guard let policy = DAMRoutingFailurePolicy(rawValue: raw) else {
+                throw DAMHelperArgumentError.invalidRoutingFailurePolicy(raw)
+            }
+            routingFailurePolicy = policy
         default:
             throw DAMHelperArgumentError.unknownArgument(flag)
         }
@@ -115,8 +130,9 @@ public func parseHelperOptions(_ arguments: [String]) throws -> DAMHelperOptions
     let runtimeConfiguration = DAMProxyRuntimeConfiguration(
         proxyHost: proxyHost,
         proxyPort: proxyPort,
-        protectedHosts: protectedHosts.isEmpty ? DAMProxyRuntimeConfiguration.defaultProtectedHosts : protectedHosts,
-        excludedSigningIdentifiers: excludedSigningIdentifiers.isEmpty ? DAMProxyRuntimeConfiguration.defaultExcludedSigningIdentifiers : excludedSigningIdentifiers
+        protectedHosts: usesDefaultProtectedHosts ? DAMProxyRuntimeConfiguration.defaultProtectedHosts : protectedHosts,
+        excludedSigningIdentifiers: excludedSigningIdentifiers.isEmpty ? DAMProxyRuntimeConfiguration.defaultExcludedSigningIdentifiers : excludedSigningIdentifiers,
+        routingFailurePolicy: routingFailurePolicy
     )
 
     return DAMHelperOptions(

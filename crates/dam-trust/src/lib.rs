@@ -1350,12 +1350,12 @@ mod tests {
 
     #[test]
     fn configured_ai_route_readiness_uses_route_host_scope() {
-        let routes = dam_net::ai_routes_with_overlays([dam_net::AiRoute::custom(
+        let routes = vec![dam_net::AiRoute::custom(
             "api.enterprise-ai.example",
             dam_net::OPENAI_COMPATIBLE_PROVIDER,
             "enterprise-ai",
             "https://api.enterprise-ai.example",
-        )]);
+        )];
         let trust = TrustState {
             mode: TrustMode::LocalCa,
             allowed_hosts: routes.iter().map(|route| route.host.clone()).collect(),

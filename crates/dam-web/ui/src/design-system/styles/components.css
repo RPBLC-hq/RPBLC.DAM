@@ -1,0 +1,2712 @@
+/* ════════════════════════════════════════════════════════════════
+   RPBLC.Design — Component styles
+   Every value comes from a token in tokens.css. Brand marks scale
+   via wrapper font-size (em-driven internals). Per ADR-007, marks
+   compose rather than reimplement.
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── Brand: BracketMark ── */
+.rpblc-bracket-mark {
+  display: inline-flex;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-weight: var(--fw-bold);
+  line-height: 1;
+  letter-spacing: 0;
+  font-size: 1em;
+}
+.rpblc-bracket-mark__bracket { color: var(--soft); }
+.rpblc-bracket-mark__letter { color: var(--bright); }
+.rpblc-bracket-mark__colon {
+  color: var(--accent);
+  /* Slight optical weight for the colon — the brand's only chromatic moment.
+     Kept as a font-weight bump so it scales with the wrapper. */
+  font-weight: var(--fw-extrabold);
+}
+/* Optical correction: at favicon scale the colon dots collapse into the
+   letterform. Marks tagged --sm (or sized via the prop) bump to a brighter
+   gold so the dot survives. Apply by setting data-rpblc-mark-size="sm" or
+   class .rpblc-bracket-mark--sm. */
+.rpblc-bracket-mark--sm .rpblc-bracket-mark__colon,
+.rpblc-bracket-mark[data-rpblc-mark-size='sm'] .rpblc-bracket-mark__colon {
+  color: var(--accent-bright);
+}
+
+/* ── Brand: Colon — the naked brand punctuation ──
+   The single chromatic atom of the system. Used inline in headlines and
+   labels as the ":" between words. Always gold; weight matches mono bold. */
+.rpblc-colon {
+  font-family: var(--font-mono);
+  font-weight: var(--fw-extrabold);
+  color: var(--accent);
+  font-size: 1em;
+  line-height: 1;
+  display: inline-block;
+  padding: 0 0.18em;
+}
+.rpblc-colon--bright { color: var(--accent-bright); }
+
+/* ── Brand: Wordmark ── */
+.rpblc-wordmark {
+  display: inline-flex;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-weight: var(--fw-bold);
+  line-height: 1;
+  letter-spacing: 0.0625em; /* ≈ 1px @ 16px */
+  font-size: 1em;
+}
+.rpblc-wordmark__bracket { color: var(--soft); }
+.rpblc-wordmark__letter { color: var(--bright); }
+.rpblc-wordmark__colon {
+  color: var(--accent);
+  font-weight: var(--fw-extrabold);
+}
+.rpblc-wordmark--sm .rpblc-wordmark__colon {
+  color: var(--accent-bright);
+}
+
+/* ── Brand: WordmarkInteractive (hover-scan effect) ── */
+.rpblc-wordmark--interactive {
+  text-decoration: none;
+  cursor: pointer;
+}
+.rpblc-wordmark--interactive .rpblc-wordmark__bracket,
+.rpblc-wordmark--interactive .rpblc-wordmark__letter,
+.rpblc-wordmark--interactive .rpblc-wordmark__colon {
+  transition: color var(--dur-fast) var(--ease-base);
+}
+/* Hover the whole mark → dim every glyph to bg color */
+.rpblc-wordmark--interactive:hover .rpblc-wordmark__bracket,
+.rpblc-wordmark--interactive:hover .rpblc-wordmark__letter,
+.rpblc-wordmark--interactive:hover .rpblc-wordmark__colon {
+  color: var(--bg);
+}
+/* Hover an individual glyph → re-brighten */
+.rpblc-wordmark--interactive .rpblc-wordmark__letter:hover,
+.rpblc-wordmark--interactive .rpblc-wordmark__bracket:hover {
+  color: var(--bright) !important;
+}
+.rpblc-wordmark--interactive .rpblc-wordmark__colon:hover {
+  color: var(--accent) !important;
+}
+.rpblc-wordmark--interactive:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0.15em;
+}
+
+/* ── Brand: VaultFrame ── */
+.rpblc-vault-frame {
+  display: inline-block;
+  border: 0.125em solid var(--bright); /* ≈ 2px @ 16px */
+  padding: 0.5em;
+  font-family: var(--font-mono);
+  font-size: 1em;
+  line-height: 1;
+}
+.rpblc-vault-frame__inner {
+  border: 0.125em solid var(--bright);
+  /* Optical correction: caps-only content sits visually high in a
+     symmetric padded box. Slight bias toward more top padding to
+     re-center the cap row. */
+  padding: 1.3em 1.25em 1.2em;
+}
+.rpblc-vault-frame--single {
+  padding: 1.04em 2.25em 0.96em;
+}
+
+/* ── Brand: VaultMark ── */
+.rpblc-vault-mark {
+  font-family: var(--font-sans);
+  font-weight: var(--fw-extrabold);
+}
+.rpblc-vault-mark__text {
+  font-size: 1em;
+  color: var(--bright);
+  display: inline-block;
+}
+
+/* ── Brand: RedactionBars ── */
+.rpblc-redaction-bars {
+  display: inline-flex;
+  align-items: baseline;
+  font-family: var(--font-sans);
+  font-weight: var(--fw-extrabold);
+  font-size: 1em;
+  letter-spacing: 0.0625em;
+  color: var(--bright);
+}
+.rpblc-redaction-bars__group {
+  display: inline-flex;
+  align-items: baseline;
+}
+.rpblc-redaction-bars__letter {
+  display: inline-block;
+}
+.rpblc-redaction-bars__bar {
+  display: inline-block;
+  width: 0.45em;
+  height: 0.075em;
+  background: var(--soft);
+  vertical-align: middle;
+  margin: 0 0.0625em;
+  position: relative;
+  top: -0.05em;
+  align-self: center;
+}
+
+/* ── Brand: RedactionLoader ──
+   Brand-as-interaction. The product mechanic (redaction) IS the loading
+   primitive. Pulsing bars resolve into content as data arrives; static
+   bars indicate a permanent seal (permission denied, vault locked).
+   See brand/redaction.md, ADR-008. */
+.rpblc-redaction-loader {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4em;
+  font-family: var(--font-sans);
+  line-height: 1;
+}
+.rpblc-redaction-loader--revealed { display: inline; }
+.rpblc-redaction-loader__bars {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  width: 100%;
+}
+.rpblc-redaction-loader__bar {
+  flex: 1;
+  display: inline-block;
+  background: var(--soft);
+  min-width: 0.5em;
+  border-radius: 0;
+}
+.rpblc-redaction-loader__bar:nth-child(1) { flex: 1.6; }
+.rpblc-redaction-loader__bar:nth-child(2) { flex: 1; }
+.rpblc-redaction-loader__bar:nth-child(3) { flex: 2.2; }
+.rpblc-redaction-loader__bar:nth-child(4) { flex: 0.7; }
+.rpblc-redaction-loader__bar:nth-child(5) { flex: 1.4; }
+.rpblc-redaction-loader__bar:nth-child(n+6) { flex: 1.2; }
+.rpblc-redaction-loader__caption {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Pulsing — data is inbound. The accent gold sweeps across the bars,
+   echoing the colon — the brand's pulse, applied. */
+@keyframes rpblc-redaction-pulse {
+  0%, 100% { background: var(--soft); }
+  50%      { background: var(--accent); }
+}
+.rpblc-redaction-loader--pulsing .rpblc-redaction-loader__bar {
+  animation: rpblc-redaction-pulse 1.6s var(--ease-out-expo) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rpblc-redaction-loader--pulsing .rpblc-redaction-loader__bar {
+    animation: none;
+    background: var(--soft);
+  }
+}
+.rpblc-redaction-loader--static .rpblc-redaction-loader__bar {
+  background: var(--soft);
+}
+
+/* ── Brand: FooterIcon ── */
+.rpblc-footer-icon {
+  width: 1em;
+  height: 1em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Shared stroke with BracketMark/VaultFrame so framed brand surfaces
+     read as drawn by one hand. */
+  border: var(--stroke-brand) solid var(--bright);
+  font-family: var(--font-mono);
+  font-size: 1em;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* ── Brand: CornerBracket ── */
+.rpblc-corner-bracket {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  position: relative;
+  --rpblc-corner-thickness: 0.0625em; /* ≈ 1px @ 16px */
+}
+.rpblc-corner-bracket::before,
+.rpblc-corner-bracket::after {
+  content: '';
+  position: absolute;
+  background: var(--rpblc-corner-color, var(--soft));
+}
+.rpblc-corner-bracket::before {
+  width: 1em;
+  height: var(--rpblc-corner-thickness);
+}
+.rpblc-corner-bracket::after {
+  height: 1em;
+  width: var(--rpblc-corner-thickness);
+}
+.rpblc-corner-bracket--tl::before { top: 0; left: 0; }
+.rpblc-corner-bracket--tl::after  { top: 0; left: 0; }
+.rpblc-corner-bracket--tr::before { top: 0; right: 0; }
+.rpblc-corner-bracket--tr::after  { top: 0; right: 0; }
+.rpblc-corner-bracket--bl::before { bottom: 0; left: 0; }
+.rpblc-corner-bracket--bl::after  { bottom: 0; left: 0; }
+.rpblc-corner-bracket--br::before { bottom: 0; right: 0; }
+.rpblc-corner-bracket--br::after  { bottom: 0; right: 0; }
+
+/* ════════════════════════════════════════════════════════════════
+   UI components
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── Button ── */
+.rpblc-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-weight: var(--fw-medium);
+  border-radius: var(--radius-0);
+  border: var(--border-1) solid transparent;
+  cursor: pointer;
+  text-decoration: none;
+  background: transparent;
+  color: var(--bright);
+  transition: color var(--dur-fast) var(--ease-base),
+    background var(--dur-fast) var(--ease-base),
+    border-color var(--dur-fast) var(--ease-base),
+    transform var(--dur-fast) var(--ease-base);
+}
+.rpblc-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.rpblc-button:active { transform: scale(0.98); }
+.rpblc-button:disabled,
+.rpblc-button[aria-disabled='true'] {
+  /* Disabled is softer on a hairline frame, not a faded fill. Reads as
+     "not yet" rather than "broken brand color". */
+  background: transparent !important;
+  color: var(--muted) !important;
+  border-color: var(--line) !important;
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+/* sizes */
+.rpblc-button--sm { padding: var(--space-2) var(--space-3); font-size: 13px; min-height: 32px; }
+.rpblc-button--md { padding: var(--space-3) var(--space-4); font-size: 15px; min-height: 44px; }
+.rpblc-button--lg { padding: var(--space-4) var(--space-5); font-size: 16px; min-height: 52px; }
+
+/* variants */
+.rpblc-button--primary {
+  /* CTA tokens flip per theme — gold in dark, ink in light, gold on hover.
+     See tokens.css and ADR-010. */
+  background: var(--cta-bg);
+  color: var(--cta-fg);
+  border-color: var(--cta-border);
+}
+.rpblc-button--primary:hover {
+  background: var(--cta-bg-hover);
+  color: var(--cta-fg-hover);
+  border-color: var(--cta-border-hover);
+}
+.rpblc-button--secondary {
+  border-color: var(--soft);
+  color: var(--bright);
+  /* Match the BracketMark stroke so framed surfaces feel drawn by one hand. */
+  border-width: var(--stroke-brand-px);
+}
+.rpblc-button--secondary:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.rpblc-button--ghost {
+  border-color: transparent;
+  color: var(--muted);
+}
+.rpblc-button--ghost:hover {
+  color: var(--bright);
+}
+.rpblc-button--danger {
+  /* Alarm tones the only chromatic outsider in the palette. The variant
+     mirrors secondary's hairline shape so a destructive action never
+     competes with the CTA, but on hover the fill commits — alarm bg and
+     bg-fg — to make the click feel weighty. Always pair with a product-
+     layer confirmation; danger is never the default primary action. */
+  border-color: var(--alarm);
+  color: var(--alarm);
+  border-width: var(--stroke-brand-px);
+}
+.rpblc-button--danger:hover {
+  background: var(--alarm);
+  color: var(--bg);
+  border-color: var(--alarm);
+}
+
+/* Bracketed mode — wraps the label in `[ … ]`. The brackets become
+   flex items so they vertically center against a wrapped multi-line
+   label, and the inner __text span is the only flex child that can
+   shrink and wrap. The bracket color tracks the variant. */
+.rpblc-button--bracketed { gap: 0.4em; line-height: 1.35; }
+.rpblc-button--bracketed::before,
+.rpblc-button--bracketed::after {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-weight: var(--fw-bold);
+}
+.rpblc-button--bracketed::before { content: '['; }
+.rpblc-button--bracketed::after  { content: ']'; }
+.rpblc-button__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+.rpblc-button--primary.rpblc-button--bracketed::before,
+.rpblc-button--primary.rpblc-button--bracketed::after { color: var(--cta-fg); }
+.rpblc-button--primary.rpblc-button--bracketed:hover::before,
+.rpblc-button--primary.rpblc-button--bracketed:hover::after { color: var(--cta-fg-hover); }
+.rpblc-button--danger.rpblc-button--bracketed::before,
+.rpblc-button--danger.rpblc-button--bracketed::after { color: var(--alarm); }
+.rpblc-button--danger.rpblc-button--bracketed:hover::before,
+.rpblc-button--danger.rpblc-button--bracketed:hover::after { color: var(--bg); }
+.rpblc-button--ghost.rpblc-button--bracketed::before,
+.rpblc-button--ghost.rpblc-button--bracketed::after { color: var(--muted); }
+.rpblc-button--ghost.rpblc-button--bracketed:hover::before,
+.rpblc-button--ghost.rpblc-button--bracketed:hover::after { color: var(--bright); }
+
+/* CycleButton — compact cyclic single-select.
+   The visual contract: hairline frame; label in --muted, current value in
+   --bright as the hero. Hover lifts the border to --accent and the label to
+   --accent; the value stays --bright so it remains the legible hero. The
+   chevron cycles forward — paired with SortHeader chevrons so the same
+   gesture reads the same way across surfaces. */
+.rpblc-cycle-button {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: fit-content;
+  border: var(--stroke-brand-px) solid var(--line);
+  border-radius: var(--radius-0);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-weight: var(--fw-bold);
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-base),
+    background var(--dur-fast) var(--ease-base),
+    border-color var(--dur-fast) var(--ease-base);
+}
+.rpblc-cycle-button--sm {
+  min-height: 34px;
+  padding: 0 var(--space-3);
+  font-size: 11px;
+}
+.rpblc-cycle-button--md {
+  min-height: 42px;
+  padding: 0 var(--space-4);
+  font-size: 12px;
+}
+.rpblc-cycle-button__value {
+  color: var(--bright);
+  font-size: 1.08em;
+  letter-spacing: 0;
+}
+.rpblc-cycle-button__mark {
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  margin-left: 2px;
+}
+.rpblc-cycle-button:hover {
+  border-color: var(--accent);
+  background: transparent;
+  color: var(--accent);
+}
+.rpblc-cycle-button:hover .rpblc-cycle-button__value {
+  /* Value stays --bright so the hero data point does not flash on hover —
+     hover signals intent, not selection change. */
+  color: var(--bright);
+}
+.rpblc-cycle-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* SortHeader — column-header sort control.
+   Shares the brand language with CycleButton: mono uppercase label, paired
+   chevron marks, accent on hover. Lives inside <th>; consumers can render
+   either an active asc/desc state or a neutral state. */
+.rpblc-sort-header {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.rpblc-sort-header__label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--accent);
+}
+.rpblc-sort-header__buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+.rpblc-sort-header__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: var(--border-1) solid var(--line);
+  border-right-width: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease-base),
+    background var(--dur-fast) var(--ease-base),
+    border-color var(--dur-fast) var(--ease-base);
+}
+.rpblc-sort-header__button:last-child {
+  border-right-width: var(--border-1);
+}
+.rpblc-sort-header__button:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.rpblc-sort-header__button--active {
+  background: var(--bright);
+  color: var(--bg);
+  border-color: var(--bright);
+}
+.rpblc-sort-header__button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.rpblc-sort-header__chevron {
+  width: 6px;
+  height: 6px;
+  border-left: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+}
+.rpblc-sort-header__chevron--asc {
+  transform: rotate(135deg);
+  margin-top: 2px;
+}
+.rpblc-sort-header__chevron--desc {
+  transform: rotate(-45deg);
+  margin-bottom: 2px;
+}
+
+/* ── Input ── */
+.rpblc-input {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.rpblc-input__label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.rpblc-input__field {
+  background: transparent;
+  border: var(--border-1) solid var(--soft);
+  color: var(--bright);
+  padding: var(--space-3) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  outline: none;
+  border-radius: var(--radius-0);
+  min-height: 44px;
+  transition: border-color var(--dur-fast) var(--ease-base),
+    box-shadow var(--dur-fast) var(--ease-base);
+}
+.rpblc-input__field::placeholder { color: var(--muted); }
+.rpblc-input__field:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(184, 150, 90, 0.15);
+}
+.rpblc-input--error .rpblc-input__field {
+  border-color: var(--error);
+}
+.rpblc-input__error {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--error);
+}
+.rpblc-input__helper {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ── Card ── */
+.rpblc-card {
+  border: var(--border-1) solid var(--line);
+  padding: var(--space-7);
+}
+.rpblc-card--panel { background: var(--panel); color: var(--text); }
+.rpblc-card--flash { background: var(--flash-bg); color: var(--bg); border-color: var(--flash-bg); }
+.rpblc-card--warm  { background: var(--flash-warm); color: var(--bg); border-color: var(--flash-warm); }
+
+/* ── Section ── */
+.rpblc-section {
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+  scroll-margin-top: 60px;
+}
+.rpblc-section--comfortable {
+  padding: var(--space-9) var(--space-7);
+}
+/* Compact density — product settings surfaces.
+   Padding rule: header sits a full --space-6 from the border, body keeps the
+   same gap below. Section title becomes a mono uppercase eyebrow-style label
+   so it does not crowd the panel edge with display weight. Mobile shrinks
+   one step so the panel still breathes on a phone without wasting height. */
+.rpblc-section--compact {
+  padding: var(--space-6);
+}
+.rpblc-section__header {
+  margin-bottom: var(--space-6);
+}
+.rpblc-section--compact .rpblc-section__header {
+  margin-bottom: var(--space-5);
+}
+.rpblc-section__eyebrow {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: var(--space-3);
+}
+.rpblc-section--compact .rpblc-section__eyebrow {
+  font-size: 11px;
+  letter-spacing: 1.4px;
+  margin-bottom: var(--space-2);
+}
+.rpblc-section__title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-weight: var(--fw-bold);
+  font-size: 28px;
+  color: var(--bright);
+  line-height: 1.15;
+}
+.rpblc-section--compact .rpblc-section__title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.rpblc-section__body {
+  color: var(--text);
+}
+@media (max-width: 640px) {
+  .rpblc-section--compact {
+    padding: var(--space-5) var(--space-4);
+  }
+}
+
+/* ── Stat ── */
+.rpblc-stat {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.rpblc-stat__value {
+  font-family: var(--font-mono);
+  font-size: 48px;
+  color: var(--bright);
+  line-height: 1;
+  margin: 0;
+}
+.rpblc-stat__label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1.4;
+}
+.rpblc-stat__source {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--soft);
+  letter-spacing: 0.5px;
+  margin-top: var(--space-2);
+}
+
+/* ── Footer ── */
+.rpblc-footer {
+  border-top: var(--border-1) solid var(--line-dark);
+  background: var(--bg);
+  padding: var(--space-5) var(--space-4);
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  align-items: center;
+  gap: var(--space-4);
+}
+.rpblc-footer__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.rpblc-footer__name {
+  font-family: var(--font-sans);
+  font-size: 20px;
+  color: var(--bright);
+  letter-spacing: 2px;
+}
+.rpblc-footer__tagline {
+  /* The thesis line. Treated as a stamp, not a subtitle. ADR-009. */
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  color: var(--text);
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+}
+.rpblc-footer__copy {
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+.rpblc-footer__links {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  justify-self: end;
+}
+.rpblc-footer__link {
+  color: var(--soft);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  transition: color var(--dur-fast) var(--ease-base);
+}
+.rpblc-footer__link:hover { color: var(--bright); }
+
+@media (max-width: 640px) {
+  .rpblc-footer {
+    grid-template-columns: 1fr;
+    text-align: center;
+  }
+  .rpblc-footer__brand,
+  .rpblc-footer__links { justify-self: center; }
+}
+
+/* ── Toggle (cyber-art-deco rectangular switch) ── */
+.rpblc-toggle {
+  display: inline-flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-family: var(--font-sans);
+}
+.rpblc-toggle__row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.rpblc-toggle__track {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  background: transparent;
+  border: var(--border-1) solid var(--soft);
+  border-radius: var(--radius-0);
+  cursor: pointer;
+  padding: 0;
+  transition: background var(--dur-fast) var(--ease-base),
+    border-color var(--dur-fast) var(--ease-base);
+}
+.rpblc-toggle__track:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.rpblc-toggle__knob {
+  position: absolute;
+  top: 50%;
+  background: var(--soft);
+  border-radius: var(--radius-0);
+  transition: transform var(--dur-fast) var(--ease-base),
+    background var(--dur-fast) var(--ease-base);
+}
+/* on state */
+.rpblc-toggle__track--on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.rpblc-toggle__track--on .rpblc-toggle__knob {
+  background: var(--bg);
+}
+
+/* sizes */
+.rpblc-toggle--sm .rpblc-toggle__track { width: 32px; height: 18px; }
+.rpblc-toggle--sm .rpblc-toggle__knob {
+  width: 10px; height: 10px;
+  left: 3px;
+  margin-top: -5px;
+}
+.rpblc-toggle--sm .rpblc-toggle__track--on .rpblc-toggle__knob {
+  transform: translateX(14px);
+}
+
+.rpblc-toggle--md .rpblc-toggle__track { width: 44px; height: 24px; }
+.rpblc-toggle--md .rpblc-toggle__knob {
+  width: 14px; height: 14px;
+  left: 4px;
+  margin-top: -7px;
+}
+.rpblc-toggle--md .rpblc-toggle__track--on .rpblc-toggle__knob {
+  transform: translateX(20px);
+}
+
+.rpblc-toggle--lg .rpblc-toggle__track { width: 56px; height: 30px; }
+.rpblc-toggle--lg .rpblc-toggle__knob {
+  width: 18px; height: 18px;
+  left: 5px;
+  margin-top: -9px;
+}
+.rpblc-toggle--lg .rpblc-toggle__track--on .rpblc-toggle__knob {
+  transform: translateX(26px);
+}
+
+.rpblc-toggle__label {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--bright);
+  cursor: pointer;
+  user-select: none;
+}
+.rpblc-toggle__helper {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: 56px; /* aligns with md track + gap */
+}
+.rpblc-toggle--sm .rpblc-toggle__helper { margin-left: 44px; }
+.rpblc-toggle--lg .rpblc-toggle__helper { margin-left: 68px; }
+
+.rpblc-toggle--disabled .rpblc-toggle__track,
+.rpblc-toggle--disabled .rpblc-toggle__label { opacity: 0.5; cursor: not-allowed; }
+
+/* ── ListView ── */
+.rpblc-listview {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.rpblc-listview--bordered {
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+}
+.rpblc-listview-item {
+  display: grid;
+  /* Min 72px on the leading column so vault keys / log ids align across
+     rows even when their text widths differ (acme vs initech). */
+  grid-template-columns: minmax(72px, max-content) 1fr auto;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: var(--border-1) solid var(--line);
+}
+.rpblc-listview-item:last-child { border-bottom: none; }
+.rpblc-listview-item__leading {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.rpblc-listview-item__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.rpblc-listview-item__title {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  color: var(--bright);
+  font-weight: var(--fw-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rpblc-listview-item__desc {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rpblc-listview-item__trailing {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* dense variant — log/terminal style */
+.rpblc-listview--dense .rpblc-listview-item {
+  padding: var(--space-2) var(--space-4);
+  gap: var(--space-3);
+}
+.rpblc-listview--dense .rpblc-listview-item__title,
+.rpblc-listview--dense .rpblc-listview-item__desc {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--fw-regular);
+  color: var(--text);
+}
+.rpblc-listview--dense .rpblc-listview-item__title { color: var(--bright); }
+
+/* interactive rows
+   Override the base grid on the li so the button can span the full row;
+   keep the same internal grid on the button itself. */
+.rpblc-listview-item--interactive {
+  display: block;
+  padding: 0;
+}
+.rpblc-listview-item--interactive .rpblc-listview-item__button {
+  display: grid;
+  grid-template-columns: minmax(72px, max-content) 1fr auto;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+  text-align: left;
+  padding: var(--space-4) var(--space-5);
+  background: transparent;
+  border: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-base);
+}
+.rpblc-listview--dense .rpblc-listview-item--interactive .rpblc-listview-item__button {
+  padding: var(--space-2) var(--space-4);
+  gap: var(--space-3);
+}
+.rpblc-listview-item--interactive .rpblc-listview-item__button:hover {
+  background: var(--bg);
+}
+.rpblc-listview-item--interactive .rpblc-listview-item__button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ── ConnectMark (DAM connect — brand identity piece) ── */
+.rpblc-connect-wrap {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.5em;
+  font-size: 1em;
+}
+.rpblc-connect-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.18em;
+  /* Optical correction: caps "[CONNECT : DAM]" sit visually high in a
+     symmetric padded box. Small top bias re-centers the glyph row. */
+  padding: 0.74em 1.3em 0.66em;
+  font-family: var(--font-mono);
+  font-weight: var(--fw-bold);
+  font-size: 1em;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  background: transparent;
+  color: var(--bright);
+  border: 0;
+  cursor: pointer;
+  text-decoration: none;
+  /* paired-line "vault" framing — outer + inner via a dual inset shadow */
+  box-shadow:
+    inset 0 0 0 0.125em var(--bright),
+    inset 0 0 0 0.18em transparent,
+    inset 0 0 0 0.305em var(--bright);
+  transition: box-shadow var(--dur-fast) var(--ease-base),
+    color var(--dur-fast) var(--ease-base);
+}
+.rpblc-connect-mark__bracket { color: var(--soft); transition: color var(--dur-fast) var(--ease-base); }
+.rpblc-connect-mark__verb    { color: var(--bright); transition: color var(--dur-fast) var(--ease-base); }
+.rpblc-connect-mark__colon   { color: var(--accent); padding: 0 0.18em; }
+.rpblc-connect-mark__target  { color: var(--bright); transition: color var(--dur-fast) var(--ease-base); }
+
+/* hover: vault lights up gold; brackets dim like a wordmark hover-scan */
+.rpblc-connect-mark:hover {
+  box-shadow:
+    inset 0 0 0 0.125em var(--accent),
+    inset 0 0 0 0.18em transparent,
+    inset 0 0 0 0.305em var(--accent);
+}
+.rpblc-connect-mark:hover .rpblc-connect-mark__bracket { color: var(--accent); }
+.rpblc-connect-mark:hover .rpblc-connect-mark__verb,
+.rpblc-connect-mark:hover .rpblc-connect-mark__target { color: var(--accent); }
+
+.rpblc-connect-mark:focus-visible {
+  outline: 0.18em solid var(--accent);
+  outline-offset: 0.25em;
+}
+.rpblc-connect-mark:active {
+  transform: translateY(1px);
+}
+.rpblc-connect-mark:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rpblc-connect-mark__caption {
+  font-family: var(--font-mono);
+  font-size: 0.32em;
+  color: var(--muted);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+/* ── Dropdown (cyber-art-deco select) ── */
+.rpblc-dropdown {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 200px;
+}
+.rpblc-dropdown__label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.rpblc-dropdown__trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-3);
+  background: transparent;
+  color: var(--bright);
+  border: var(--border-1) solid var(--soft);
+  border-radius: var(--radius-0);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-mono);
+  min-height: 44px;
+  transition: border-color var(--dur-fast) var(--ease-base),
+    box-shadow var(--dur-fast) var(--ease-base);
+}
+.rpblc-dropdown__trigger:hover { border-color: var(--accent); }
+.rpblc-dropdown__trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.rpblc-dropdown--open .rpblc-dropdown__trigger {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(184, 150, 90, 0.15);
+}
+.rpblc-dropdown--error .rpblc-dropdown__trigger { border-color: var(--error); }
+.rpblc-dropdown--disabled .rpblc-dropdown__trigger {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rpblc-dropdown__value {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 14px;
+  min-width: 0;
+  flex: 1;
+}
+.rpblc-dropdown__value-leading {
+  color: var(--accent);
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.rpblc-dropdown__value-label {
+  color: var(--bright);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rpblc-dropdown__placeholder {
+  color: var(--muted);
+}
+
+/* chevron — two stacked rules forming a tight ▾ */
+.rpblc-dropdown__chevron {
+  position: relative;
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  transition: transform var(--dur-fast) var(--ease-base);
+}
+.rpblc-dropdown__chevron::before,
+.rpblc-dropdown__chevron::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  width: 7px;
+  height: 1.5px;
+  background: var(--muted);
+}
+.rpblc-dropdown__chevron::before { left: 0; transform: rotate(45deg); transform-origin: right center; }
+.rpblc-dropdown__chevron::after  { right: 0; transform: rotate(-45deg); transform-origin: left center; }
+.rpblc-dropdown__trigger:hover .rpblc-dropdown__chevron::before,
+.rpblc-dropdown__trigger:hover .rpblc-dropdown__chevron::after,
+.rpblc-dropdown--open .rpblc-dropdown__chevron::before,
+.rpblc-dropdown--open .rpblc-dropdown__chevron::after { background: var(--accent); }
+.rpblc-dropdown--open .rpblc-dropdown__chevron { transform: rotate(180deg); }
+
+/* sizes */
+.rpblc-dropdown--sm .rpblc-dropdown__trigger { min-height: 32px; padding: var(--space-2) var(--space-3); }
+.rpblc-dropdown--sm .rpblc-dropdown__value { font-size: 13px; }
+.rpblc-dropdown--lg .rpblc-dropdown__trigger { min-height: 52px; padding: var(--space-4) var(--space-4); }
+.rpblc-dropdown--lg .rpblc-dropdown__value { font-size: 15px; }
+
+/* panel */
+.rpblc-dropdown__panel {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  z-index: 80;
+  background: var(--panel);
+  border: var(--border-1) solid var(--accent);
+  border-top: none;
+  max-height: 280px;
+  overflow-y: auto;
+  outline: none;
+}
+.rpblc-dropdown--sm .rpblc-dropdown__panel { font-size: 13px; }
+.rpblc-dropdown--lg .rpblc-dropdown__panel { font-size: 15px; }
+
+.rpblc-dropdown__item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: var(--border-1) solid var(--line);
+  cursor: pointer;
+  user-select: none;
+}
+.rpblc-dropdown__item:last-child { border-bottom: none; }
+.rpblc-dropdown__item-leading {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.rpblc-dropdown__item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.rpblc-dropdown__item-label {
+  font-family: var(--font-mono);
+  color: var(--text);
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rpblc-dropdown__item-desc {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rpblc-dropdown__item-mark {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-weight: var(--fw-bold);
+  font-size: 14px;
+}
+
+.rpblc-dropdown__item--highlight {
+  background: var(--bg);
+}
+.rpblc-dropdown__item--highlight .rpblc-dropdown__item-label { color: var(--bright); }
+
+.rpblc-dropdown__item--selected .rpblc-dropdown__item-label { color: var(--accent); }
+
+.rpblc-dropdown__item--disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.rpblc-dropdown__helper {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+.rpblc-dropdown__error {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--error);
+}
+
+/* ── Consent / CMP v1 ── */
+.rpblc-consent-state {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.08em;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-semibold);
+  line-height: 1;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.rpblc-consent-state__bracket {
+  color: var(--soft);
+}
+.rpblc-consent-state--granted {
+  color: var(--accent);
+}
+.rpblc-consent-state--pending {
+  color: var(--muted);
+}
+.rpblc-consent-state--denied,
+.rpblc-consent-state--revoked,
+.rpblc-consent-state--expired,
+.rpblc-consent-state--superseded,
+.rpblc-consent-state--sealed {
+  color: var(--secondary);
+}
+
+.rpblc-consent-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+.rpblc-consent-summary--request {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.rpblc-consent-summary div {
+  border: var(--border-1) solid var(--line);
+  padding: var(--space-3);
+  min-width: 0;
+}
+.rpblc-consent-summary dt {
+  margin: 0 0 var(--space-1);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--soft);
+}
+.rpblc-consent-summary dd {
+  margin: 0;
+  color: var(--bright);
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.rpblc-consent-data-item {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: var(--border-1) solid var(--line);
+  background: transparent;
+}
+.rpblc-consent-data-item + .rpblc-consent-data-item {
+  border-top: none;
+}
+.rpblc-consent-data-item--disabled {
+  opacity: 0.58;
+}
+.rpblc-consent-data-item__control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 0.1em;
+}
+.rpblc-consent-data-item__check-input {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  border: var(--border-1) solid var(--soft);
+  border-radius: var(--radius-0);
+  background: transparent;
+  cursor: pointer;
+}
+.rpblc-consent-data-item__check-input:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 4px var(--panel);
+}
+.rpblc-consent-data-item__check-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.rpblc-consent-data-item__check-input:disabled {
+  cursor: not-allowed;
+  border-color: var(--line);
+  background: var(--line);
+  box-shadow: inset 0 0 0 4px var(--panel);
+}
+.rpblc-consent-data-item__check-static {
+  width: 18px;
+  height: 18px;
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+}
+.rpblc-consent-data-item__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.rpblc-consent-data-item__label {
+  color: var(--bright);
+  font-size: 14px;
+  line-height: 1.35;
+}
+.rpblc-consent-data-item__description {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.rpblc-consent-data-item__meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--secondary);
+}
+
+.rpblc-consent-purpose,
+.rpblc-consent-request,
+.rpblc-consent-evidence {
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+.rpblc-consent-purpose,
+.rpblc-consent-request {
+  padding: var(--space-7);
+}
+.rpblc-consent-purpose__header,
+.rpblc-consent-request__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+.rpblc-consent-purpose__eyebrow,
+.rpblc-consent-request__label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: var(--space-2);
+}
+.rpblc-consent-purpose__title,
+.rpblc-consent-request__title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 24px;
+  font-weight: var(--fw-bold);
+  color: var(--bright);
+  line-height: 1.16;
+}
+.rpblc-consent-purpose__description,
+.rpblc-consent-request__reason p {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.55;
+}
+.rpblc-consent-purpose__description {
+  margin-bottom: var(--space-5);
+}
+.rpblc-consent-purpose__items,
+.rpblc-consent-request__items {
+  margin-top: var(--space-5);
+}
+.rpblc-consent-purpose__actions,
+.rpblc-consent-request__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-6);
+}
+.rpblc-consent-request__reason {
+  margin-bottom: var(--space-5);
+}
+
+.rpblc-consent-purpose--person,
+.rpblc-consent-request--person {
+  position: relative;
+  border: 0;
+  background: transparent;
+  padding: var(--space-6) var(--space-5) var(--space-6) var(--space-8);
+}
+.rpblc-consent-purpose--person::before,
+.rpblc-consent-request--person::before {
+  content: '';
+  position: absolute;
+  top: var(--space-6);
+  bottom: var(--space-6);
+  left: var(--space-3);
+  width: var(--border-1);
+  background: var(--accent);
+  pointer-events: none;
+}
+.rpblc-consent-purpose--person .rpblc-consent-purpose__header,
+.rpblc-consent-request--person .rpblc-consent-request__header {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+.rpblc-consent-request--person .rpblc-consent-request__title {
+  order: 1;
+  max-width: 760px;
+  font-size: 30px;
+  line-height: 1.24;
+}
+.rpblc-consent-request--person .rpblc-consent-state {
+  order: 2;
+}
+.rpblc-consent-purpose--person .rpblc-consent-purpose__title {
+  max-width: 720px;
+  font-size: 26px;
+  line-height: 1.25;
+}
+.rpblc-consent-purpose--person .rpblc-consent-purpose__description,
+.rpblc-consent-request--person .rpblc-consent-request__reason {
+  max-width: 720px;
+}
+.rpblc-consent-purpose--person .rpblc-consent-summary,
+.rpblc-consent-request--person .rpblc-consent-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-7);
+  padding: var(--space-4) 0;
+  border-top: var(--border-1) solid var(--line);
+  border-bottom: var(--border-1) solid var(--line);
+}
+.rpblc-consent-purpose--person .rpblc-consent-summary div,
+.rpblc-consent-request--person .rpblc-consent-summary div {
+  border: 0;
+  padding: 0;
+}
+.rpblc-consent-purpose--person .rpblc-consent-summary dt,
+.rpblc-consent-request--person .rpblc-consent-summary dt {
+  margin-bottom: 2px;
+}
+.rpblc-consent-purpose--person .rpblc-consent-summary dd,
+.rpblc-consent-request--person .rpblc-consent-summary dd {
+  max-width: 220px;
+}
+.rpblc-consent-purpose--person .rpblc-consent-data-item,
+.rpblc-consent-request--person .rpblc-consent-data-item {
+  padding: var(--space-4) 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  background: transparent;
+}
+.rpblc-consent-purpose--person .rpblc-consent-data-item + .rpblc-consent-data-item,
+.rpblc-consent-request--person .rpblc-consent-data-item + .rpblc-consent-data-item {
+  border-top: var(--border-1) solid var(--line);
+}
+.rpblc-consent-purpose--person .rpblc-consent-data-item__description,
+.rpblc-consent-request--person .rpblc-consent-data-item__description {
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+.rpblc-consent-purpose--person .rpblc-consent-purpose__actions,
+.rpblc-consent-request--person .rpblc-consent-request__actions {
+  padding-top: var(--space-5);
+  border-top: var(--border-1) solid var(--line);
+}
+
+.rpblc-consent-evidence {
+  padding: var(--space-5);
+}
+.rpblc-consent-evidence__title {
+  margin: 0 0 var(--space-4);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.rpblc-consent-evidence__list {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+.rpblc-consent-evidence__item {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.45fr) 1fr;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-top: var(--border-1) solid var(--line);
+}
+.rpblc-consent-evidence__item dt {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.rpblc-consent-evidence__item dd {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.rpblc-consent-matrix {
+  width: 100%;
+  overflow-x: auto;
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+}
+.rpblc-consent-matrix__row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) repeat(var(--rpblc-consent-matrix-columns, 3), minmax(132px, 1fr));
+}
+.rpblc-consent-matrix__row + .rpblc-consent-matrix__row {
+  border-top: var(--border-1) solid var(--line);
+}
+.rpblc-consent-matrix__row--head {
+  background: var(--bg);
+}
+.rpblc-consent-matrix__cell {
+  padding: var(--space-3);
+  min-width: 0;
+  border-right: var(--border-1) solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+}
+.rpblc-consent-matrix__cell:last-child {
+  border-right: none;
+}
+.rpblc-consent-matrix__row--head .rpblc-consent-matrix__cell,
+.rpblc-consent-matrix__purpose {
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bright);
+}
+
+@media (max-width: 720px) {
+  .rpblc-consent-summary,
+  .rpblc-consent-summary--request {
+    grid-template-columns: 1fr;
+  }
+  .rpblc-consent-purpose__header,
+  .rpblc-consent-request__header {
+    flex-direction: column;
+  }
+  .rpblc-consent-purpose--person,
+  .rpblc-consent-request--person {
+    padding: var(--space-5) 0 var(--space-5) var(--space-6);
+  }
+  .rpblc-consent-purpose--person::before,
+  .rpblc-consent-request--person::before {
+    left: var(--space-2);
+  }
+  .rpblc-consent-request--person .rpblc-consent-request__title {
+    font-size: 24px;
+  }
+  .rpblc-consent-purpose--person .rpblc-consent-purpose__title {
+    font-size: 22px;
+  }
+  .rpblc-consent-evidence__item {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── SegmentedControl ──
+   Compact mutually-exclusive single-select. The track is a hairline frame;
+   each option is a borderless cell separated by hairlines on the inside,
+   keeping the rectilinear "drawn by one hand" feel without piling borders.
+   Selected option fills with --bright (ink) so the affordance reads as a
+   committed mark, not an accent splash. */
+.rpblc-segmented {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, max-content);
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+  border-radius: var(--radius-0);
+  font-family: var(--font-mono);
+}
+.rpblc-segmented--full {
+  display: grid;
+  width: 100%;
+}
+.rpblc-segmented__option {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border: 0;
+  border-right: var(--border-1) solid var(--line);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0 var(--space-3);
+  transition: color var(--dur-fast) var(--ease-base),
+    background var(--dur-fast) var(--ease-base);
+}
+.rpblc-segmented__option:last-child {
+  border-right: 0;
+}
+.rpblc-segmented--sm .rpblc-segmented__option {
+  min-height: 32px;
+  font-size: 11px;
+}
+.rpblc-segmented--md .rpblc-segmented__option {
+  min-height: 38px;
+  font-size: 12px;
+}
+.rpblc-segmented__option:hover:not(:disabled):not(.rpblc-segmented__option--selected) {
+  color: var(--accent);
+  background: transparent;
+}
+.rpblc-segmented__option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.rpblc-segmented__option--selected {
+  background: var(--bright);
+  color: var(--bg);
+}
+.rpblc-segmented__option:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.rpblc-segmented__label {
+  display: inline-block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── AppIntegrationCard ──
+   Compact app-row pattern. Header reads name + state pill on a single line;
+   purpose sits below in muted body text. The action and a details disclosure
+   live on a shared bottom row, so the card stays a clean four-region surface
+   no matter how much content the consumer puts in. */
+.rpblc-app-card {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-2);
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+  padding: var(--space-4) var(--space-5);
+}
+.rpblc-app-card--selected {
+  border-color: var(--accent);
+}
+.rpblc-app-card__header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.rpblc-app-card__leading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 var(--space-2);
+  border: var(--border-1) solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.rpblc-app-card__name {
+  margin: 0;
+  min-width: 0;
+  color: var(--bright);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: var(--fw-semibold);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rpblc-app-card__state {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 var(--space-2);
+  border: var(--border-1) solid currentColor;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.rpblc-app-card__state--enabled { color: var(--accent); }
+.rpblc-app-card__state--disabled { color: var(--muted); }
+.rpblc-app-card__state--pending { color: var(--secondary); }
+.rpblc-app-card__state--attention { color: var(--alarm); }
+.rpblc-app-card__purpose {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.rpblc-app-card__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+  flex-wrap: wrap;
+}
+.rpblc-app-card__disclosure {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-base);
+}
+.rpblc-app-card__disclosure:hover { color: var(--accent); }
+.rpblc-app-card__disclosure:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.rpblc-app-card__chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  margin-bottom: 2px;
+  transition: transform var(--dur-fast) var(--ease-base);
+}
+.rpblc-app-card__chevron--open {
+  transform: rotate(225deg);
+  margin-top: 2px;
+  margin-bottom: 0;
+}
+.rpblc-app-card__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+.rpblc-app-card__details {
+  margin-top: var(--space-3);
+  padding: var(--space-3) 0 0;
+  border-top: var(--border-1) solid var(--line);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.rpblc-app-card__details dl {
+  display: grid;
+  grid-template-columns: minmax(96px, max-content) 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+.rpblc-app-card__details dt {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.rpblc-app-card__details dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .rpblc-app-card__row {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+  .rpblc-app-card__action,
+  .rpblc-app-card__action > * {
+    width: 100%;
+  }
+  .rpblc-app-card__disclosure {
+    align-self: flex-start;
+  }
+}
+
+/* ── WalletCard ──
+   The wallet row — a privacy-wallet card, not an admin row. The hero is the
+   stored value (or its redaction). Kind / state / timestamp ride along on a
+   single secondary row in --muted; the action rests right-aligned on
+   desktop, full-width below on mobile so the gesture reads like pulling a
+   card out of a wallet. Status accent (allow / hold) borrows --cta-* for
+   the active "allowed" state so the same brand-correct CTA color signals
+   commitment everywhere. */
+/* The wallet row is the data-vault list item: a grip rail, the stored
+   value as the bracketed hero, a ProtectionMark on the right, and a
+   chevron when the row opens a detail surface. The grip and the active
+   border share the same accent so "this is the active item" reads
+   without colour competition. */
+.rpblc-wallet-card {
+  display: grid;
+  grid-template-columns: 3px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-4);
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+  padding: var(--space-4);
+  min-height: 64px;
+  transition: border-color var(--dur-fast) var(--ease-base),
+    background var(--dur-fast) var(--ease-base);
+  /* Reset link/button defaults so the row reads as one surface. */
+  text-align: left;
+  text-decoration: none;
+  color: inherit;
+  font: inherit;
+  cursor: default;
+}
+button.rpblc-wallet-card,
+a.rpblc-wallet-card,
+.rpblc-wallet-card--interactive { cursor: pointer; }
+.rpblc-wallet-card--interactive:hover {
+  border-color: var(--soft);
+  background: var(--bg);
+}
+.rpblc-wallet-card--active {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+.rpblc-wallet-card--revoked .rpblc-wallet-card__value-text { color: var(--muted); }
+.rpblc-wallet-card__grip {
+  align-self: stretch;
+  background: var(--line);
+  min-height: 28px;
+  transition: background var(--dur-fast) var(--ease-base);
+}
+.rpblc-wallet-card--active .rpblc-wallet-card__grip { background: var(--accent); }
+.rpblc-wallet-card__main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.rpblc-wallet-card__kind {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.rpblc-wallet-card__value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.18em;
+  min-width: 0;
+  color: var(--bright);
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: var(--fw-semibold);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rpblc-wallet-card__value-bracket {
+  color: var(--accent);
+  font-weight: var(--fw-bold);
+  flex-shrink: 0;
+}
+.rpblc-wallet-card__value-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.rpblc-wallet-card__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.rpblc-wallet-card__meta b {
+  color: var(--bright);
+  font-weight: var(--fw-semibold);
+}
+.rpblc-wallet-card__mark {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.rpblc-wallet-card__chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-weight: var(--fw-bold);
+  color: var(--soft);
+  font-size: 18px;
+  /* line-height: 1 so the chev's bounding box matches its glyph
+     extents — without this, default 1.5 line-height inflates the box
+     to ~27px and the `›` glyph sits visually high relative to the
+     ProtectionMark next to it, even though `align-items: center` on
+     the grid mathematically centers each element's box. */
+  line-height: 1;
+  height: 18px;
+  flex-shrink: 0;
+  /* Rotates 90° in the active state so `›` reads as a downward
+     disclosure marker — a mild cue that the row is expanded. */
+  transition: transform var(--dur-fast) var(--ease-base),
+    color var(--dur-fast) var(--ease-base);
+}
+.rpblc-wallet-card--interactive:hover .rpblc-wallet-card__chev,
+.rpblc-wallet-card--active .rpblc-wallet-card__chev { color: var(--accent); }
+.rpblc-wallet-card--active .rpblc-wallet-card__chev {
+  transform: rotate(90deg);
+}
+.rpblc-wallet-card__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+@media (max-width: 640px) {
+  .rpblc-wallet-card {
+    grid-template-columns: 3px minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'grip main mark chev'
+      'grip action action action';
+    row-gap: var(--space-3);
+  }
+  .rpblc-wallet-card__grip { grid-area: grip; }
+  .rpblc-wallet-card__main { grid-area: main; }
+  .rpblc-wallet-card__mark { grid-area: mark; }
+  .rpblc-wallet-card__chev { grid-area: chev; }
+  .rpblc-wallet-card__action { grid-area: action; }
+  .rpblc-wallet-card__action,
+  .rpblc-wallet-card__action > * { width: 100%; }
+}
+
+/* ── ProtectionMark — value-state pill ─────────────────────────────
+   The data-vault counterpart to ConsentStateMark. Three states:
+   protected (gold dot, hairline border), allowed (cream/ink dot,
+   soft border), revoked (alarm dot + alarm border + alarm text).
+   The dot carries the semantic; the border and text are the same
+   bracket grammar used elsewhere. */
+.rpblc-protection-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55em;
+  padding: 0.3em 0.65em;
+  border: var(--border-1) solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-extrabold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text);
+  white-space: nowrap;
+  line-height: 1;
+}
+.rpblc-protection-mark__dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+.rpblc-protection-mark__label {
+  display: inline-block;
+}
+.rpblc-protection-mark--protected .rpblc-protection-mark__dot {
+  background: var(--accent);
+}
+.rpblc-protection-mark--allowed {
+  border-color: var(--soft);
+}
+.rpblc-protection-mark--allowed .rpblc-protection-mark__dot {
+  background: var(--bright);
+}
+.rpblc-protection-mark--revoked {
+  border-color: var(--alarm);
+  color: var(--alarm);
+}
+.rpblc-protection-mark--revoked .rpblc-protection-mark__dot {
+  background: var(--alarm);
+}
+
+/* ── SearchBar — focused list-filter affordance ───────────────────
+   Single row: leading glyph in --accent · transparent input · trailing
+   count slot. Hairline border at rest, gold border on focus-within so
+   the whole row reads as one focusable surface. */
+.rpblc-search-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-mono);
+  transition: border-color var(--dur-fast) var(--ease-base);
+}
+.rpblc-search-bar:focus-within {
+  border-color: var(--accent);
+}
+.rpblc-search-bar__icon {
+  color: var(--accent);
+  font-weight: var(--fw-bold);
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.rpblc-search-bar__input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--bright);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  padding: 0;
+}
+.rpblc-search-bar__input::placeholder { color: var(--soft); }
+/* Strip the WebKit cancel button so it doesn't fight the count slot. */
+.rpblc-search-bar__input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+.rpblc-search-bar__count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── ConsentRequestCard — compact MCP/tray request notification ─────
+   Distinct shape from the formal ConsentRequest: small, sentence-led,
+   with a pulsing left rail and a three-button decision row. The actor
+   is bracketed in mono gold; the requested value label is the bold
+   hero. Deny sits leftmost on purpose. */
+.rpblc-consent-request-card {
+  position: relative;
+  background: var(--panel);
+  border: var(--border-1) solid var(--line);
+  border-left: 3px solid var(--accent);
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  /* Container query context: the card's own width — not the viewport — drives
+     when the three-button grid collapses to a single column. */
+  container-type: inline-size;
+}
+.rpblc-consent-request-card--urgent {
+  border-left-color: var(--alarm);
+}
+.rpblc-consent-request-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-extrabold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.rpblc-consent-request-card--urgent .rpblc-consent-request-card__head { color: var(--alarm); }
+.rpblc-consent-request-card__pulse {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+}
+.rpblc-consent-request-card__pulse::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 0 currentColor;
+  animation: rpblc-consent-pulse 1.6s infinite;
+}
+@keyframes rpblc-consent-pulse {
+  0% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+  60% { box-shadow: 0 0 0 6px transparent; opacity: 0.6; }
+  100% { box-shadow: 0 0 0 0 transparent; opacity: 1; }
+}
+.rpblc-consent-request-card__count {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  letter-spacing: 0.1em;
+}
+.rpblc-consent-request-card__sentence {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--text);
+}
+.rpblc-consent-request-card__sentence em {
+  font-style: normal;
+  font-family: var(--font-mono);
+  color: var(--accent);
+  font-weight: var(--fw-semibold);
+}
+/* The actor is bracketed by the brand grammar — render it inline so the
+   sentence reads as a sentence even on screen readers. */
+.rpblc-consent-request-card__sentence em::before { content: '['; color: var(--accent); }
+.rpblc-consent-request-card__sentence em::after  { content: ']'; color: var(--accent); }
+.rpblc-consent-request-card__sentence b {
+  color: var(--bright);
+  font-weight: var(--fw-semibold);
+}
+.rpblc-consent-request-card__preview {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.rpblc-consent-request-card__purpose {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--line);
+}
+.rpblc-consent-request-card__actions {
+  display: grid;
+  /* minmax(0, 1fr) lets each column shrink below its content's intrinsic
+     min-content size, so a long bracketed label like [allow + remember]
+     wraps inside its button instead of pushing the grid wider than the
+     card's content area (which would make the third button visually
+     touch the right border). */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+.rpblc-consent-request-card__actions .rpblc-button {
+  width: 100%;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+/* Stack the three actions when the card itself is narrow — the
+   default for tray and sidebar contexts. The threshold (520px) covers
+   typical macOS tray widths (430–500px) so that the consent card in a
+   tray popover always stacks; only when the card sits on a wide
+   web surface (≥520px content area) do the three actions render in a
+   row. Stacking is the more readable default — each action gets the
+   full card width, so long bracketed labels never wrap mid-button. */
+@container (max-width: 520px) {
+  .rpblc-consent-request-card__actions { grid-template-columns: 1fr; }
+}
+/* Fallback for environments without container query support: viewport
+   breakpoint matches the same threshold so non-supporting browsers
+   still stack on tray-shaped layouts. */
+@media (max-width: 560px) {
+  .rpblc-consent-request-card__actions { grid-template-columns: 1fr; }
+}
+
+/* ── ValueDetail — no-accident detail surface for one stored value ──
+   Gold border to read as the focused decision area. The value is the
+   bracketed hero. The action region shows verbose, consequence-named
+   buttons. Confirmation is inline, replacing the action row, naming
+   the actor and the real value before commit. */
+.rpblc-value-detail {
+  background: var(--panel);
+  border: var(--border-1) solid var(--accent);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.rpblc-value-detail__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.rpblc-value-detail__kind {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: var(--fw-extrabold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.rpblc-value-detail__hero {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: var(--fw-bold);
+  color: var(--bright);
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  word-break: break-all;
+}
+.rpblc-value-detail__hero-bracket { color: var(--accent); }
+.rpblc-value-detail__meta {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+.rpblc-value-detail__meta-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: baseline;
+}
+.rpblc-value-detail__meta-row dt {
+  margin: 0;
+  color: var(--soft);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  min-width: 86px;
+}
+.rpblc-value-detail__meta-row dd {
+  margin: 0;
+  color: var(--text);
+}
+.rpblc-value-detail__meta-value--em {
+  color: var(--bright) !important;
+  font-weight: var(--fw-semibold);
+}
+.rpblc-value-detail__sharing {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.rpblc-value-detail__sharing-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: var(--border-1) solid var(--line);
+  background: var(--bg);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.rpblc-value-detail__sharing-who {
+  color: var(--bright);
+  font-weight: var(--fw-semibold);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.18em;
+}
+.rpblc-value-detail__sharing-who::before { content: '['; color: var(--accent); }
+.rpblc-value-detail__sharing-who::after  { content: ']'; color: var(--accent); }
+.rpblc-value-detail__sharing-verb {
+  color: var(--muted);
+  margin-left: var(--space-2);
+}
+.rpblc-value-detail__sharing-since {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.rpblc-value-detail__actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  border-top: var(--border-1) solid var(--line);
+  padding-top: var(--space-4);
+}
+.rpblc-value-detail__hint {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.rpblc-value-detail__hint b {
+  color: var(--bright);
+  font-weight: var(--fw-semibold);
+}
+.rpblc-value-detail__actions-row {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.rpblc-value-detail__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  border: var(--border-1) solid var(--accent);
+  background: var(--bg);
+  padding: var(--space-4);
+}
+.rpblc-value-detail__confirm-sentence {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.rpblc-value-detail__confirm-sentence b {
+  color: var(--bright);
+  font-weight: var(--fw-semibold);
+}
+.rpblc-value-detail__confirm-sentence em {
+  font-style: normal;
+  color: var(--accent);
+  font-family: var(--font-mono);
+}
+.rpblc-value-detail__confirm-row {
+  display: flex;
+  gap: var(--space-3);
+  justify-content: flex-end;
+}
+
+/* ── State tiles (EmptyTile, ErrorTile) ─────────────────────────────
+   One-sentence calm tiles for empty and error states. Same shape;
+   empty uses a dashed hairline border, error uses a solid hairline
+   border with a 2px alarm rail on the left. */
+.rpblc-state-tile {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--panel);
+}
+.rpblc-state-tile__message {
+  display: block;
+  min-width: 0;
+}
+.rpblc-state-tile__action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+.rpblc-state-tile--empty {
+  border: var(--border-1) dashed var(--line);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.rpblc-state-tile--error {
+  border: var(--border-1) solid var(--line);
+  border-left: 2px solid var(--alarm);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+/* ── PendingRequestBadge ────────────────────────────────────────────
+   Compact bracketed pill with a gold dot, count, and label. Renders
+   nothing when count is zero (handled by the component). */
+.rpblc-pending-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.25em 0.55em;
+  border: var(--border-1) solid var(--accent);
+  font-family: var(--font-mono);
+  font-weight: var(--fw-extrabold);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  white-space: nowrap;
+  line-height: 1;
+}
+.rpblc-pending-badge--sm { font-size: 9px; }
+.rpblc-pending-badge--md { font-size: 11px; }
+.rpblc-pending-badge__dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+.rpblc-pending-badge__count {
+  font-variant-numeric: tabular-nums;
+  color: var(--bright);
+}
+.rpblc-pending-badge__label { display: inline-block; }
+
+/* ── SetupChecklist ─────────────────────────────────────────────────
+   Resumable step list. Each row: number, body (label + optional reason),
+   trailing state glyph. State drives the row tint; failed adds an alarm
+   rail; current is gold. */
+.rpblc-setup-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.rpblc-setup-checklist__step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-1) solid var(--line);
+  background: var(--panel);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+.rpblc-setup-checklist__num {
+  font-weight: var(--fw-extrabold);
+  color: var(--soft);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.1em;
+  line-height: 1.4;
+}
+.rpblc-setup-checklist__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.rpblc-setup-checklist__label-row {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.rpblc-setup-checklist__label {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.4;
+}
+/* Anchor for the brand-grammar hint marker `[i]` and its instant
+   CSS-only tooltip. The body (one above) is the relative-positioned
+   container for the tooltip so it can span the row's full content
+   width — anchoring to the marker would push the tip off the right
+   edge of a narrow tray surface. */
+.rpblc-setup-checklist__body {
+  position: relative;
+}
+.rpblc-setup-checklist__hint-anchor {
+  display: inline-flex;
+  align-items: baseline;
+}
+.rpblc-setup-checklist__hint {
+  /* `[i]` info marker — bracket grammar, mono, brand-tinted. No
+     circle: round corners aren't part of RPBLC's vocabulary. The
+     brackets carry the affordance; the `i` glyph is just the verb. */
+  display: inline-flex;
+  align-items: baseline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.05em;
+  line-height: 1;
+  cursor: help;
+  transition: color var(--dur-fast) var(--ease-base);
+}
+.rpblc-setup-checklist__hint:hover,
+.rpblc-setup-checklist__hint:focus-visible,
+.rpblc-setup-checklist__hint-anchor:hover .rpblc-setup-checklist__hint {
+  color: var(--accent);
+}
+.rpblc-setup-checklist__hint:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Instant tooltip — pure CSS, no native title-delay. Hides until the
+   parent body has a hovered/focused hint marker, then fades in on
+   the next paint. The panel matches the brand's calm dark surface;
+   the bracketed marker reads as a tagged note rather than a generic
+   balloon. Anchored to the body's left/right edges so it spans the
+   row's full content width and never overflows the tray viewport. */
+.rpblc-setup-checklist__hint-tip {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  padding: var(--space-2) var(--space-3);
+  background: var(--panel);
+  border: var(--border-1) solid var(--accent);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: var(--fw-regular);
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-2px);
+  transition:
+    opacity var(--dur-fast) var(--ease-base),
+    transform var(--dur-fast) var(--ease-base),
+    visibility 0s linear var(--dur-fast);
+}
+.rpblc-setup-checklist__body:has(.rpblc-setup-checklist__hint:hover) .rpblc-setup-checklist__hint-tip,
+.rpblc-setup-checklist__body:has(.rpblc-setup-checklist__hint:focus-visible) .rpblc-setup-checklist__hint-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition:
+    opacity var(--dur-fast) var(--ease-base),
+    transform var(--dur-fast) var(--ease-base),
+    visibility 0s;
+}
+.rpblc-setup-checklist__reason {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.rpblc-setup-checklist__state {
+  font-weight: var(--fw-extrabold);
+  color: var(--soft);
+  font-size: 14px;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+.rpblc-setup-checklist__step--done {
+  color: var(--text);
+}
+.rpblc-setup-checklist__step--done .rpblc-setup-checklist__num,
+.rpblc-setup-checklist__step--done .rpblc-setup-checklist__state {
+  color: var(--bright);
+}
+.rpblc-setup-checklist__step--current {
+  border-color: var(--accent);
+}
+.rpblc-setup-checklist__step--current .rpblc-setup-checklist__num,
+.rpblc-setup-checklist__step--current .rpblc-setup-checklist__state {
+  color: var(--accent);
+}
+.rpblc-setup-checklist__step--blocked {
+  border-color: var(--soft);
+}
+.rpblc-setup-checklist__step--blocked .rpblc-setup-checklist__state {
+  color: var(--accent);
+}
+.rpblc-setup-checklist__step--failed {
+  border-color: var(--alarm);
+  border-left-width: 2px;
+}
+.rpblc-setup-checklist__step--failed .rpblc-setup-checklist__num,
+.rpblc-setup-checklist__step--failed .rpblc-setup-checklist__state,
+.rpblc-setup-checklist__step--failed .rpblc-setup-checklist__reason {
+  color: var(--alarm);
+}
+
+/* ── TrayShell ──────────────────────────────────────────────────────
+   Wallet-feel container. Brand bar pinned top, page-label slot below
+   it, scrollable content, footer pinned bottom. No animation on slot
+   swaps — the wallet metaphor (ADR-003 in dam/web/decisions). */
+.rpblc-tray-shell {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  background: var(--bg);
+  color: var(--text);
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+.rpblc-tray-shell__brand-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: var(--border-1) solid var(--line);
+  background: var(--panel);
+}
+.rpblc-tray-shell__page-label {
+  display: flex;
+  align-items: center;
+  padding: var(--space-3) var(--space-4) var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.rpblc-tray-shell__content {
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.rpblc-tray-shell__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-top: var(--border-1) solid var(--line);
+  background: var(--panel);
+}
+
+/* ── AppFooter ──────────────────────────────────────────────────────
+   Wallet-feel bottom edge for local surfaces (DAM tray, future RPBLC
+   apps). Distinct from `Footer`, which is the brand/marketing footer.
+   Composed inside `TrayShell.footer` or an equivalent slot. */
+.rpblc-app-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  border-top: var(--border-1) solid var(--line);
+  background: var(--panel);
+}
+.rpblc-app-footer__spacer {
+  flex: 1 1 auto;
+}
+
+/* ── RankBar ────────────────────────────────────────────────────────
+   Horizontal segmented bar for Insights leaderboards. Hairline border
+   wraps the bar; segments fill widths sized by their value/total. */
+.rpblc-rank-bar {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  border: var(--border-1) solid var(--line);
+  background: var(--bg);
+  overflow: hidden;
+}
+.rpblc-rank-bar__segment {
+  display: block;
+  height: 100%;
+}
+.rpblc-rank-bar__segment--accent { background: var(--accent); }
+.rpblc-rank-bar__segment--alarm  { background: var(--alarm); }
+.rpblc-rank-bar__segment--soft   { background: var(--soft); }
+.rpblc-rank-bar__segment--bright { background: var(--bright); }
+.rpblc-rank-bar__segment--muted  { background: var(--muted); }

@@ -163,6 +163,9 @@ dam network install-system-proxy / remove-system-proxy
 dam network install-network-extension / remove-network-extension / status
   -> dam-net-macos macOS Network Extension capture state for tun mode
 
+dam startup status / skip-open-at-login
+  -> local startup setup choice for tray and scripted installs
+
 damctl trust inspect
   -> dam-trust readiness and action plans
 
@@ -178,18 +181,16 @@ damctl config check
 
 dam-web /connect
   -> dam-integrations enabled profiles and apply-state inspection
+  -> in-memory protected-state/request trigger for local Connect QA until dam-notify owns delivery
   -> dam connect/disconnect pause-resume control
 
 dam-tray
   -> native desktop shell
   -> hosted dam-web /connect
 
-dam-web /doctor
-  -> dam-diagnostics
-  -> dam-api HealthReport
-
-dam-web /diagnostics
+dam-web /health
   -> dam-config
+  -> dam-diagnostics
   -> dam-proxy /health when enabled
   -> dam-api HealthReport + ProxyReport
 ```

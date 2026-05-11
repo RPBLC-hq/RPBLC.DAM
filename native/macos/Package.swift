@@ -12,7 +12,7 @@ let package = Package(
             name: "dam-macos-ne-helper",
             targets: ["DAMMacosNEHelper"]
         ),
-        .library(
+        .executable(
             name: "DAMTransparentProxyProvider",
             targets: ["DAMTransparentProxyProvider"]
         ),
@@ -21,7 +21,7 @@ let package = Package(
         .target(
             name: "DAMNetworkExtensionSupport"
         ),
-        .target(
+        .executableTarget(
             name: "DAMTransparentProxyProvider",
             dependencies: ["DAMNetworkExtensionSupport"],
             linkerSettings: [

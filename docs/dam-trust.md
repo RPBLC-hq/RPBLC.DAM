@@ -77,14 +77,14 @@ api.x.ai
 chatgpt.com
 ```
 
-When the daemon loads the effective `[traffic]` profile and configured `[network.ai_routes]` legacy overlays, it extends the in-memory trusted host scope for transparent readiness with those route hosts. This keeps local CA readiness aligned with the same profile-derived route registry used by routing and transparent proxy activation.
+When the daemon loads the effective `[traffic]` profile, it extends the in-memory trusted host scope for transparent readiness with those route hosts. This keeps local CA readiness aligned with the same profile-derived route registry used by routing and transparent proxy activation.
 
 This list is a transparent-protection scope, not an egress policy allowlist.
 
 ## Current Consumers
 
 - `dam-daemon` stores `trust.mode`, platform store metadata, and trusted AI host scope in `daemon.json`.
-- `dam-daemon` stores per-route trust readiness for built-in and configured AI routes in `daemon.json`.
+- `dam-daemon` stores per-route trust readiness for active traffic profile routes in `daemon.json`.
 - `dam connect --trust-mode disabled|local_ca` records the selected trust mode for future UI/status flows.
 - `dam trust generate-local-ca` creates local CA artifacts without installing trust.
 - `dam trust delete-local-ca` deletes uninstalled DAM CA artifacts without changing local trust.

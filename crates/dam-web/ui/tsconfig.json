@@ -1,20 +1,30 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "useDefineForClassFields": true,
-    "lib": ["DOM", "DOM.Iterable", "ES2020"],
-    "allowJs": false,
-    "skipLibCheck": true,
-    "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true,
-    "strict": true,
-    "forceConsistentCasingInFileNames": true,
     "module": "ESNext",
-    "moduleResolution": "Node",
-    "resolveJsonModule": true,
+    "moduleResolution": "Bundler",
+    "skipLibCheck": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@rpblc/design": ["src/design-system/index.ts"],
+      "@rpblc/design/tokens.css": ["src/design-system/tokens/tokens.css"],
+      "@rpblc/design/components.css": ["src/design-system/styles/components.css"],
+      "@rpblc/design/reset.css": ["src/design-system/styles/reset.css"],
+      "@rpblc/design/fonts.css": ["src/design-system/tokens/fonts.css"]
+    }
   },
-  "include": ["src"]
+  "include": ["src", "vite.config.ts"]
 }

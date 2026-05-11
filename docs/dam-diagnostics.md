@@ -21,9 +21,14 @@ Status: implemented first extraction.
 
 `setup_plan` emits a side-effect-free setup checklist for the local "connect" UX. It evaluates:
 
-- enabled integration profile selection;
+- startup choice readiness for platform setup flows that need the app to return after reboot;
 - system-proxy routing readiness when requested;
+- platform `tun` routing readiness when requested:
+  macOS emits System Extension approval, reboot, Network Extension manager configuration, manager enablement, and manager connection as separate steps;
+  Linux emits a Linux transparent routing step and currently blocks to explicit proxy mode until that backend lands;
+  Windows emits a Windows Filtering Platform step and currently blocks to explicit proxy mode until that backend lands;
 - local CA trust readiness when requested;
+- enabled integration profile selection;
 - daemon lifecycle readiness for the requested network/trust modes.
 
 The plan states are:
@@ -32,7 +37,7 @@ The plan states are:
 - `needs_action`: DAM can continue after the listed next command or user confirmation.
 - `blocked`: setup needs review before the local connect flow should continue.
 
-Each setup step reports `kind`, `status`, `message`, optional `command`, `requires_confirmation`, and `changes_system`.
+Each setup step reports `kind`, `status`, `message`, optional `command`, `requires_confirmation`, and `changes_system`. Step messages are English diagnostic/support text; UI surfaces map stable step ids to localized English and French labels.
 
 ## Boundaries
 

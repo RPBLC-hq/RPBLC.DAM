@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>SYSX</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>1.0.3</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>5</string>
 	<key>NSSystemExtensionUsageDescription</key>
 	<string>DAM installs a Network Extension to capture and protect configured local network traffic.</string>
 	<key>NetworkExtension</key>
@@ -31,13 +31,6 @@
 			<key>com.apple.networkextension.app-proxy</key>
 			<string>DAMTransparentProxyProvider.DAMTransparentProxyProvider</string>
 		</dict>
-	</dict>
-	<key>NSExtension</key>
-	<dict>
-		<key>NSExtensionPointIdentifier</key>
-		<string>com.apple.networkextension.app-proxy</string>
-		<key>NSExtensionPrincipalClass</key>
-		<string>DAMTransparentProxyProvider.DAMTransparentProxyProvider</string>
 	</dict>
 </dict>
 </plist>

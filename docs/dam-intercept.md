@@ -2,7 +2,7 @@
 
 `dam-intercept` is the guarded TLS interception activation contract for transparent AI protection.
 
-It does not decrypt traffic, run a TLS proxy, install routes, or generate certificates. It combines `dam-net` routing readiness with `dam-trust` TLS readiness and explicit user consent, then reports whether a TLS interception adapter may activate for an AI route from the merged default/config registry. `dam-proxy` now provides the first daemon-gated HTTP/1.1 adapter runtime; this crate remains the shared activation gate.
+It does not decrypt traffic, run a TLS proxy, install routes, or generate certificates. It combines `dam-net` routing readiness with `dam-trust` TLS readiness and explicit user consent, then reports whether a TLS interception adapter may activate for an AI route from the effective traffic profile registry. `dam-proxy` now provides the first daemon-gated HTTP/1.1 adapter runtime; this crate remains the shared activation gate.
 
 ## Current Contract
 
@@ -21,7 +21,7 @@ Activation is fail-closed. `TlsInterceptionAdapter::activate` returns an error u
 
 ## Current Consumers
 
-- `dam-daemon` records per-route interception readiness for built-in and configured AI routes in `daemon.json`.
+- `dam-daemon` records per-route interception readiness for active traffic profile routes in `daemon.json`.
 - `dam status` and `damctl daemon inspect` show interception readiness next to routing and trust readiness.
 - `dam-proxy` uses the same readiness result before accepting transparent CONNECT/TLS traffic in daemon transparent mode.
 

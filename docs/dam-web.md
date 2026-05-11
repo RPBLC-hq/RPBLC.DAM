@@ -2,46 +2,80 @@
 
 `dam-web` is the local web UI.
 
-It is for development inspection of local SQLite vault, consent, and log databases, and it hosts the visual Connect surface used directly in a browser or through `dam-tray`.
+It is being rebuilt from the architecture specs and `RPBLC.Design`. The current React slice includes the shared web/tray app frame, the pinned brand/navigation bar, Connect, Wallet, Allowed, Activity, Insights, System, Health, and Settings.
 
-The app frame is a React shell served from `/assets/dam-web-ui.js`. Rust still renders the route content as a server-side fallback so the local UI remains usable without JavaScript and existing POST flows keep working.
+The app frame is a React shell served from embedded `/assets/bundle.js`, `/assets/bundle.css`, and `/assets/index.html` build output.
 
-## Routes
-
-```text
-/connect   local protection surface for enabled apps, setup, connect, and disconnect
-/settings  theme and app/profile configuration surface for protected harnesses
-/          smart landing route: Connect when disconnected, Wallet when connected
-/vault     data wallet with protected values and row-level allow/protect actions
-/vault/detail/:key  value metadata and audit detail view
-/allowed   data currently allowed through DAM protection
-/consents  compatibility alias for /allowed
-/logs      operational log events
-/doctor    local readiness checks shared with damctl doctor
-/diagnostics  damctl-style config and proxy checks
-/health    health check
-```
-
-Wallet-row Allowed state is canonical-value based. If duplicate wallet rows hold the same canonical value, an active consent grant from one row appears as allowed on every matching row, and protecting it again stops passthrough for that canonical value.
-
-The wallet and logs support ordering. Wallet uses a single cycle sort button and defaults to most recently seen first; logs keep table header ordering. They use query parameters:
+## Current Routes
 
 ```text
-/vault?sort=value&dir=asc
-/logs?sort=time&dir=desc
+/                 Connect surface
+/connect          Connect surface
+/allowed          active, expired, and revoked consent grants
+/activity         dam-log derived activity feed
+/settings         local preferences, integrations, and daemon controls
+/*                frame fallback
 ```
 
-`/connect` uses the enabled integration state managed by `dam-integrations`. It can enable or disable known app profiles, start DAM, pause protection, and expose apply/rollback controls when rollback records are available. The primary Connect action consumes the shared `dam-diagnostics` setup plan and advances setup in order: explicit proxy fallback for enabled CLI profiles, macOS Network Extension routing, local CA trust, then daemon connect. Routing and trust changes require a short confirmation before the web UI shells out to `dam network ... --yes` or `dam trust ... --yes`. The final daemon start uses `dam connect --apply --network-mode tun --trust-mode local_ca` when apps are enabled; enabled profiles select the daemon targets and keep reversible proxy setup as a fallback for source builds and unsupported environments. Pause calls `dam disconnect`, which leaves the daemon active in pass-through mode so running clients keep network connectivity. Resuming protection is idempotent for the current daemon setup and closes selected-AI pass-through tunnels opened while paused so the client reconnects through protected interception. If the daemon state is stale, the next connect clears it before starting fresh. Full restore/stop remains an explicit CLI path.
+The backend `/api/v1/*` routes remain available for upcoming page slices. Connect fetches `/api/v1/connect`, posts setup/action requests to `/api/v1/connect/action`, polls `/api/v1/requests/pending` while protected, and can use the local QA-only `/api/v1/requests/trigger` endpoint to simulate an inbound consent request. The protected-state view reads `protected_since_unix` from `/api/v1/connect` and renders a live elapsed timer from that backend timestamp rather than keeping a client-side checkpoint. The Connect counts row is backed by live local stores: active consent grants from `dam-consent`, denied activity for the current UTC day from `dam-log`, and enabled integration profiles from `dam-integrations`. The tiles link to `/allowed`, `/activity?decision=denied&since=today`, and `/settings#apps`.
 
-Without enabled apps, the visible default is Protect Everything and Connect uses the bundled traffic profile. With one or more enabled JSON app profiles, the same Connect action applies reversible explicit-proxy fallback and starts one daemon with the required provider targets plus the matching `traffic.enabled_apps` runtime filter. The Apps toggle shows enabled apps inline, with the chevron at the far right. App profiles are shown as compact two-line rows with technical details behind disclosure. `/settings` exposes a compact theme segmented control plus app enable/disable controls rendered in the shared AppIntegrationCard pattern. `dam-tray` hosts this route in a native desktop shell.
+When `DAM_WEB_SHELL=tray`, `dam-web` renders the tray brand bar and the same Connect page inside the hosted WebView. Browser mode renders the same app navbar. Both surfaces show `[R:] DAM`, the divider line, and the connection status mark.
 
-When `DAM_WEB_SHELL=tray`, `dam-web` renders a compact tray shell with a navbar power-icon Quit tray button and routes the `[R:]` brand link through the native tray bridge so `https://rpblc.com` opens in the default browser. The tray-hosted Connect button is routed through native IPC so system trust prompts originate from `dam-tray`, not from the hosted web child. If `DAM_WEB_TRAY_POST_TOKEN` is set, tray-mode pages attach that token to same-origin POST form actions so embedded WebView submits do not depend on `Origin` / `Referer` headers. Browser mode remains the default and keeps the normal local-origin POST guard.
+The `[R:]` brand mark uses `data-tray-external="rpblc"` in tray mode so `dam-tray` can open `https://rpblc.com` through the native shell. The tray `DAM` product stamp uses `data-tray-external="dam-web-tab"` and posts `dam-tray:open-dam-web` to the native shell. If `DAM_WEB_TRAY_POST_TOKEN` is set, React API calls include it as `x-dam-web-tray-token`.
 
-The Connect action shells out to the local `dam` binary from `PATH`. Set `DAM_BIN=/path/to/dam` for source-tree runs or custom installs.
+Connect action wiring is intentionally narrow in this slice: browser-hosted `connect`, `resume`, and `pause` toggle the local protected state for the current process, while tray-hosted Connect posts native IPC so `dam-tray` can own privileged setup. The setup checklist distinguishes macOS System Extension approval (`ne_install`), reboot (`ne_reboot`), Network Extension manager configuration (`ne_config`), manager enablement (`ne_enable`), manager start/connection verification (`ne_start`), local CA trust, profile apply, and daemon start. Linux and Windows use separate stable setup ids (`linux_capture`, `windows_capture`) so their future onboarding can diverge without reusing macOS Network Extension copy. Unknown setup/recovery step ids still return `not_implemented`, and the frontend maps stable error codes to localized English and French copy instead of showing raw backend text.
+
+## Activity
+
+`GET /api/v1/activity?since=&decision=&q=` reads `dam-log` and maps person-facing events into the CTZN activity feed. The mapper currently includes:
+
+- `policy_decision.allow` → `granted`
+- `policy_decision.tokenize` / `policy_decision.redact` / `redaction.*` → `sealed`
+- `policy_decision.block` → `denied`
+- `proxy_forward.request_protection` → `granted`, `sealed`, or `denied` from the protection counts in the log message
+- `proxy_failure.provider_down` → `denied`
+
+When a proxy protection event does not carry an actor itself, `dam-web` derives the actor from another log row with the same operation id, such as `route_decision target=...` or `provider_forward_start provider=...`.
+
+The Activity page polls this endpoint and uses catalog-driven English/French labels. The `[add]` and `[allow once]` row actions remain disabled until their wallet/consent semantics are implemented.
+
+## Allowed
+
+`GET /api/v1/allowed?q=&sort=&dir=` reads `dam-consent`, groups grants into active, expired, and revoked buckets, and joins each grant to `dam-vault` when the grant has a vault key. Grants without a resolvable vault value render a safe bracketed grant label instead of exposing the stored fingerprint.
+
+The Allowed page uses the same English/French catalog as the rest of the React slice and is the destination for the Connect row's active-grants tile.
+
+## Settings
+
+`GET /api/v1/settings` builds a live view from `dam-daemon`, `dam-config`, and `dam-integrations`. The Apps section is wired: enabling an app applies its integration profile and records it as enabled; disabling rolls the profile back and clears that enabled state. A modified target file returns a stable `apply_modified_target` error so the UI can keep the toggle in its prior state. When a running daemon exists, app toggles reconcile the platform capture scope from the enabled profiles and invoke `dam connect` so the daemon's active traffic routes match the new app selection. Turning every app off leaves an explicit empty enabled state, reconfigures macOS Network Extension capture with no protected hosts, and keeps unrelated traffic outside DAM.
+
+The Network section is read-only and reflects the latest daemon state on disk. `ready` is true only when protection is enabled and every transparent AI interception route reports `ready`.
+
+Defaults are shown as disabled controls in this slice. `POST /api/v1/settings/defaults`, reset, and uninstall still return `not_implemented` until the runtime settings store and destructive flows are designed end to end.
+
+## Local Request Trigger
+
+`POST /api/v1/requests/trigger` creates an in-memory pending consent request and marks the current `dam-web` process protected. It is for local QA and screenshots until request delivery moves to `dam-notify`.
+
+```bash
+curl -sS -X POST http://127.0.0.1:2896/api/v1/requests/trigger \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://127.0.0.1:2896' \
+  -d '{
+    "actor": "anthropic",
+    "value_label": "mobile phone",
+    "value_preview": "+1 415 555 0142",
+    "purpose": "send the verification code from your bank to confirm the wire",
+    "expires_in_sec": 18000
+  }'
+```
+
+Each `dam-web` process has its own request store. When web and tray are running on separate local ports, trigger the request on both ports to test both surfaces.
 
 ## Usage
 
 ```bash
+dam web --config dam.example.toml
 cargo run -p dam-web -- --config dam.example.toml
 ```
 
@@ -72,15 +106,11 @@ Default address:
 
 Remote vault/consent/log views are not implemented yet.
 
-## Diagnostics
+## Localization
 
-`/doctor` shows the shared `dam-diagnostics` readiness report used by `damctl doctor`, with local SQLite paths redacted for the web surface.
+All visible text in the current React slice is catalog-driven in English and French. Runtime locale defaults to the system language and can be overridden with `localStorage["rpblc.dam.locale"] = "en"` or `"fr"`.
 
-`/diagnostics` shows:
-
-- config health using the same `dam-api` `HealthReport` shape used by `damctl config check`;
-- proxy protection state from `dam-proxy /health` using `dam-api` `ProxyReport`;
-- local warnings such as disabled proxy, missing proxy API key env vars, unsupported providers, and unreachable proxy.
+The full Lingui catalog flow in the architecture is not wired yet. The current UI keeps a small local typed catalog in `ui/src/lib/i18n.ts` so no visible text is hardcoded in page components.
 
 ## Security Posture
 
@@ -93,18 +123,18 @@ Connect/settings mutation routes are POST-only and use the same local Host and O
 The UI follows `RPBLC.Design`:
 
 - Inlined RPBLC design tokens for color, type, spacing, motion, and geometry.
-- Primary CTAs consume `--cta-*`: gold in dark theme, ink in light theme, and gold on light hover.
-- Theme defaults to the system preference and supports persisted System, Light, and Dark choices.
+- Theme defaults to the system preference. Persisted System, Light, and Dark settings return with the Settings page.
 - Warm gold accent.
 - `[R:]` brand mark.
 - Product stamp: `DAM`.
-- React-owned app shell with Connect, Wallet, and Allowed as primary nav; Settings, diagnostic, and activity views live under an icon-only chevron menu.
-- Person-facing wallet surfaces mirror `WalletCard`: the protected value is the hero, state/source metadata stays on one muted row, and the row action is visible. Advanced/debug routes may still use dense tables.
-- Wallet sort mirrors `CycleButton`; advanced log tables mirror `SortHeader`.
-- Settings mirrors compact `Section`, `SegmentedControl`, and `AppIntegrationCard`.
-- Quiet operator surfaces: rectangular buttons, bordered panels, compact lists, and no offset shadow treatment.
+- Web frame: pinned top app navbar with `[R:] DAM`.
+- Tray frame: same pinned app navbar with `[R:] DAM`; `DAM` opens the hosted browser view.
+- App chrome uses the reversed bar treatment from `RPBLC.Design` so logged-in/local product surfaces are distinct from the public website while preserving the same mark size and glyph behavior.
+- `@rpblc/design/fonts.css` is imported so the app uses the design-system faces everywhere: Manrope for reading text and JetBrains Mono for marks, labels, counters, and controls.
 - `/favicon.svg` served from the same SVG as `RPBLC.public/public/favicon.svg`.
 - External link to `https://rpblc.com`.
+
+The local UI vendors the current `RPBLC.Design/src` under `ui/src/design-system` and aliases `@rpblc/design` to that copy. This keeps call sites aligned with the future package import while the generated design-system library is not available yet.
 
 ## React Shell
 
@@ -122,7 +152,7 @@ npm install
 npm run build
 ```
 
-The build writes `crates/dam-web/assets/dam-web-ui.js`, which is embedded into `dam-web` with `include_str!` and served locally. Runtime does not fetch React, fonts, or scripts from a CDN.
+The build writes `crates/dam-web/assets/index.html`, `crates/dam-web/assets/bundle.js`, and `crates/dam-web/assets/bundle.css`, which are embedded into `dam-web` with `include_str!` and served locally. Runtime does not fetch React or app scripts from a CDN. Font loading follows `@rpblc/design/fonts.css` so DAM matches the public-site typography.
 
 ## Tests
 

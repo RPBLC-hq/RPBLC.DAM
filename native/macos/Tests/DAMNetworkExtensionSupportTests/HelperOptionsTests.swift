@@ -10,6 +10,7 @@ final class HelperOptionsTests: XCTestCase {
             "--display-name", "DAM Network Protection",
             "--proxy-host", "127.0.0.1",
             "--proxy-port", "7828",
+            "--routing-failure-policy", "fail_closed",
             "--protect-host", "api.openai.com",
             "--protect-host", "api.anthropic.com",
             "--exclude-signing-id", "com.rpblc.dam.proxy",
@@ -25,6 +26,7 @@ final class HelperOptionsTests: XCTestCase {
             "api.openai.com",
             "api.anthropic.com",
         ])
+        XCTAssertEqual(options.runtimeConfiguration.routingFailurePolicy, .failClosed)
         XCTAssertTrue(options.runtimeConfiguration.shouldBypassSource(signingIdentifier: "com.rpblc.dam.proxy"))
     }
 
@@ -41,5 +43,37 @@ final class HelperOptionsTests: XCTestCase {
         XCTAssertTrue(configuration.shouldProtect(host: "api.anthropic.com"))
         XCTAssertTrue(configuration.shouldProtect(host: "chatgpt.com"))
         XCTAssertFalse(configuration.shouldProtect(host: "example.com"))
+        XCTAssertEqual(configuration.routingFailurePolicy, .failOpen)
+    }
+
+    func testParseNoProtectedHostsDisablesDefaultProtectedHosts() throws {
+        let options = try parseHelperOptions([
+            "install",
+            "--bundle-id", "com.rpblc.dam.network-extension",
+            "--no-protected-hosts",
+        ])
+
+        XCTAssertEqual(options.runtimeConfiguration.protectedHosts, [])
+        XCTAssertFalse(options.runtimeConfiguration.shouldProtect(host: "api.anthropic.com"))
+    }
+
+    func testProviderConfigurationRoundTripsRoutingFailurePolicy() {
+        let configuration = DAMProxyRuntimeConfiguration(
+            routingFailurePolicy: .failClosed
+        )
+
+        let decoded = DAMProxyRuntimeConfiguration(providerConfiguration: configuration.providerConfiguration)
+
+        XCTAssertEqual(decoded.routingFailurePolicy, .failClosed)
+    }
+
+    func testParseRejectsUnknownRoutingFailurePolicy() {
+        XCTAssertThrowsError(try parseHelperOptions([
+            "install",
+            "--bundle-id", "com.rpblc.dam.network-extension",
+            "--routing-failure-policy", "strict",
+        ])) { error in
+            XCTAssertEqual(error as? DAMHelperArgumentError, .invalidRoutingFailurePolicy("strict"))
+        }
     }
 }
