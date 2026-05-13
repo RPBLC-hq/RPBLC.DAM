@@ -46,6 +46,35 @@ final class HelperOptionsTests: XCTestCase {
         XCTAssertEqual(configuration.routingFailurePolicy, .failOpen)
     }
 
+    func testMissingProviderConfigurationIsInert() {
+        let configuration = DAMProxyRuntimeConfiguration(providerConfiguration: nil)
+
+        XCTAssertEqual(configuration.protectedHosts, [])
+        XCTAssertFalse(configuration.shouldProtect(host: "api.openai.com"))
+        XCTAssertFalse(configuration.shouldProtect(host: "api.anthropic.com"))
+    }
+
+    func testProviderConfigurationWithoutProtectedHostsIsInert() {
+        let configuration = DAMProxyRuntimeConfiguration(providerConfiguration: [
+            DAMProviderConfigurationKey.proxyHost: "127.0.0.1",
+            DAMProviderConfigurationKey.proxyPort: 7828,
+        ])
+
+        XCTAssertEqual(configuration.protectedHosts, [])
+        XCTAssertFalse(configuration.shouldProtect(host: "api.openai.com"))
+    }
+
+    func testDefaultSourceBypassIncludesSignedAndLegacyDamBinaries() {
+        let configuration = DAMProxyRuntimeConfiguration()
+
+        XCTAssertTrue(configuration.shouldBypassSource(signingIdentifier: "com.rpblc.dam.proxy"))
+        XCTAssertTrue(configuration.shouldBypassSource(signingIdentifier: "com.rpblc.dam.web"))
+        XCTAssertTrue(configuration.shouldBypassSource(signingIdentifier: "dam-proxy"))
+        XCTAssertTrue(configuration.shouldBypassSource(signingIdentifier: nil, processPath: "/Applications/DAM.app/Contents/MacOS/dam-proxy"))
+        XCTAssertTrue(configuration.shouldBypassSource(signingIdentifier: nil, processPath: "/Applications/DAM.app/Contents/MacOS/dam-web"))
+        XCTAssertFalse(configuration.shouldBypassSource(signingIdentifier: "com.example.app", processPath: "/Applications/Example.app/Contents/MacOS/example"))
+    }
+
     func testParseNoProtectedHostsDisablesDefaultProtectedHosts() throws {
         let options = try parseHelperOptions([
             "install",

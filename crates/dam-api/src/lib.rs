@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum SensitiveKind {
     Email,
+    Domain,
     Phone,
     Ssn,
     #[serde(rename = "cc", alias = "credit_card")]
@@ -14,6 +15,7 @@ impl From<dam_core::SensitiveType> for SensitiveKind {
     fn from(kind: dam_core::SensitiveType) -> Self {
         match kind {
             dam_core::SensitiveType::Email => Self::Email,
+            dam_core::SensitiveType::Domain => Self::Domain,
             dam_core::SensitiveType::Phone => Self::Phone,
             dam_core::SensitiveType::Ssn => Self::Ssn,
             dam_core::SensitiveType::CreditCard => Self::CreditCard,

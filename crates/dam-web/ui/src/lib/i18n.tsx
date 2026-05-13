@@ -118,8 +118,8 @@ export type MessageKey =
   | 'request.deny'
   | 'connect.grants'
   | 'connect.grantsAria'
-  | 'connect.blockedToday'
-  | 'connect.blockedTodayAria'
+  | 'connect.redactedToday'
+  | 'connect.redactedTodayAria'
   | 'connect.appsMediated'
   | 'connect.appsMediatedAria'
   | 'connect.countsLabel'
@@ -137,6 +137,7 @@ export type MessageKey =
   | 'connect.step.windows_capture'
   | 'connect.step.ne_reboot'
   | 'connect.step.ca_install'
+  | 'connect.step.system_proxy'
   | 'connect.step.apply_profiles'
   | 'connect.step.daemon_start'
   | 'connect.step.unknown'
@@ -149,6 +150,7 @@ export type MessageKey =
   | 'connect.hint.windows_capture'
   | 'connect.hint.ne_reboot'
   | 'connect.hint.ca_install'
+  | 'connect.hint.system_proxy'
   | 'connect.hint.apply_profiles'
   | 'connect.hint.daemon_start'
   | 'connect.hintAriaLabel'
@@ -161,6 +163,7 @@ export type MessageKey =
   | 'connect.action.platform_capture'
   | 'connect.action.ne_reboot'
   | 'connect.action.ca_install'
+  | 'connect.action.system_proxy'
   | 'connect.action.apply_profiles'
   | 'connect.action.daemon_start'
   | 'connect.action.unknown'
@@ -247,6 +250,7 @@ export type MessageKey =
   | 'settings.uninstalling'
   | 'settings.error.modifiedTarget'
   | 'settings.error.targetUnwritable'
+  | 'settings.error.invalidRequest'
   | 'settings.connection'
   | 'settings.stopHint'
   | 'settings.stopDaemon'
@@ -440,8 +444,8 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     'request.deny': 'deny',
     'connect.grants': 'grants',
     'connect.grantsAria': 'open active grants',
-    'connect.blockedToday': 'blocked today',
-    'connect.blockedTodayAria': 'open activity',
+    'connect.redactedToday': 'redacted today',
+    'connect.redactedTodayAria': 'open redacted activity',
     'connect.appsMediated': 'apps mediated',
     'connect.appsMediatedAria': 'open mediated apps',
     'connect.countsLabel': 'DAM counts',
@@ -459,7 +463,8 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     'connect.step.windows_capture': 'Set up Windows routing',
     'connect.step.ne_reboot': 'Restart macOS',
     'connect.step.ca_install': 'Install local CA',
-    'connect.step.apply_profiles': 'Apply enabled profiles',
+    'connect.step.system_proxy': 'Install system proxy',
+    'connect.step.apply_profiles': 'Write profile files',
     'connect.step.daemon_start': 'Start DAM',
     'connect.step.unknown': 'Continue setup',
     'connect.hint.launch_at_login':
@@ -480,8 +485,10 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
       'macOS needs a restart to finish the network extension system change. After restart, DAM checks the earlier setup steps again before continuing.',
     'connect.hint.ca_install':
       'Installs a local certificate authority so DAM can read your apps’ encrypted traffic on this device only. The CA never leaves your machine.',
+    'connect.hint.system_proxy':
+      'Installs macOS proxy routing for proxy-capable traffic. This is a fallback and diagnostic path; Network Extension capture remains the primary installed-app path.',
     'connect.hint.apply_profiles':
-      'Writes per-app config so DAM mediates the AI tools you use (Anthropic, OpenAI, Cursor, Perplexity).',
+      'Writes optional DAM-owned profile JSON for enabled apps. This is not part of the standard onboarding path.',
     'connect.hint.daemon_start':
       'Starts the DAM background process that mediates traffic. Runs locally; nothing leaves your device unless you allow it.',
     'connect.hintAriaLabel': 'more info',
@@ -494,7 +501,8 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     'connect.action.platform_capture': 'Use explicit proxy mode',
     'connect.action.ne_reboot': 'Restart macOS',
     'connect.action.ca_install': 'Trust local CA',
-    'connect.action.apply_profiles': 'Apply enabled profiles',
+    'connect.action.system_proxy': 'Install system proxy',
+    'connect.action.apply_profiles': 'Write profile files',
     'connect.action.daemon_start': 'Start DAM',
     'connect.action.unknown': 'Continue setup',
     'connect.error.load': 'DAM could not read the connection state.',
@@ -540,20 +548,20 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     'settings.language.fr': 'Français',
     'settings.apps': 'apps',
     'settings.appsHint':
-      'Toggle the apps DAM mediates. Turning an app on writes its profile; turning it off rolls the profile back.',
+      'Toggle the app profiles DAM mediates. Profile files stay under DAM state.',
     'settings.appsLoading': 'reading apps',
     'settings.appsEmpty': 'no apps configured yet',
     'settings.appsToggleOn': 'turn off',
     'settings.appsToggleOff': 'turn on',
     'settings.appsProfile': 'profile',
-    'settings.appsTarget': 'target',
-    'settings.appsInstallState': 'state',
+    'settings.appsTarget': 'profile file',
+    'settings.appsInstallState': 'profile state',
     'settings.appsModified':
-      'A configuration file changed outside DAM. Review the file before applying or rolling back.',
-    'settings.installState.applied': 'applied',
+      'A profile file changed outside DAM. Review the file before changing it.',
+    'settings.installState.applied': 'saved',
     'settings.installState.modified': 'modified outside DAM',
     'settings.installState.pending': 'pending',
-    'settings.installState.needsApply': 'needs apply',
+    'settings.installState.needsApply': 'needs write',
     'settings.network': 'network',
     'settings.networkHint':
       'How DAM is intercepting traffic. Read-only here; the deeper view lives on Health on web.',
@@ -603,9 +611,11 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     'settings.confirmUninstall': 'yes — uninstall',
     'settings.uninstalling': 'uninstalling…',
     'settings.error.modifiedTarget':
-      'A configuration file changed outside DAM. Review the change before applying.',
+      'A profile file changed outside DAM. Review the change before writing it.',
     'settings.error.targetUnwritable':
       'DAM couldn’t write the configuration file. Check the file’s permissions.',
+    'settings.error.invalidRequest':
+      'Check the profile id, domain, and upstream URL.',
     'settings.connection': 'connection',
     'settings.stopHint':
       'Stops DAM on this device — control surface, tray, and protection daemon. Running clients will lose the local DAM endpoint until you launch DAM again.',
@@ -805,8 +815,8 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     'request.deny': 'refuser',
     'connect.grants': 'autorisations',
     'connect.grantsAria': 'voir les autorisations actives',
-    'connect.blockedToday': 'bloqués aujourd’hui',
-    'connect.blockedTodayAria': 'voir l’activité',
+    'connect.redactedToday': 'masqués aujourd’hui',
+    'connect.redactedTodayAria': 'voir l’activité masquée',
     'connect.appsMediated': 'apps encadrées',
     'connect.appsMediatedAria': 'voir les apps encadrées',
     'connect.countsLabel': 'Compteurs DAM',
@@ -824,7 +834,8 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     'connect.step.windows_capture': 'Configurer le routage Windows',
     'connect.step.ne_reboot': 'Redémarrer macOS',
     'connect.step.ca_install': 'Installer l’AC locale',
-    'connect.step.apply_profiles': 'Appliquer les profils activés',
+    'connect.step.system_proxy': 'Installer le proxy système',
+    'connect.step.apply_profiles': 'Écrire les profils',
     'connect.step.daemon_start': 'Démarrer DAM',
     'connect.step.unknown': 'Continuer la configuration',
     'connect.hint.launch_at_login':
@@ -845,8 +856,10 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
       'macOS doit redémarrer pour terminer le changement système de l’extension réseau. Après le redémarrage, DAM revérifie les étapes précédentes avant de continuer.',
     'connect.hint.ca_install':
       'Installe une autorité de certification locale pour que DAM puisse lire le trafic chiffré de vos apps, uniquement sur cet appareil. L’AC ne quitte jamais votre machine.',
+    'connect.hint.system_proxy':
+      'Installe le routage proxy macOS pour le trafic compatible. C’est un parcours de repli et de diagnostic ; l’extension réseau reste le chemin principal de l’app installée.',
     'connect.hint.apply_profiles':
-      'Écrit la config pour les apps que DAM encadre (Anthropic, OpenAI, Cursor, Perplexity).',
+      'Écrit les profils JSON DAM optionnels pour les apps activées. Cette étape ne fait pas partie du parcours d’installation standard.',
     'connect.hint.daemon_start':
       'Démarre le processus DAM en arrière-plan qui encadre le trafic. Tout local ; rien ne quitte votre appareil sans votre accord.',
     'connect.hintAriaLabel': 'plus d’info',
@@ -859,7 +872,8 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     'connect.action.platform_capture': 'Utiliser le proxy explicite',
     'connect.action.ne_reboot': 'Redémarrer macOS',
     'connect.action.ca_install': 'Faire confiance à l’AC locale',
-    'connect.action.apply_profiles': 'Appliquer les profils activés',
+    'connect.action.system_proxy': 'Installer le proxy système',
+    'connect.action.apply_profiles': 'Écrire les profils',
     'connect.action.daemon_start': 'Démarrer DAM',
     'connect.action.unknown': 'Continuer la configuration',
     'connect.error.load': 'DAM n’a pas pu lire l’état de connexion.',
@@ -911,14 +925,14 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     'settings.appsToggleOn': 'désactiver',
     'settings.appsToggleOff': 'activer',
     'settings.appsProfile': 'profil',
-    'settings.appsTarget': 'cible',
-    'settings.appsInstallState': 'état',
+    'settings.appsTarget': 'fichier profil',
+    'settings.appsInstallState': 'état du profil',
     'settings.appsModified':
-      'Un fichier de configuration a changé hors de DAM. Vérifiez le fichier avant d’appliquer ou d’annuler.',
-    'settings.installState.applied': 'appliqué',
+      'Un fichier profil a changé hors de DAM. Vérifiez le fichier avant de le modifier.',
+    'settings.installState.applied': 'enregistré',
     'settings.installState.modified': 'modifié hors de DAM',
     'settings.installState.pending': 'en cours',
-    'settings.installState.needsApply': 'à appliquer',
+    'settings.installState.needsApply': 'à écrire',
     'settings.network': 'réseau',
     'settings.networkHint':
       'Comment DAM intercepte le trafic. Lecture seule ici ; la vue détaillée vit dans Santé sur le web.',
@@ -968,9 +982,11 @@ const messages: Record<Locale, Record<MessageKey, string>> = {
     'settings.confirmUninstall': 'oui — désinstaller',
     'settings.uninstalling': 'désinstallation…',
     'settings.error.modifiedTarget':
-      'Un fichier de configuration a changé hors de DAM. Vérifiez le changement avant d’appliquer.',
+      'Un fichier profil a changé hors de DAM. Vérifiez le changement avant de l’écrire.',
     'settings.error.targetUnwritable':
       'DAM n’a pas pu écrire le fichier de configuration. Vérifiez ses permissions.',
+    'settings.error.invalidRequest':
+      'Vérifiez l’id du profil, le domaine et l’URL amont.',
     'settings.connection': 'connexion',
     'settings.stopHint':
       'Arrête DAM sur cet appareil — surface de contrôle, plateau et démon de protection. Les clients en cours perdront le point d’accès DAM jusqu’au prochain lancement.',

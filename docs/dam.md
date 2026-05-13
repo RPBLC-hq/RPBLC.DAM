@@ -11,8 +11,7 @@ cargo run -p dam -- logs
 cargo run -p dam -- disconnect
 cargo run -p dam -- integrations list
 cargo run -p dam -- connect --profile claude-code
-cargo run -p dam -- connect --profile codex-api
-cargo run -p dam -- connect --profile codex-chatgpt
+cargo run -p dam -- connect --profile codex
 ```
 
 The old `dam claude`, `dam codex`, and `dam codex --api` one-shot launchers have been removed. DAM no longer protects by rewriting `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or Codex `model_provider` / `base_url` settings. Use `dam connect`, tray Connect, and integration profiles so apps keep their normal provider endpoints while traffic routes through DAM.
@@ -21,20 +20,19 @@ The old `dam claude`, `dam codex`, and `dam codex --api` one-shot launchers have
 
 Background integration profiles configure tools to use the long-running daemon as an HTTP(S) proxy or rely on system proxy routing. The daemon can expose multiple provider targets for selected AI hosts while unknown traffic passes through untouched.
 
-By default, the daemon proxy redacts outbound requests before they reach the provider and resolves known DAM references on inbound HTTP responses before the tool sees them. Inbound responses are not redetected or redacted. The Codex ChatGPT-login WebSocket MVP protects unfragmented client text frames and currently passes server-to-client frames through without local reference resolution. Set `proxy.resolve_inbound = false` or use `--no-resolve-inbound` to leave HTTP `[kind:id]` references unresolved.
+By default, the daemon proxy redacts outbound requests before they reach the provider. Agent traffic apps keep inbound DAM references tokenized in the local transcript, while still redetecting and tokenizing raw provider-returned sensitive values before the tool sees them. Email-derived domains from the protected outbound request are carried into that inbound redetection pass, including Anthropic/OpenAI `text/event-stream` responses, so a domain-only answer derived from a protected email stays tokenized. Set `proxy.resolve_inbound = false` or use `--no-resolve-inbound` to leave HTTP `[kind:id]` references unresolved for every app; explicit reveal/consent flows are separate from agent transcript protection.
 
 ## Auth Model
 
 The local UX uses pass-through provider authentication by default.
 
 - `dam connect --profile claude-code` selects the Anthropic target while Claude keeps its normal Anthropic endpoint and traffic routes through DAM.
-- `dam connect --profile codex-api` selects the OpenAI-compatible target for Codex API-key mode while Codex keeps its normal OpenAI endpoint and own API-key configuration.
-- `dam connect --profile codex-chatgpt --network-mode tun --trust-mode local_ca` selects the ChatGPT-login traffic profile for outbound `chatgpt.com` WebSocket protection.
-- `dam integrations apply <profile> --write` writes reversible explicit-proxy fallback files for source builds and unsupported environments. Network Extension capture is the primary installed-app path.
+- `dam connect --profile codex` selects Codex API-key traffic for `api.openai.com` and ChatGPT-login traffic for `chatgpt.com` and `ab.chatgpt.com` while Codex keeps its normal OpenAI endpoint or subscription login behavior.
+- `dam integrations apply <profile> --write` ensures DAM-owned catalog profile JSON for source builds and unsupported environments. Use `--target-path` for rendered JSON exports with rollback support. Network Extension capture is the primary installed-app path.
 - Provider credentials stay with the tool. DAM forwards the caller's auth headers.
 - DAM does not require `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`; those stay in the selected tool or user shell.
 
-Proxy-managed API key injection still exists in `dam-proxy` for gateway-style deployments, but it is not the default local UX. Codex ChatGPT-login mode remains separate from the API-key path.
+Proxy-managed API key injection still exists in `dam-proxy` for gateway-style deployments, but it is not the default local UX. Codex API-key and ChatGPT-login traffic are one user-facing profile with separate traffic app IDs under the hood.
 
 ## Commands
 
@@ -69,7 +67,7 @@ DAM options:
 
 ```text
 --profile <id>       Use integration profile daemon defaults (connect only)
---apply              Write selected or enabled profile setup before connecting
+--apply              Ensure selected or enabled DAM profile files before connecting
 --openai             Use the OpenAI-compatible daemon preset (default for connect)
 --anthropic          Use the Anthropic daemon preset (connect only)
 --config <path>      Load DAM config file before daemon overrides
@@ -92,9 +90,8 @@ Examples:
 
 ```bash
 dam connect
-dam connect --profile xai-compatible
 dam connect --profile claude-code
-dam connect --profile codex-chatgpt --network-mode tun --trust-mode local_ca
+dam connect --profile codex
 dam profile set claude-code
 dam connect --network-mode tun --trust-mode local_ca
 dam profile status
@@ -108,9 +105,9 @@ dam network install-network-extension
 dam network install-system-proxy
 dam startup status
 dam startup skip-open-at-login
-dam integrations show codex-api
-dam integrations apply codex-api
-dam integrations apply codex-api --write
+dam integrations show codex
+dam integrations apply codex
+dam integrations apply codex --write
 dam disconnect
 ```
 
@@ -122,10 +119,10 @@ The previous one-shot `npx @rpblc/dam claude` and `npx @rpblc/dam codex --api` t
 
 ## Current Limits
 
-- `dam connect` can start one daemon with multiple proxy targets when multiple app profiles are enabled. `--profile <id>` selects one explicit profile. `--apply` writes reversible explicit-proxy fallback before connecting; tray/web Connect uses Network Extension capture as the primary path and keeps the fallback for source builds and unsupported environments. If the enabled-profile state exists but contains no profiles, `dam connect` and `dam network install-*` use an explicit empty traffic scope instead of the bundled default routes.
+- `dam connect` can start one daemon with multiple proxy targets when multiple app profiles are enabled. `--profile <id>` selects one explicit profile. `--apply` ensures selected DAM-owned catalog profile JSON before connecting; tray/web Connect uses Network Extension capture as the primary path and keeps explicit-proxy fallback commands for source builds and unsupported environments. If the enabled-profile state exists but contains no profiles, `dam connect` and `dam network install-*` use an explicit empty traffic scope instead of the bundled default routes.
 - `dam logs` reads the local SQLite log and renders concise non-sensitive operation summaries by default. `--operation <id>` shows one operation's event timeline, and `--json` keeps the same data machine-readable for local debugging.
 - `dam disconnect` pauses protection without stopping the daemon. `dam connect` resumes a paused daemon using its existing routing/trust setup. If the connected daemon was launched by a missing or different `dam` executable path/fingerprint, Connect restarts it from the current executable while preserving that setup, so source builds and app updates do not keep running stale proxy code. Use `dam disconnect --stop` before intentionally changing setup.
-- `dam profile set <id>` persists the legacy active local harness profile. The tray/web Settings flow persists enabled app profiles for simultaneous Codex API and Claude Code protection.
+- `dam profile set <id>` persists the legacy active local harness profile. The tray/web Settings flow persists enabled app profiles; when no state exists, DAM defaults to Claude Code enabled only.
 - `dam connect --network-mode system_proxy` refuses to start until DAM sees macOS PAC routing installed. Run `dam network install-system-proxy --yes` first after reviewing the preview.
 - `dam connect --trust-mode local_ca` refuses to start until local CA trust is ready. Run `dam trust install-local-ca --yes` first after reviewing the preview. The `claude-code` integration profile uses `local_ca` because proxy-routed Anthropic HTTPS bodies require guarded TLS interception.
 - `dam trust generate-local-ca` creates local CA certificate/key artifacts only. It does not install them into system trust.
@@ -134,11 +131,11 @@ The previous one-shot `npx @rpblc/dam claude` and `npx @rpblc/dam codex --api` t
 - `dam network install-network-extension` and `dam network remove-network-extension` preview by default. On macOS, `--yes` requires a signed helper from the app bundle or `DAM_MACOS_NE_HELPER` in source builds; without it, install fails closed. Packaged Connect submits System Extension activation only from `DAM.app`, then the helper configures `tun` capture and writes state only after success.
 - `dam network install-system-proxy` and `dam network remove-system-proxy` preview by default. On macOS, `--yes` applies or removes PAC routing for proxy-capable traffic with rollback state; this remains a fallback and diagnostic mode.
 - `dam startup status` reports whether the startup choice is registered, skipped, or unconfigured. `dam startup skip-open-at-login` records the same choice as the tray Skip button so scripted installs can continue without adding DAM to Open at Login.
-- `dam integrations apply <profile>` previews by default. Add `--write` to edit Claude Code settings or DAM-managed proxy environment files with a rollback record.
+- `dam integrations apply <profile>` previews by default. Add `--write` to ensure the DAM-managed catalog JSON file, or pass `--target-path` to write a rendered JSON export with rollback support. This profile-file setup is not part of the normal Connect onboarding path.
 - The one-shot `dam claude`, `dam codex`, and `dam codex --api` launchers have been removed; the background `dam connect` flow can run multiple provider targets in one daemon.
-- Codex API-key mode is protected when Codex keeps its normal OpenAI endpoint and routes through DAM capture/proxy routing. Codex ChatGPT-login mode uses the `codex-chatgpt` profile and outbound WebSocket adapter for `chatgpt.com`.
+- Codex API-key mode is protected when Codex keeps its normal OpenAI endpoint and routes through DAM capture/proxy routing. Codex ChatGPT-login mode uses the same `codex` profile and WebSocket adapter for `chatgpt.com` and `ab.chatgpt.com`.
 - DAM no longer has a default user-facing provider base-URL routing path. Generic SDK profiles use HTTP(S) proxy settings.
-- `--network-mode tun` can report macOS Network Extension capture installed by `dam network install-network-extension`. When route capture, local CA trust, and consent are ready, the daemon uses HTTP/1.1 CONNECT/TLS plus WebSocket handling for active traffic profile hosts. `dam connect` preflights routing/trust setup before starting transparent modes and restarts a compatible running daemon when the enabled app traffic scope changes; transparent traffic still fails closed if runtime readiness is lost after startup.
+- `--network-mode tun` can report macOS Network Extension capture installed by `dam network install-network-extension`. When route capture, local CA trust, and consent are ready, the daemon uses HTTP/1.1 CONNECT/TLS plus WebSocket handling for active traffic profile hosts. Decrypted transparent requests are target-selected from their authority/`Host` before provider API path hints, so ChatGPT backend HTTP paths use the `chatgpt-codex` target. `dam connect` preflights routing/trust setup before starting transparent modes and restarts a compatible running daemon when the enabled app traffic scope changes; if runtime readiness is lost after startup, configured traffic follows the routing failure policy (`fail_open` by default, `fail_closed` when configured).
 - HTTP/2 transparent interception, inbound/fragmented/compressed WebSocket payload protection, UDP, and arbitrary web traffic rewriting remain parked.
 
 ## Tests

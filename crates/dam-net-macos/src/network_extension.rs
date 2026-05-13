@@ -24,11 +24,21 @@ const DEFAULT_PROXY_PORT: &str = "7828";
 const DEFAULT_ROUTING_FAILURE_POLICY: &str = "fail_open";
 const DEFAULT_EXCLUDED_SIGNING_IDENTIFIERS: &[&str] = &[
     "com.rpblc.dam",
+    "com.rpblc.dam.cli",
     "com.rpblc.dam.daemon",
+    "com.rpblc.dam.helper",
+    "com.rpblc.dam.mcp",
     "com.rpblc.dam.proxy",
     "com.rpblc.dam.tray",
+    "com.rpblc.dam.web",
     "com.rpblc.dam.network-extension",
-    "com.rpblc.dam.helper",
+    "dam",
+    "dam-daemon",
+    "dam-macos-ne-helper",
+    "dam-mcp",
+    "dam-proxy",
+    "dam-tray",
+    "dam-web",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -634,24 +644,42 @@ fn manager_status_activation_method(
 ) -> &'static str {
     if !status.configured {
         if record.is_some() {
-            return match system_extension_state(bundle_identifier) {
-                MacosSystemExtensionState::Enabled => {
-                    "system_extension_ready_needs_network_configuration"
-                }
-                MacosSystemExtensionState::WaitingForReboot => "system_extension_pending_reboot",
-                MacosSystemExtensionState::WaitingForUser | MacosSystemExtensionState::Unknown => {
-                    "system_extension_needs_user_approval"
-                }
-            };
+            return system_extension_activation_method(
+                system_extension_state(bundle_identifier),
+                "system_extension_ready_needs_network_configuration",
+            );
         }
         return "system_extension_ready_needs_network_configuration";
     }
     if status.connected {
         "app_owned_system_extension_native_helper_config"
-    } else if !status.enabled {
-        "network_extension_configured_needs_enable"
     } else {
-        "network_extension_enabled_needs_start"
+        match system_extension_activation_method(
+            system_extension_state(bundle_identifier),
+            "app_owned_system_extension_native_helper_config",
+        ) {
+            "app_owned_system_extension_native_helper_config" => {
+                if !status.enabled {
+                    "network_extension_configured_needs_enable"
+                } else {
+                    "network_extension_enabled_needs_start"
+                }
+            }
+            method => method,
+        }
+    }
+}
+
+fn system_extension_activation_method(
+    state: MacosSystemExtensionState,
+    ready_method: &'static str,
+) -> &'static str {
+    match state {
+        MacosSystemExtensionState::Enabled => ready_method,
+        MacosSystemExtensionState::WaitingForReboot => "system_extension_pending_reboot",
+        MacosSystemExtensionState::WaitingForUser | MacosSystemExtensionState::Unknown => {
+            "system_extension_needs_user_approval"
+        }
     }
 }
 
@@ -1382,11 +1410,13 @@ mod tests {
     use std::sync::{Mutex, MutexGuard};
 
     static HELPER_ENV_LOCK: Mutex<()> = Mutex::new(());
+    const TEST_BUNDLE_ID: &str = "com.rpblc.dam.test.network-extension";
 
     struct HelperEnvGuard {
         _lock: MutexGuard<'static, ()>,
         _temp: Option<tempfile::TempDir>,
-        previous: Option<std::ffi::OsString>,
+        previous_helper: Option<std::ffi::OsString>,
+        previous_bundle_id: Option<std::ffi::OsString>,
     }
 
     impl HelperEnvGuard {
@@ -1407,15 +1437,20 @@ mod tests {
         }
 
         fn with_helper_path(path: &Path) -> Self {
-            let lock = HELPER_ENV_LOCK.lock().unwrap();
-            let previous = env::var_os(HELPER_ENV);
+            let lock = HELPER_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous_helper = env::var_os(HELPER_ENV);
+            let previous_bundle_id = env::var_os(BUNDLE_ID_ENV);
             unsafe {
                 env::set_var(HELPER_ENV, path);
+                env::set_var(BUNDLE_ID_ENV, TEST_BUNDLE_ID);
             }
             Self {
                 _lock: lock,
                 _temp: None,
-                previous,
+                previous_helper,
+                previous_bundle_id,
             }
         }
     }
@@ -1423,9 +1458,13 @@ mod tests {
     impl Drop for HelperEnvGuard {
         fn drop(&mut self) {
             unsafe {
-                match &self.previous {
+                match &self.previous_helper {
                     Some(value) => env::set_var(HELPER_ENV, value),
                     None => env::remove_var(HELPER_ENV),
+                }
+                match &self.previous_bundle_id {
+                    Some(value) => env::set_var(BUNDLE_ID_ENV, value),
+                    None => env::remove_var(BUNDLE_ID_ENV),
                 }
             }
         }
@@ -1573,6 +1612,11 @@ mod tests {
         assert!(command.args.contains(&"api.openai.com".to_string()));
         assert!(command.args.contains(&"--exclude-signing-id".to_string()));
         assert!(command.args.contains(&"com.rpblc.dam.proxy".to_string()));
+        assert!(command.args.contains(&"com.rpblc.dam.web".to_string()));
+        assert!(command.args.contains(&"com.rpblc.dam.cli".to_string()));
+        assert!(command.args.contains(&"dam-proxy".to_string()));
+        assert!(command.args.contains(&"dam-web".to_string()));
+        assert!(command.args.contains(&"dam-macos-ne-helper".to_string()));
     }
 
     #[test]
@@ -1654,11 +1698,11 @@ mod tests {
     }
 
     #[test]
-    fn status_records_configured_disabled_manager_state() {
+    fn status_rechecks_system_extension_before_disabled_manager_state() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        record_system_extension_ready(dir.path(), DEFAULT_BUNDLE_ID, None, Vec::new()).unwrap();
+        record_system_extension_ready(dir.path(), TEST_BUNDLE_ID, None, Vec::new()).unwrap();
         let helper = dir.path().join("status-helper.sh");
         fs::write(
             &helper,
@@ -1673,7 +1717,7 @@ mod tests {
 
         assert_eq!(
             record.activation_method,
-            "network_extension_configured_needs_enable"
+            "system_extension_needs_user_approval"
         );
         assert!(!record.active);
         let manager = status.manager_status.unwrap();
@@ -1682,11 +1726,11 @@ mod tests {
     }
 
     #[test]
-    fn status_records_enabled_disconnected_manager_state() {
+    fn status_rechecks_system_extension_before_enabled_disconnected_manager_state() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        record_system_extension_ready(dir.path(), DEFAULT_BUNDLE_ID, None, Vec::new()).unwrap();
+        record_system_extension_ready(dir.path(), TEST_BUNDLE_ID, None, Vec::new()).unwrap();
         let helper = dir.path().join("status-helper.sh");
         fs::write(
             &helper,
@@ -1701,7 +1745,7 @@ mod tests {
 
         assert_eq!(
             record.activation_method,
-            "network_extension_enabled_needs_start"
+            "system_extension_needs_user_approval"
         );
         assert!(!record.active);
         let manager = status.manager_status.unwrap();
@@ -1711,11 +1755,11 @@ mod tests {
     }
 
     #[test]
-    fn system_extension_ready_does_not_downgrade_manager_start_state() {
+    fn missing_live_system_extension_downgrades_manager_start_state() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().unwrap();
-        record_system_extension_ready(dir.path(), DEFAULT_BUNDLE_ID, None, Vec::new()).unwrap();
+        record_system_extension_ready(dir.path(), TEST_BUNDLE_ID, None, Vec::new()).unwrap();
         let helper = dir.path().join("status-helper.sh");
         fs::write(
             &helper,
@@ -1724,18 +1768,45 @@ mod tests {
         .unwrap();
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
         let _helper = HelperEnvGuard::with_helper_path(&helper);
-        network_extension_status(dir.path()).unwrap();
-
-        record_system_extension_ready(dir.path(), DEFAULT_BUNDLE_ID, None, Vec::new()).unwrap();
+        let status = network_extension_status(dir.path()).unwrap();
         let record = read_record(&MacosNetworkExtensionPaths::for_state_dir(dir.path()))
             .unwrap()
             .unwrap();
 
         assert_eq!(
+            status.record.as_ref().unwrap().activation_method,
+            record.activation_method
+        );
+        assert_eq!(
             record.activation_method,
-            "network_extension_enabled_needs_start"
+            "system_extension_needs_user_approval"
         );
         assert!(!record.active);
+    }
+
+    #[test]
+    fn system_extension_activation_method_maps_live_states() {
+        assert_eq!(
+            system_extension_activation_method(
+                MacosSystemExtensionState::Enabled,
+                "network_extension_enabled_needs_start"
+            ),
+            "network_extension_enabled_needs_start"
+        );
+        assert_eq!(
+            system_extension_activation_method(
+                MacosSystemExtensionState::WaitingForReboot,
+                "network_extension_enabled_needs_start"
+            ),
+            "system_extension_pending_reboot"
+        );
+        assert_eq!(
+            system_extension_activation_method(
+                MacosSystemExtensionState::Unknown,
+                "network_extension_enabled_needs_start"
+            ),
+            "system_extension_needs_user_approval"
+        );
     }
 
     #[test]

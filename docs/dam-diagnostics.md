@@ -17,7 +17,7 @@ Status: implemented first extraction.
 - router target/provider/auth/failure-mode decisions;
 - proxy runtime `/health` reachability when proxy is enabled;
 - a read-only setup plan summary for the default local proxy/interception path;
-- enabled integration profile and Codex ChatGPT-login setup readiness.
+- enabled integration profile selection for route scoping.
 
 `setup_plan` emits a side-effect-free setup checklist for the local "connect" UX. It evaluates:
 
@@ -28,7 +28,6 @@ Status: implemented first extraction.
   Linux emits a Linux transparent routing step and currently blocks to explicit proxy mode until that backend lands;
   Windows emits a Windows Filtering Platform step and currently blocks to explicit proxy mode until that backend lands;
 - local CA trust readiness when requested;
-- enabled integration profile selection;
 - daemon lifecycle readiness for the requested network/trust modes.
 
 The plan states are:

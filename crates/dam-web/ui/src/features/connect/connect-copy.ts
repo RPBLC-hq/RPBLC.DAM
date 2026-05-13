@@ -19,6 +19,7 @@ const stepLabelKeys: Record<string, MessageKey> = {
   windows_capture: 'connect.step.windows_capture',
   ne_reboot: 'connect.step.ne_reboot',
   ca_install: 'connect.step.ca_install',
+  system_proxy: 'connect.step.system_proxy',
   apply_profiles: 'connect.step.apply_profiles',
   daemon_start: 'connect.step.daemon_start',
 }
@@ -33,6 +34,7 @@ const stepActionKeys: Record<string, MessageKey> = {
   windows_capture: 'connect.action.platform_capture',
   ne_reboot: 'connect.action.ne_reboot',
   ca_install: 'connect.action.ca_install',
+  system_proxy: 'connect.action.system_proxy',
   apply_profiles: 'connect.action.apply_profiles',
   daemon_start: 'connect.action.daemon_start',
 }
@@ -47,6 +49,7 @@ const stepHintKeys: Record<string, MessageKey> = {
   windows_capture: 'connect.hint.windows_capture',
   ne_reboot: 'connect.hint.ne_reboot',
   ca_install: 'connect.hint.ca_install',
+  system_proxy: 'connect.hint.system_proxy',
   apply_profiles: 'connect.hint.apply_profiles',
   daemon_start: 'connect.hint.daemon_start',
 }

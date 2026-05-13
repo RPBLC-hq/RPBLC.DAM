@@ -65,10 +65,9 @@ export function SetupChecklist({
         <li
           // The id is a stable action handle but not necessarily unique
           // across rendered rows — the diagnostics plan can surface
-          // multiple checks that resolve under the same action (e.g.
-          // system-proxy and profile-apply both route through
-          // `apply_profiles`). Compose with the index to guarantee a
-          // unique React key without changing the action contract.
+          // multiple checks that resolve under the same action. Compose
+          // with the index to guarantee a unique React key without
+          // changing the action contract.
           key={`${step.id}-${i}`}
           className={join('rpblc-setup-checklist__step', `rpblc-setup-checklist__step--${step.state}`)}
           aria-current={step.state === 'current' ? 'step' : undefined}

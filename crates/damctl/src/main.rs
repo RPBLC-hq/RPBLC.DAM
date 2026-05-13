@@ -907,8 +907,11 @@ fn integrations_check_report(
         .map(Ok)
         .unwrap_or_else(integration_state_dir)?;
     let profile_ids = match &args.profile_id {
-        Some(profile_id) => vec![profile_id.as_str()],
-        None => dam_integrations::profile_ids(),
+        Some(profile_id) => vec![profile_id.clone()],
+        None => dam_integrations::profiles_from_state(&proxy_url, &state_dir)?
+            .into_iter()
+            .map(|profile| profile.id)
+            .collect(),
     };
     let mut profiles = Vec::new();
 
@@ -919,16 +922,17 @@ fn integrations_check_report(
                 return Err("--target-path can only be used when checking one profile".to_string());
             }
             None => dam_integrations::default_apply_path(
-                profile_id,
+                &profile_id,
                 &state_dir,
                 env::var_os("CODEX_HOME").map(PathBuf::from),
                 env::var_os("HOME").map(PathBuf::from),
             )?,
         };
-        profiles.push(dam_integrations::inspect_apply(
-            profile_id,
+        profiles.push(dam_integrations::inspect_apply_in_state(
+            &profile_id,
             &proxy_url,
             target_path,
+            &state_dir,
             &state_dir,
         )?);
     }
@@ -2253,7 +2257,7 @@ mod tests {
         let command = parse_args([
             "integrations".to_string(),
             "check".to_string(),
-            "codex-api".to_string(),
+            "codex".to_string(),
             "--proxy-url".to_string(),
             "http://127.0.0.1:9000".to_string(),
             "--target-path".to_string(),
@@ -2266,7 +2270,7 @@ mod tests {
             command,
             Command::Integrations(IntegrationsArgs {
                 command: IntegrationsCommand::Check(IntegrationsCheckArgs {
-                    profile_id: Some("codex-api".to_string()),
+                    profile_id: Some("codex".to_string()),
                     json: true,
                     proxy_url: Some("http://127.0.0.1:9000".to_string()),
                     target_path: Some(PathBuf::from("/tmp/codex.toml")),
@@ -2522,21 +2526,21 @@ mod tests {
         assert!(output.stdout.contains("process: running"));
         assert!(output.stdout.contains("target: openai"));
         assert!(output.stdout.contains("network_mode: explicit_proxy"));
-        assert!(output.stdout.contains("transparent_ai_routes: 4"));
-        assert!(output.stdout.contains("routing_routes: 4"));
+        assert!(output.stdout.contains("transparent_ai_routes: 3"));
+        assert!(output.stdout.contains("routing_routes: 3"));
         assert!(output.stdout.contains(
             "routing_route openai: ready - explicit proxy routing is active for clients configured to use DAM"
         ));
         assert!(output.stdout.contains("trust_mode: disabled"));
         assert!(output.stdout.contains("local_ca_installed: false"));
-        assert!(output.stdout.contains("trusted_ai_hosts: 4"));
-        assert!(output.stdout.contains("trust_routes: 4"));
+        assert!(output.stdout.contains("trusted_ai_hosts: 3"));
+        assert!(output.stdout.contains("trust_routes: 3"));
         assert!(
             output
                 .stdout
                 .contains("trust_route openai: disabled - TLS interception is disabled")
         );
-        assert!(output.stdout.contains("interception_routes: 4"));
+        assert!(output.stdout.contains("interception_routes: 3"));
         assert!(output.stdout.contains(
             "interception_route openai: needs_user_consent - TLS interception requires explicit user approval"
         ));
@@ -2562,7 +2566,7 @@ mod tests {
         assert!(output.stdout.contains("trust_mode: disabled"));
         assert!(output.stdout.contains("local_ca_installed: false"));
         assert!(output.stdout.contains("local_ca_artifact: missing"));
-        assert!(output.stdout.contains("trust_routes: 4"));
+        assert!(output.stdout.contains("trust_routes: 3"));
         assert!(output.stdout.contains("action inspect: implemented"));
         let expected_install_support = if dam_trust::PlatformTrustStore::current()
             == dam_trust::PlatformTrustStore::MacosKeychain
@@ -2598,7 +2602,7 @@ mod tests {
             report["local_ca_artifact"]["record"]["installed_at_unix"],
             serde_json::Value::Null
         );
-        assert_eq!(report["route_readiness"].as_array().unwrap().len(), 4);
+        assert_eq!(report["route_readiness"].as_array().unwrap().len(), 3);
     }
 
     #[test]
@@ -2619,7 +2623,7 @@ mod tests {
         let report: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
         assert_eq!(report["source"], "daemon");
         assert_eq!(report["trust"]["mode"], "local_ca");
-        assert_eq!(report["route_readiness"].as_array().unwrap().len(), 4);
+        assert_eq!(report["route_readiness"].as_array().unwrap().len(), 3);
         assert_eq!(report["actions"].as_array().unwrap().len(), 3);
     }
 
@@ -2637,7 +2641,7 @@ mod tests {
         assert_eq!(output.code, 0);
         assert!(output.stdout.contains("state: not_installed"));
         assert!(output.stdout.contains("system_proxy_installed: false"));
-        assert!(output.stdout.contains("known_ai_hosts: 4"));
+        assert!(output.stdout.contains("known_ai_hosts: 3"));
         assert!(
             output
                 .stdout
@@ -2668,8 +2672,8 @@ mod tests {
         let report: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
         assert_eq!(report["state"], "installed");
         assert_eq!(report["system_proxy_installed"], true);
-        assert_eq!(report["known_ai_hosts"].as_array().unwrap().len(), 4);
-        assert_eq!(report["route_readiness"].as_array().unwrap().len(), 4);
+        assert_eq!(report["known_ai_hosts"].as_array().unwrap().len(), 3);
+        assert_eq!(report["route_readiness"].as_array().unwrap().len(), 3);
         assert_eq!(report["route_readiness"][0]["readiness"], "ready");
     }
 
@@ -2740,7 +2744,7 @@ mod tests {
             profile_id: Some("claude-code".to_string()),
             json: true,
             proxy_url: Some("http://127.0.0.1:9000".to_string()),
-            target_path: Some(dir.path().join("claude.env")),
+            target_path: Some(dir.path().join("claude-code.json")),
             state_dir: Some(dir.path().join("state")),
         });
 
@@ -2758,11 +2762,11 @@ mod tests {
     fn integrations_check_reports_applied_profile() {
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().join("state").join("integrations");
-        let env_path = dir.path().join("claude.env");
+        let profile_path = dir.path().join("claude-code.json");
         let prepared = dam_integrations::prepare_apply(
             "claude-code",
             "http://127.0.0.1:9000",
-            env_path.clone(),
+            profile_path.clone(),
         )
         .unwrap();
         dam_integrations::run_apply(prepared, false, &state_dir).unwrap();
@@ -2771,7 +2775,7 @@ mod tests {
             profile_id: Some("claude-code".to_string()),
             json: false,
             proxy_url: Some("http://127.0.0.1:9000".to_string()),
-            target_path: Some(env_path),
+            target_path: Some(profile_path),
             state_dir: Some(dir.path().join("state")),
         });
 

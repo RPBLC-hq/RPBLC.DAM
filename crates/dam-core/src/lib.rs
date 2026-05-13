@@ -10,6 +10,7 @@ pub use normalization::canonical_sensitive_value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SensitiveType {
     Email,
+    Domain,
     Phone,
     Ssn,
     CreditCard,
@@ -19,6 +20,7 @@ impl SensitiveType {
     pub fn tag(self) -> &'static str {
         match self {
             Self::Email => "email",
+            Self::Domain => "domain",
             Self::Phone => "phone",
             Self::Ssn => "ssn",
             Self::CreditCard => "cc",
@@ -28,6 +30,7 @@ impl SensitiveType {
     pub fn from_tag(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "email" => Some(Self::Email),
+            "domain" => Some(Self::Domain),
             "phone" => Some(Self::Phone),
             "ssn" => Some(Self::Ssn),
             "cc" | "credit_card" | "credit-card" => Some(Self::CreditCard),

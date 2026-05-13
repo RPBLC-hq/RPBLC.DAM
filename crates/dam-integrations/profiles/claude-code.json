@@ -29,11 +29,8 @@
       "command": [
         "dam",
         "connect",
-        "--anthropic",
-        "--network-mode",
-        "tun",
-        "--trust-mode",
-        "local_ca"
+        "--profile",
+        "claude-code"
       ]
     },
     {
@@ -48,9 +45,8 @@
   ],
   "notes": [
     "Claude Code keeps its normal Anthropic API endpoint; Network Extension capture is primary and explicit proxy remains a fallback for source builds and unsupported environments.",
-    "`dam integrations apply claude-code` writes fallback proxy env settings to Claude Code settings JSON with a rollback record.",
-    "Use `--target-path .claude/settings.local.json` for a project-local Claude Code setting instead of the default user setting.",
-    "The apply step removes the old DAM-owned ANTHROPIC_BASE_URL override so Claude talks to the real Anthropic host.",
+    "`dam integrations apply claude-code` ensures a DAM-owned JSON profile file under the integration profile directory; it does not mutate Claude Code settings.",
+    "Use the listed explicit-proxy fallback command only for source builds and unsupported environments.",
     "Claude Code keeps provider authentication; DAM only receives and forwards the request headers."
   ],
   "automation": "connect_preset"

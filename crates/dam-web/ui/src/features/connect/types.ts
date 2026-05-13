@@ -12,6 +12,7 @@ export type ConnectView = {
 
 export type ConnectCounts = {
   grants: number
+  redacted_today?: number
   blocked_today: number
   apps_mediated: number
 }

@@ -473,6 +473,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "dam-config",
+ "dam-integrations",
  "dam-intercept",
  "dam-net",
  "dam-net-macos",
@@ -555,7 +556,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "toml_edit 0.22.27",
 ]
 
 [[package]]
@@ -690,6 +690,7 @@ dependencies = [
  "rcgen",
  "reqwest",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

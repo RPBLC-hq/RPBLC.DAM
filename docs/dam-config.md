@@ -71,7 +71,7 @@ failure_mode = "bypass_on_error"
 api_key_env = "OPENAI_API_KEY"
 ```
 
-Supported first-slice provider values are `openai-compatible` and `anthropic`. The local proxy can accept multiple configured targets; `dam-router` selects the OpenAI-compatible or Anthropic route from request path/header shape or from the transparent AI route match.
+Supported first-slice provider values are `generic-http`, `openai-compatible`, and `anthropic`. The local proxy can accept multiple configured targets; `dam-router` selects the OpenAI-compatible or Anthropic route from request path/header shape or from the transparent AI route match. `generic-http` remains a low-level caller-auth pass-through target value for future profile-builder/import work; Settings-created generic website profiles are not wired in the current app.
 
 `traffic.profile_path` is optional. Without it, DAM loads the bundled JSON traffic profile at `crates/dam-net/profiles/llm-mvp.json`. A traffic profile contains app entries: each entry names match rules such as domains, IPs, URLs, ports, protocols, and process names; an action such as `inspect` or `bypass`; the protocol adapter; and the generic pipeline steps to run. LLM providers are only the bundled MVP entries, not the shape of the system.
 

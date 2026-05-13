@@ -1,9 +1,9 @@
 {
-  "id": "codex-api",
-  "name": "Codex API-key mode",
-  "summary": "Route Codex API-key OpenAI HTTPS traffic through DAM.",
+  "id": "codex",
+  "name": "Codex",
+  "summary": "Route Codex API-key and ChatGPT-login traffic through DAM.",
   "provider": "openai-compatible",
-  "traffic_app_ids": ["openai-api"],
+  "traffic_app_ids": ["openai-api", "chatgpt-codex"],
   "connect_args": [
     "--openai",
     "--network-mode",
@@ -25,15 +25,12 @@
   ],
   "commands": [
     {
-      "label": "Start DAM for Codex API-key mode",
+      "label": "Start DAM for Codex",
       "command": [
         "dam",
         "connect",
-        "--openai",
-        "--network-mode",
-        "tun",
-        "--trust-mode",
-        "local_ca"
+        "--profile",
+        "codex"
       ]
     },
     {
@@ -47,9 +44,10 @@
     }
   ],
   "notes": [
-    "Codex must keep its normal OpenAI API-key configuration; DAM does not write a custom Codex provider or base URL.",
-    "Tray/web Connect installs Network Extension capture first; proxy env fallback is retained for source builds and unsupported environments.",
-    "Codex ChatGPT-login mode uses the codex-chatgpt profile so chatgpt.com WebSocket traffic is routed through the WebSocket protocol adapter.",
+    "Codex keeps its normal OpenAI API-key configuration or ChatGPT subscription login; DAM does not write a custom Codex provider or base URL.",
+    "Network Extension capture is primary for installed builds. The proxy env fallback is retained for source builds and unsupported environments.",
+    "`dam integrations apply codex` ensures a DAM-owned JSON profile file under the integration profile directory; it does not mutate Codex settings or shell startup files.",
+    "API-key mode routes api.openai.com through the HTTP adapter. ChatGPT-login mode routes chatgpt.com and ab.chatgpt.com through the WebSocket adapter.",
     "{{codex_api_key_env}} stays owned by Codex or the user's shell; DAM forwards caller auth headers."
   ],
   "automation": "connect_preset"

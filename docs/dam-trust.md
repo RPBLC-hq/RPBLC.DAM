@@ -73,8 +73,8 @@ The default trusted AI host scope comes from `dam-net`:
 ```text
 api.openai.com
 api.anthropic.com
-api.x.ai
 chatgpt.com
+ab.chatgpt.com
 ```
 
 When the daemon loads the effective `[traffic]` profile, it extends the in-memory trusted host scope for transparent readiness with those route hosts. This keeps local CA readiness aligned with the same profile-derived route registry used by routing and transparent proxy activation.

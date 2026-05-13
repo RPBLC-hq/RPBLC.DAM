@@ -1336,9 +1336,10 @@ mod tests {
 
     #[test]
     fn known_ai_route_readiness_reports_all_initial_https_routes() {
+        let routes = dam_net::known_ai_routes();
         let reports = readiness_for_known_ai_routes(&TrustState::default(), false);
 
-        assert_eq!(reports.len(), 4);
+        assert_eq!(reports.len(), routes.len());
         assert_eq!(reports[0].route.target_name, "openai");
         assert_eq!(reports[0].protocol, dam_net::TrafficProtocol::Https);
         assert!(

@@ -22,6 +22,7 @@ impl ProviderAdapters {
 
     pub(crate) fn get(&self, kind: dam_router::ProviderKind) -> ProviderAdapter<'_> {
         match kind {
+            dam_router::ProviderKind::GenericHttp => ProviderAdapter::OpenAi(&self.openai),
             dam_router::ProviderKind::OpenAiCompatible => ProviderAdapter::OpenAi(&self.openai),
             dam_router::ProviderKind::Anthropic => ProviderAdapter::Anthropic(&self.anthropic),
         }

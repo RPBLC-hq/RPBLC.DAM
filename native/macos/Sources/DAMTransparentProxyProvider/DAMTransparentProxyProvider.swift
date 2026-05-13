@@ -10,9 +10,11 @@ public final class DAMTransparentProxyProvider: NETransparentProxyProvider, @unc
 
     private let logger = Logger(subsystem: "com.rpblc.dam.network-extension", category: "provider")
     private let stateQueue = DispatchQueue(label: "com.rpblc.dam.network-extension.provider.state")
+    private let cachedFlowActionLock = NSLock()
     private var activeFlows: [UUID: TCPFlowProxy] = [:]
     private var runtimeConfiguration = DAMProxyRuntimeConfiguration()
     private var healthTimer: DispatchSourceTimer?
+    private var cachedFlowAction: FlowAction = .passThrough
 
     public override func startProxy(
         options: [String: Any]? = nil,
@@ -32,6 +34,7 @@ public final class DAMTransparentProxyProvider: NETransparentProxyProvider, @unc
             } else {
                 self.logger.notice("DAM transparent proxy provider connected")
                 self.stateQueue.async {
+                    self.setCachedFlowAction(Self.flowAction(self.runtimeConfiguration))
                     self.startHealthMonitor()
                 }
             }
@@ -56,7 +59,11 @@ public final class DAMTransparentProxyProvider: NETransparentProxyProvider, @unc
     }
 
     public override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
-        if runtimeConfiguration.shouldBypassSource(signingIdentifier: flow.metaData.sourceAppSigningIdentifier) {
+        let sourceProcess = ProcessInfoCache.getInfo(fromAuditToken: flow.metaData.sourceAppAuditToken)
+        if runtimeConfiguration.shouldBypassSource(
+            signingIdentifier: flow.metaData.sourceAppSigningIdentifier,
+            processPath: sourceProcess?.path
+        ) {
             return false
         }
         guard let tcpFlow = flow as? NEAppProxyTCPFlow,
@@ -66,7 +73,7 @@ public final class DAMTransparentProxyProvider: NETransparentProxyProvider, @unc
             return false
         }
 
-        switch Self.flowAction(runtimeConfiguration) {
+        switch currentFlowAction() {
         case .handle:
             break
         case .passThrough:
@@ -81,7 +88,9 @@ public final class DAMTransparentProxyProvider: NETransparentProxyProvider, @unc
         let proxy = TCPFlowProxy(
             flow: tcpFlow,
             endpoint: endpoint,
-            runtimeConfiguration: runtimeConfiguration
+            runtimeConfiguration: runtimeConfiguration,
+            sourceSigningIdentifier: flow.metaData.sourceAppSigningIdentifier,
+            sourceProcess: sourceProcess
         ) { [weak self] id in
             guard let provider = self else {
                 return
@@ -98,10 +107,24 @@ public final class DAMTransparentProxyProvider: NETransparentProxyProvider, @unc
         return true
     }
 
-    private enum FlowAction {
+    private enum FlowAction: Equatable {
         case handle
         case passThrough
         case block
+    }
+
+    private func currentFlowAction() -> FlowAction {
+        cachedFlowActionLock.lock()
+        defer {
+            cachedFlowActionLock.unlock()
+        }
+        return cachedFlowAction
+    }
+
+    private func setCachedFlowAction(_ action: FlowAction) {
+        cachedFlowActionLock.lock()
+        cachedFlowAction = action
+        cachedFlowActionLock.unlock()
     }
 
     private func startHealthMonitor() {
@@ -121,6 +144,7 @@ public final class DAMTransparentProxyProvider: NETransparentProxyProvider, @unc
 
     private func enforceCurrentFlowAction() {
         let action = Self.flowAction(runtimeConfiguration)
+        setCachedFlowAction(action)
         guard action != .handle, !activeFlows.isEmpty else {
             return
         }

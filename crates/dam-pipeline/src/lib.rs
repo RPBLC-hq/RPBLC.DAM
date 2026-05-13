@@ -38,11 +38,23 @@ pub struct ResolveTextResult {
     pub plan: ResolvePlan,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct ProtectTextContext<'a> {
     pub reference_vault: Option<&'a dyn VaultReader>,
     pub consent_store: Option<&'a dam_consent::ConsentStore>,
     pub event_sink: Option<&'a dyn EventSink>,
+    pub related_domains: &'a [String],
+}
+
+impl Default for ProtectTextContext<'_> {
+    fn default() -> Self {
+        Self {
+            reference_vault: None,
+            consent_store: None,
+            event_sink: None,
+            related_domains: &[],
+        }
+    }
 }
 
 pub fn protect_text(
@@ -57,7 +69,7 @@ pub fn protect_text(
         expand_allowed_references(input, context.consent_store, context.reference_vault)?
             .unwrap_or_else(|| input.to_string());
     let input = protected_input.as_str();
-    let detections = dam_detect::detect(input);
+    let detections = dam_detect::detect_with_related_domains(input, context.related_domains);
     let base_decisions = policy.decide_all(&detections);
     let (decisions, consent_matches) =
         dam_consent::apply_consents_to_decisions(&base_decisions, context.consent_store)?;
@@ -377,6 +389,7 @@ mod tests {
                 reference_vault: Some(&vault),
                 consent_store: Some(&consent_store),
                 event_sink: Some(&sink),
+                ..ProtectTextContext::default()
             },
             ReplacementPlanOptions::default(),
         )
@@ -429,6 +442,7 @@ mod tests {
                 reference_vault: Some(&vault),
                 consent_store: Some(&consent_store),
                 event_sink: Some(&sink),
+                ..ProtectTextContext::default()
             },
             ReplacementPlanOptions::default(),
         )
@@ -444,6 +458,33 @@ mod tests {
                     .as_deref()
                     .is_some_and(|action| action.starts_with("allow:"))
         }));
+    }
+
+    #[test]
+    fn protect_text_tokenizes_related_domain_without_email_in_input() {
+        let vault = RecordingVault::default();
+        let policy = dam_policy::StaticPolicy::new(PolicyAction::Tokenize);
+        let related_domains = vec!["example.com".to_string()];
+
+        let result = protect_text(
+            "domain example.com",
+            "op-test",
+            &policy,
+            &vault,
+            ProtectTextContext {
+                related_domains: &related_domains,
+                ..ProtectTextContext::default()
+            },
+            ReplacementPlanOptions::default(),
+        )
+        .unwrap();
+
+        let output = result.output.unwrap();
+        assert!(!output.contains("example.com"));
+        assert!(output.contains("[domain:"));
+        assert_eq!(result.detections.len(), 1);
+        assert_eq!(result.detections[0].kind, SensitiveType::Domain);
+        assert_eq!(vault.records.lock().unwrap()[0].value, "example.com");
     }
 
     #[test]

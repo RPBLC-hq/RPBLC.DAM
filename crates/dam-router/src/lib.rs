@@ -2,11 +2,13 @@ use http::{HeaderMap, header};
 
 pub const OPENAI_COMPATIBLE_PROVIDER: &str = "openai-compatible";
 pub const ANTHROPIC_PROVIDER: &str = "anthropic";
+pub const GENERIC_HTTP_PROVIDER: &str = "generic-http";
 pub const OPENAI_AUTHORIZATION_HEADER: &str = "authorization";
 pub const ANTHROPIC_API_KEY_HEADER: &str = "x-api-key";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
+    GenericHttp,
     OpenAiCompatible,
     Anthropic,
 }
@@ -14,6 +16,7 @@ pub enum ProviderKind {
 impl ProviderKind {
     pub fn parse(value: &str) -> Result<Self, RouteError> {
         match value {
+            GENERIC_HTTP_PROVIDER => Ok(Self::GenericHttp),
             OPENAI_COMPATIBLE_PROVIDER => Ok(Self::OpenAiCompatible),
             ANTHROPIC_PROVIDER => Ok(Self::Anthropic),
             other => Err(RouteError::UnsupportedProvider(other.to_string())),
@@ -22,6 +25,7 @@ impl ProviderKind {
 
     pub fn id(self) -> &'static str {
         match self {
+            Self::GenericHttp => GENERIC_HTTP_PROVIDER,
             Self::OpenAiCompatible => OPENAI_COMPATIBLE_PROVIDER,
             Self::Anthropic => ANTHROPIC_PROVIDER,
         }
@@ -29,6 +33,7 @@ impl ProviderKind {
 
     pub fn caller_auth_header_present(self, headers: &HeaderMap) -> bool {
         match self {
+            Self::GenericHttp => true,
             Self::OpenAiCompatible => headers.contains_key(OPENAI_AUTHORIZATION_HEADER),
             Self::Anthropic => {
                 headers.contains_key(ANTHROPIC_API_KEY_HEADER)
@@ -97,7 +102,9 @@ impl RoutePlan {
     }
 
     pub fn decide<'a>(&'a self, headers: &HeaderMap) -> RouteDecision<'a> {
-        let auth = if self.target.api_key.is_some() {
+        let auth = if self.provider == ProviderKind::GenericHttp {
+            RouteAuth::CallerPassthrough
+        } else if self.target.api_key.is_some() {
             RouteAuth::TargetApiKey
         } else if self.target.api_key_env.is_some()
             && !self.provider.caller_auth_header_present(headers)
@@ -376,6 +383,31 @@ mod tests {
     }
 
     #[test]
+    fn route_table_selects_target_from_ai_route() {
+        let mut anthropic = target(ANTHROPIC_PROVIDER);
+        anthropic.name = "anthropic".to_string();
+        anthropic.upstream = "https://api.anthropic.com".to_string();
+        let mut chatgpt = target(OPENAI_COMPATIBLE_PROVIDER);
+        chatgpt.name = "chatgpt-codex".to_string();
+        chatgpt.upstream = "https://chatgpt.com".to_string();
+        let mut config = proxy_config(anthropic);
+        config.targets.push(chatgpt);
+        let table = RouteTable::from_proxy_config(&config).unwrap();
+        let ai_route = dam_net::AiRoute::new(
+            dam_net::AiTrafficKind::ChatGptCodexBackend,
+            "chatgpt.com",
+            OPENAI_COMPATIBLE_PROVIDER,
+            "chatgpt-codex",
+            "https://chatgpt.com",
+        );
+
+        let decision = table.decide_for_ai_route(&HeaderMap::new(), &ai_route);
+
+        assert_eq!(decision.target().name, "chatgpt-codex");
+        assert_eq!(decision.provider_kind(), ProviderKind::OpenAiCompatible);
+    }
+
+    #[test]
     fn openai_target_requires_config_when_env_key_is_missing_and_caller_auth_is_absent() {
         let mut target = target(OPENAI_COMPATIBLE_PROVIDER);
         target.api_key_env = Some("OPENAI_API_KEY".to_string());
@@ -435,6 +467,24 @@ mod tests {
 
         assert_eq!(decision.auth(), RouteAuth::CallerPassthrough);
         assert!(!decision.config_required());
+    }
+
+    #[test]
+    fn generic_http_target_uses_pass_through_without_provider_auth_shape() {
+        let mut target = target(GENERIC_HTTP_PROVIDER);
+        target.api_key_env = Some("IGNORED_FOR_GENERIC_HTTP".to_string());
+        target.api_key = Some(dam_config::SecretValue::new(
+            "IGNORED_FOR_GENERIC_HTTP",
+            "target-secret",
+        ));
+        let route = RoutePlan::from_proxy_config(&proxy_config(target)).unwrap();
+
+        let decision = route.decide(&HeaderMap::new());
+
+        assert_eq!(route.provider_kind(), ProviderKind::GenericHttp);
+        assert_eq!(decision.auth(), RouteAuth::CallerPassthrough);
+        assert!(!decision.config_required());
+        assert_eq!(decision.target_api_key(), None);
     }
 
     #[test]

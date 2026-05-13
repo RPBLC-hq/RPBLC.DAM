@@ -223,6 +223,84 @@ sign_code() {
   fi
 }
 
+dam_binary_identifier() {
+  case "$1" in
+    dam)
+      printf '%s\n' "$APP_BUNDLE_ID.cli"
+      ;;
+    dam-daemon)
+      printf '%s\n' "$APP_BUNDLE_ID.daemon"
+      ;;
+    dam-macos-ne-helper)
+      printf '%s\n' "$APP_BUNDLE_ID.helper"
+      ;;
+    dam-mcp)
+      printf '%s\n' "$APP_BUNDLE_ID.mcp"
+      ;;
+    dam-proxy)
+      printf '%s\n' "$APP_BUNDLE_ID.proxy"
+      ;;
+    dam-tray)
+      printf '%s\n' "$APP_BUNDLE_ID.tray"
+      ;;
+    dam-web)
+      printf '%s\n' "$APP_BUNDLE_ID.web"
+      ;;
+    *)
+      echo "unknown DAM binary identifier for $1" >&2
+      exit 1
+      ;;
+  esac
+}
+
+provider_version_guard() {
+  if ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local base source_changed plist_changed
+  base="$(git -C "$ROOT" merge-base HEAD origin/main 2>/dev/null || git -C "$ROOT" merge-base HEAD main 2>/dev/null || true)"
+  if [[ -z "$base" ]]; then
+    return 0
+  fi
+
+  source_changed="$(
+    {
+      git -C "$ROOT" diff --name-only "$base"...HEAD -- \
+        native/macos/Sources/DAMTransparentProxyProvider \
+        native/macos/Sources/DAMNetworkExtensionSupport/RuntimeConfiguration.swift \
+        native/macos/Sources/DAMNetworkExtensionSupport/HelperOptions.swift \
+        native/macos/Package.swift
+      git -C "$ROOT" diff --name-only -- \
+        native/macos/Sources/DAMTransparentProxyProvider \
+        native/macos/Sources/DAMNetworkExtensionSupport/RuntimeConfiguration.swift \
+        native/macos/Sources/DAMNetworkExtensionSupport/HelperOptions.swift \
+        native/macos/Package.swift
+      git -C "$ROOT" ls-files --others --exclude-standard -- \
+        native/macos/Sources/DAMTransparentProxyProvider \
+        native/macos/Sources/DAMNetworkExtensionSupport/RuntimeConfiguration.swift \
+        native/macos/Sources/DAMNetworkExtensionSupport/HelperOptions.swift \
+        native/macos/Package.swift
+    } | sort -u
+  )"
+  if [[ -z "$source_changed" ]]; then
+    return 0
+  fi
+
+  plist_changed="$(
+    {
+      git -C "$ROOT" diff --name-only "$base"...HEAD -- native/macos/InfoPlists/DAMTransparentProxyProvider.Info.plist
+      git -C "$ROOT" diff --name-only -- native/macos/InfoPlists/DAMTransparentProxyProvider.Info.plist
+    } | sort -u
+  )"
+  if [[ -z "$plist_changed" ]]; then
+    echo "Transparent proxy provider sources changed without bumping native/macos/InfoPlists/DAMTransparentProxyProvider.Info.plist CFBundleVersion" >&2
+    echo "Changed provider inputs:" >&2
+    printf '  %s\n' $source_changed >&2
+    exit 1
+  fi
+}
+
 materialize_template() {
   local template="$1"
   local output="$2"
@@ -252,6 +330,8 @@ require_profile() {
   fi
   printf '%s\n' "$profile"
 }
+
+provider_version_guard
 
 APP_PROFILE="$(require_profile "$APP_PROFILE_NAME")"
 EXT_PROFILE="$(require_profile "$EXT_PROFILE_NAME")"
@@ -341,20 +421,22 @@ xcrun swiftc \
   "$NATIVE/Sources/DAMTransparentProxyProvider/main.swift" \
   "$NATIVE/Sources/DAMTransparentProxyProvider/DAMTransparentProxyProvider.swift" \
   "$NATIVE/Sources/DAMTransparentProxyProvider/FlowEndpoint.swift" \
+  "$NATIVE/Sources/DAMTransparentProxyProvider/ProcessInfoCache.swift" \
   "$NATIVE/Sources/DAMTransparentProxyProvider/TCPFlowProxy.swift" \
   "$SWIFT_BUILD/DAMNetworkExtensionSupport.build/HelperOptions.swift.o" \
   "$SWIFT_BUILD/DAMNetworkExtensionSupport.build/RuntimeConfiguration.swift.o" \
   -framework Network \
   -framework NetworkExtension \
+  -lbsm \
   -o "$EXT_MACOS/DAMTransparentProxyProvider"
 ditto "$EXT" "$HELPER_EXT"
 
 echo "Signing nested executables..."
 for bin in dam dam-web dam-proxy dam-mcp dam-daemon; do
-  sign_code "$APP_IDENTITY" "$MACOS/$bin"
+  sign_code "$APP_IDENTITY" --identifier "$(dam_binary_identifier "$bin")" "$MACOS/$bin"
 done
-sign_code "$APP_IDENTITY" --identifier "$APP_BUNDLE_ID" --entitlements "$APP_ENTITLEMENTS" "$HELPER_BIN"
-sign_code "$APP_IDENTITY" --entitlements "$APP_ENTITLEMENTS" "$MACOS/dam-tray"
+sign_code "$APP_IDENTITY" --identifier "$(dam_binary_identifier dam-macos-ne-helper)" --entitlements "$APP_ENTITLEMENTS" "$HELPER_BIN"
+sign_code "$APP_IDENTITY" --identifier "$(dam_binary_identifier dam-tray)" --entitlements "$APP_ENTITLEMENTS" "$MACOS/dam-tray"
 
 echo "Signing system extension..."
 sign_code "$EXT_IDENTITY" --entitlements "$EXT_ENTITLEMENTS" "$EXT"

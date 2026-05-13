@@ -22,11 +22,10 @@
       "steps": [
         {"id": "detect", "kind": "detect_sensitive_data", "direction": "outbound"},
         {"id": "consent", "kind": "apply_consents", "direction": "outbound"},
-        {"id": "tokenize", "kind": "replace_sensitive_data", "direction": "outbound"},
-        {"id": "resolve", "kind": "resolve_references", "direction": "inbound"}
+        {"id": "tokenize", "kind": "replace_sensitive_data", "direction": "outbound"}
       ],
       "outbound": {"filter": {"default_action": "tokenize"}},
-      "inbound": {"resolve_references": true}
+      "inbound": {"resolve_references": false}
     },
     {
       "id": "anthropic-api",
@@ -47,36 +46,10 @@
       "steps": [
         {"id": "detect", "kind": "detect_sensitive_data", "direction": "outbound"},
         {"id": "consent", "kind": "apply_consents", "direction": "outbound"},
-        {"id": "tokenize", "kind": "replace_sensitive_data", "direction": "outbound"},
-        {"id": "resolve", "kind": "resolve_references", "direction": "inbound"}
+        {"id": "tokenize", "kind": "replace_sensitive_data", "direction": "outbound"}
       ],
       "outbound": {"filter": {"default_action": "tokenize"}},
-      "inbound": {"resolve_references": true}
-    },
-    {
-      "id": "xai-api",
-      "name": "xAI API",
-      "enabled": true,
-      "priority": 0,
-      "match": {
-        "domains": ["api.x.ai"],
-        "ports": [443],
-        "protocols": ["https", "web_socket"]
-      },
-      "action": "inspect",
-      "adapter": "http",
-      "provider": "openai-compatible",
-      "target_name": "xai",
-      "upstream": "https://api.x.ai",
-      "traffic_kind": "xai_api",
-      "steps": [
-        {"id": "detect", "kind": "detect_sensitive_data", "direction": "outbound"},
-        {"id": "consent", "kind": "apply_consents", "direction": "outbound"},
-        {"id": "tokenize", "kind": "replace_sensitive_data", "direction": "outbound"},
-        {"id": "resolve", "kind": "resolve_references", "direction": "inbound"}
-      ],
-      "outbound": {"filter": {"default_action": "tokenize"}},
-      "inbound": {"resolve_references": true}
+      "inbound": {"resolve_references": false}
     },
     {
       "id": "chatgpt-codex",
@@ -84,7 +57,7 @@
       "enabled": true,
       "priority": 0,
       "match": {
-        "domains": ["chatgpt.com"],
+        "domains": ["chatgpt.com", "ab.chatgpt.com"],
         "ports": [443],
         "protocols": ["https", "web_socket"]
       },

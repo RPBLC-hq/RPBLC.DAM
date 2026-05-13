@@ -55,7 +55,7 @@ Failure behavior is a platform-neutral policy:
 - `fail_open` is the consumer default: when DAM is off, paused, unhealthy, unreachable, or not ready for a configured route, traffic passes outside DAM and surfaces as unprotected.
 - `fail_closed` is explicit user/admin or managed-install behavior: configured traffic is blocked when DAM cannot verify protection.
 
-Platform capture backends must apply the policy to new flows and to already-captured flows. Runtime app enablement narrows the active traffic profile; an explicit empty enabled-app selection means no configured flows should be mediated, so platform capture must pass traffic through instead of falling back to bundled defaults. On macOS Network Extension capture, the provider closes active configured flows when the local proxy stops reporting `protected`; the client then reconnects through the current policy instead of staying pinned through DAM while it is paused or unhealthy.
+Platform capture backends must apply the policy to new flows and to already-captured flows. Runtime app enablement narrows the active traffic profile; an explicit empty enabled-app selection means no configured flows should be mediated, so platform capture must pass traffic through instead of falling back to bundled defaults. On macOS Network Extension capture, the provider caches local proxy health/routing state for new-flow decisions and closes active configured flows when the local proxy stops reporting `protected`; the client then reconnects through the current policy instead of staying pinned through DAM while it is paused or unhealthy.
 
 ## Traffic Profiles
 
@@ -73,11 +73,10 @@ The bundled MVP profile lives at `crates/dam-net/profiles/llm-mvp.json`. Its act
 ```text
 openai-api       -> api.openai.com / HTTP
 anthropic-api    -> api.anthropic.com / HTTP
-xai-api          -> api.x.ai / HTTP
-chatgpt-codex    -> chatgpt.com / WebSocket
+chatgpt-codex    -> chatgpt.com, ab.chatgpt.com / WebSocket
 ```
 
-`known_ai_routes()` is now a compatibility view derived from the bundled traffic profile. New mediated services, including private OpenAI-compatible and Anthropic-compatible endpoints, must be added as traffic profile JSON app entries.
+`known_ai_routes()` is now a compatibility view derived from the bundled traffic profile. New mediated services, including private OpenAI-compatible and Anthropic-compatible endpoints, must be added as traffic profile JSON app entries. User-authored profile create/import/export is parked; when it returns, new services should still be validated JSON profile data rather than provider-specific Rust code.
 
 For TLS traffic, classification can identify that traffic matches a configured profile, but it cannot protect request bodies without `dam-trust` readiness and a later TLS interception implementation. The explicit decision shape for the bundled LLM MVP is:
 

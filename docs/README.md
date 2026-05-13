@@ -61,7 +61,7 @@ dam-core also builds non-sensitive log events
   -> dam-log when enabled
 ```
 
-Replacement planning deduplicates repeated equal canonical values by default, and compatible vault writers reuse an existing canonical reference for the same stored value. Current email canonicalization removes detector-supported whitespace inside the address and lowercases the domain before storage/deduplication. Set `policy.deduplicate_replacements = false` to issue a distinct reference per occurrence when repeated-reference equality is too revealing.
+Replacement planning deduplicates repeated equal canonical values by default, and compatible vault writers reuse an existing canonical reference for the same stored value. Current email canonicalization removes detector-supported whitespace inside the address and lowercases the domain before storage/deduplication; domain canonicalization removes detector-supported whitespace around dots and lowercases the domain. Set `policy.deduplicate_replacements = false` to issue a distinct reference per occurrence when repeated-reference equality is too revealing.
 
 ## Resolve Pipeline
 
@@ -107,7 +107,7 @@ provider response
   -> LLM client
 ```
 
-Proxy defaults are directional: outbound requests are redacted before the provider sees them; inbound responses are not redetected or redacted. Active consent applies to canonical detected values and, in proxy flows with a vault reader, previously tokenized outbound DAM references for that same allowed value. Inbound HTTP DAM reference resolution is enabled by default so known local references are restored before the client sees the response. Set `proxy.resolve_inbound = false` to leave references unresolved. JSON-shaped responses are transformed string-by-string, including newline-delimited JSON, so provider-escaped references can resolve safely. `text/event-stream` responses are transformed when restoration is enabled; provider-aware SSE text-delta parsing handles references split across adjacent OpenAI-compatible or Anthropic JSON delta events with a bounded event window, while raw streams still use tail-buffered transformation. The Codex ChatGPT-login WebSocket MVP protects unfragmented client text frames and currently passes server-to-client frames through without local reference resolution.
+Proxy defaults are directional: outbound requests are redacted before the provider sees them. Active consent applies to canonical detected values and, in proxy flows with a vault reader, previously tokenized outbound DAM references for that same allowed value. Agent traffic apps leave known DAM references unresolved in inbound local transcripts, while inbound response text is still redetected and tokenized for raw provider-returned values, including email-derived domains carried from the protected outbound request context. JSON-shaped responses are transformed string-by-string, including newline-delimited JSON. `text/event-stream` responses are transformed for inbound protection; provider-aware SSE text-delta parsing handles references and raw values split across adjacent OpenAI-compatible or Anthropic JSON delta events with a bounded event window, while raw streams still use tail-buffered transformation. The Codex ChatGPT-login WebSocket MVP protects unfragmented client and server text frames; fragmented, binary, or compressed WebSocket frame protection remains parked.
 
 `dam-pipeline`, `dam-provider-common`, `dam-provider-openai`, `dam-provider-anthropic`, and `dam-router` have been extracted from the first compact proxy implementation.
 

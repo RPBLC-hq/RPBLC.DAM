@@ -2,7 +2,7 @@
 
 Status: implemented first slice.
 
-`dam-proxy` is the first hot-path proxy module. It is a generic mediation runtime with an MVP provider adapter set for selected OpenAI-compatible and Anthropic traffic. In daemon transparent mode, it also owns the guarded HTTP/1.1 `CONNECT` TLS interception runtime for active traffic-profile routes when routing, trust, and consent are all ready. It includes the MVP WebSocket adapter for Codex ChatGPT-login traffic on `chatgpt.com`. It does not install local CAs, install routes, create TUN devices, or rewrite arbitrary web traffic.
+`dam-proxy` is the first hot-path proxy module. It is a generic mediation runtime with an MVP provider adapter set for selected OpenAI-compatible and Anthropic traffic. In daemon transparent mode, it also owns the guarded HTTP/1.1 `CONNECT` TLS interception runtime for active traffic-profile routes when routing, trust, and consent are all ready. It includes the MVP WebSocket adapter for Codex ChatGPT-login traffic on `chatgpt.com` and `ab.chatgpt.com`. It does not install local CAs, install routes, create TUN devices, or rewrite arbitrary web traffic.
 
 ## Architecture
 
@@ -30,15 +30,16 @@ client or harness
   -> dam-pipeline when proxy.resolve_inbound is enabled
   -> dam-core resolve plan for existing DAM references
   -> dam-vault through VaultReader
+  -> dam-pipeline redetect/tokenize when no reference resolves
   -> dam-log
   -> client or harness
 ```
 
-Outbound requests are the only direction that gets detection, policy, tokenization, and redaction by default. Inbound provider responses are not scanned or redacted. When `proxy.resolve_inbound` is enabled, which is the default, UTF-8 responses resolve known `[kind:id]` references that were created by outbound tokenization. Missing or unreadable references pass through unchanged.
+Outbound requests always run through detection, policy, tokenization, and redaction before provider egress. The bundled agent traffic apps keep inbound DAM references tokenized in the local transcript instead of restoring raw values back into Claude/Codex history. Codex subscription traffic is mediated by the `chatgpt-codex` WebSocket adapter for `chatgpt.com` and `ab.chatgpt.com`; Codex API-key mode is mediated by the OpenAI-compatible HTTP adapter for `api.openai.com`. Inbound HTTP response text is still inspected: raw provider-returned sensitive values are redetected and tokenized before returning to the client. The proxy carries email-derived domains from the protected outbound request into that inbound redetection pass, including `text/event-stream` text deltas, so provider answers containing only a derived domain are still protected. Explicit reveal/consent flows are separate from agent transcript protection.
 
 JSON-shaped provider responses are transformed as JSON string values when inbound reference resolution is enabled, so references inside provider-escaped message fields can resolve without corrupting JSON. The provider adapters try whole-body JSON first, then newline-delimited JSON, regardless of the exact response media type. Provider responses with `Content-Type: text/event-stream` are transformed when inbound reference resolution is enabled so provider-native SSE framing stays intact. The provider adapters use bounded provider-aware SSE text-delta parsing for OpenAI-compatible and Anthropic streams, which lets known DAM references resolve even when a provider splits one reference across adjacent JSON text-delta events without buffering the whole response to EOF. The SSE parser also falls back to JSON string-value event transforms for unrecognized event shapes. With `--no-resolve-inbound`, event-stream responses pass through without local restoration. Preserving exact token-by-token latency for every provider-specific event shape remains future work.
 
-Repeated equal outbound canonical values reuse one tokenized reference by default, and compatible vault writers reuse an existing canonical reference for the same stored value. Email canonicalization removes detector-supported whitespace inside the address and lowercases the domain before storage/deduplication. Disable that with `policy.deduplicate_replacements = false` or `DAM_POLICY_DEDUPLICATE_REPLACEMENTS=false` when preserving equality across repeated values is too revealing.
+Repeated equal outbound canonical values reuse one tokenized reference by default, and compatible vault writers reuse an existing canonical reference for the same stored value. Email canonicalization removes detector-supported whitespace inside the address and lowercases the domain before storage/deduplication; domain canonicalization removes detector-supported whitespace around dots and lowercases the domain. Disable that with `policy.deduplicate_replacements = false` or `DAM_POLICY_DEDUPLICATE_REPLACEMENTS=false` when preserving equality across repeated values is too revealing.
 
 Active consent grants let canonical detected values pass through unredacted until expiry or revocation. Consent overrides `tokenize` and `redact`; it does not override `block`. If a later outbound request contains an old DAM reference for the same allowed value, `dam-proxy` passes its vault reader into `dam-pipeline` so that reference is expanded before detection and provider egress. References without active consent remain protected.
 
@@ -46,10 +47,11 @@ The current implementation keeps HTTP serving, backend opening, and DAM-owned st
 
 Transparent system-proxy traffic reaches DAM as HTTP `CONNECT`. The standalone app-layer `dam-proxy` path still fails closed for `CONNECT`. When `dam-daemon` starts `dam-proxy` in transparent mode, `dam-proxy` uses a raw TCP CONNECT loop instead of the Axum app-layer server. That loop must bind to loopback and activates only when `dam-net` routing readiness, `dam-trust` local CA readiness, explicit consent, and `dam-intercept` adapter readiness are all `ready`.
 
-The first transparent runtime slice is intentionally narrow: HTTP/1.1 requests over CONNECT, active `inspect` apps from the effective traffic profile, configured OpenAI-compatible and Anthropic targets only, no chunked request bodies, no HTTP/2, and request bodies capped at 32 MiB before buffering. Intercepted JSON and `text/event-stream` responses are transformed for inbound reference resolution when restoration is enabled, including provider text-delta event streams for OpenAI-compatible and Anthropic targets. WebSocket upgrade traffic is supported for the Codex ChatGPT-login path: extension negotiation is stripped, unfragmented client text frames are protected, fragmented/binary client frames pass through with a warning event, and server-to-client frames currently pass through without local reference resolution. Unsupported or not-ready traffic fails closed rather than becoming an opaque tunnel.
+The first transparent runtime slice is intentionally narrow: HTTP/1.1 requests over CONNECT, active `inspect` apps from the effective traffic profile, configured OpenAI-compatible and Anthropic targets only, no chunked request bodies, no HTTP/2, and request bodies capped at 32 MiB before buffering. After the TLS handshake, `dam-proxy` binds the decrypted HTTP/WebSocket request back to the active AI route using the request authority/`Host` header before falling back to provider path/header hints. This keeps ChatGPT backend HTTP endpoints such as `/backend-api/codex/responses/compact` on the `chatgpt-codex` target instead of the first configured provider target. Intercepted JSON and `text/event-stream` responses are transformed for inbound protection; app-level inbound reference restoration controls only whether known DAM references are restored, not whether raw inbound values are inspected. WebSocket upgrade traffic is supported for the Codex ChatGPT-login path: extension negotiation is stripped, unfragmented client and server text frames are protected, and fragmented/binary frames pass through with a warning event. Unsupported or not-ready traffic fails closed rather than becoming an opaque tunnel.
 
 Supported provider IDs are:
 
+- `generic-http`: caller-auth pass-through for future generic profile-builder/import work.
 - `openai-compatible`: bearer `Authorization` auth replacement when DAM owns the upstream key.
 - `anthropic`: `x-api-key` auth replacement when DAM owns the upstream key.
 
@@ -188,7 +190,9 @@ Private OpenAI-compatible endpoint profile example:
 }
 ```
 
-The traffic profile controls transparent host recognition and adapter intent. Active forwarding targets are configured separately through `[[proxy.targets]]`; the daemon also adds active profile routes as non-secret proxy targets for transparent matching. The local proxy can host multiple targets in one process and selects the OpenAI-compatible or Anthropic route from request path/header shape or the transparent route match.
+The traffic profile controls transparent host recognition, adapter intent, and per-app inbound reference restoration. Active forwarding targets are configured separately through `[[proxy.targets]]`; the daemon also adds active profile routes as non-secret proxy targets for transparent matching. The local proxy can host multiple targets in one process and selects the OpenAI-compatible or Anthropic route from request path/header shape or from the transparent route match. Transparent route matching wins for decrypted requests whose authority maps to an active profile host, including ChatGPT backend HTTP paths that do not look like provider API paths.
+
+The profile creator/import/export workflow that will produce generic website/service profiles is parked. Until that returns, `generic-http` is only a low-level target value and the visible catalog is limited to Claude Code and Codex app profiles.
 
 Secrets must be supplied through environment variables or deployment secret stores, not plaintext config files. For local proxy/interception flows, omit `api_key_env` so DAM forwards caller-owned auth headers instead of injecting a provider key.
 
@@ -200,6 +204,8 @@ Covered cases:
 
 - redacted request forwarding to fake upstream;
 - inbound response resolution for DAM references in non-streaming responses, including JSON and JSON-lines string-value restoration;
+- inbound redetection/tokenization for raw sensitive response text when no DAM reference resolves;
+- inbound redetection/tokenization for email-derived domains carried from the outbound request context;
 - outbound expansion of previously tokenized references when the referenced value has active consent;
 - `text/event-stream` response transformation with inbound reference resolution enabled, including references split across adjacent chunks and across Anthropic text-delta events without EOF buffering;
 - disabled inbound response resolution leaving DAM references intact;
@@ -212,6 +218,7 @@ Covered cases:
 - Anthropic `x-api-key` passthrough and configured key replacement;
 - transparent `CONNECT` requests failing closed without provider egress;
 - transparent HTTP/1.1 CONNECT/TLS requests completing a local-CA TLS handshake and forwarding only protected request bodies to the fake upstream;
+- transparent ChatGPT backend HTTP requests selecting the `chatgpt-codex` route even when another provider target is first, keeping outbound bodies tokenized, and honoring the app-level disabled inbound restoration policy;
 - transparent raw HTTP `text/event-stream` responses resolved before reaching the client when inbound resolution is enabled;
 - non-sensitive proxy diagnostics around route selection, request protection, provider handoff/response, inbound resolution, and transparent response write boundaries;
 - hop-by-hop and `Connection`-listed header stripping;
@@ -233,4 +240,4 @@ cargo test -p dam-proxy
 - binary/non-UTF-8 upload endpoints until a profile adapter defines safe parsing behavior.
 - inbound, fragmented, or compressed WebSocket payload protection beyond the Codex MVP client text-frame adapter.
 - Additional generic adapters for arbitrary web traffic beyond HTTP/WebSocket provider traffic.
-- exact token-by-token provider-aware streaming/SSE response transforms and fresh inbound redetection.
+- exact token-by-token provider-aware streaming/SSE response transforms and raw inbound redetection across split response chunks/events.

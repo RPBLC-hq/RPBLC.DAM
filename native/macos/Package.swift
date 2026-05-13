@@ -27,6 +27,7 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("Network"),
                 .linkedFramework("NetworkExtension"),
+                .linkedLibrary("bsm"),
             ]
         ),
         .executableTarget(

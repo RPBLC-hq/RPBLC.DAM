@@ -13,7 +13,7 @@ use http_body_util::BodyExt;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fs,
     future::Future,
     net::SocketAddr,
@@ -41,6 +41,21 @@ use providers::{ProviderAdapter, ProviderAdapters};
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_INTERCEPTED_HEADER_BYTES: usize = 64 * 1024;
 const PASSTHROUGH_RESUME_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectBypassReason {
+    NonAiRoute,
+    ProtectionPaused,
+}
+
+impl ConnectBypassReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NonAiRoute => "non_ai_route",
+            Self::ProtectionPaused => "protection_paused",
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
@@ -87,6 +102,7 @@ pub enum ProxyError {
 pub struct ProxyState {
     routes: dam_router::RouteTable,
     resolve_inbound: bool,
+    route_resolve_inbound: HashMap<String, bool>,
     vault: Arc<dyn ProxyVault>,
     consent_store: Option<Arc<dam_consent::ConsentStore>>,
     log_sink: Option<Arc<dyn EventSink>>,
@@ -210,6 +226,7 @@ fn build_state(
     Ok(Arc::new(ProxyState {
         routes,
         resolve_inbound: config.proxy.resolve_inbound,
+        route_resolve_inbound: route_resolve_inbound(&config.traffic.effective_profile()),
         vault: open_vault(&config)?,
         consent_store: open_consent_store(&config)?,
         log_sink: open_log_sink(&config)?,
@@ -418,10 +435,16 @@ async fn handle_raw_connect_request(
     let ai_route = dam_net::classify_ai_host_with_routes(&authority.host, &interception.ai_routes);
     let protection_paused = !state.protection_enabled();
     if ai_route.is_none() || protection_paused {
+        let bypass_reason = if ai_route.is_some() && protection_paused {
+            ConnectBypassReason::ProtectionPaused
+        } else {
+            ConnectBypassReason::NonAiRoute
+        };
         return handle_raw_connect_tunnel(
             state,
             operation_id,
             authority,
+            bypass_reason,
             stream,
             ai_route.is_some() && protection_paused,
         )
@@ -495,7 +518,7 @@ async fn proxy(State(state): State<Arc<ProxyState>>, mut request: Request) -> Re
     let method = request.method().clone();
     let uri = request.uri().clone();
     let headers = request.headers().clone();
-    let route = state.routes.decide(&headers, Some(&uri));
+    let route = route_for_request(&state, &headers, &uri);
 
     if method == Method::CONNECT {
         return handle_connect_request(
@@ -554,11 +577,17 @@ async fn handle_connect_request(
     let ai_route = dam_net::classify_ai_host_with_routes(&authority.host, &interception.ai_routes);
     let protection_paused = !state.protection_enabled();
     if ai_route.is_none() || protection_paused {
+        let bypass_reason = if ai_route.is_some() && protection_paused {
+            ConnectBypassReason::ProtectionPaused
+        } else {
+            ConnectBypassReason::NonAiRoute
+        };
         return handle_connect_tunnel_request(
             state,
             route,
             operation_id,
             authority,
+            bypass_reason,
             request,
             ai_route.is_some() && protection_paused,
         )
@@ -682,6 +711,7 @@ async fn handle_connect_tunnel_request(
     route: dam_router::RouteDecision<'_>,
     operation_id: String,
     authority: TargetAuthority,
+    bypass_reason: ConnectBypassReason,
     request: &mut Request,
     close_on_protection_resume: bool,
 ) -> Response {
@@ -732,6 +762,8 @@ async fn handle_connect_tunnel_request(
     tokio::spawn(handle_upgraded_tunnel(
         state,
         operation_id,
+        authority,
+        bypass_reason,
         upgrade,
         upstream,
         close_on_protection_resume,
@@ -747,6 +779,7 @@ async fn handle_raw_connect_tunnel(
     state: Arc<ProxyState>,
     operation_id: String,
     authority: TargetAuthority,
+    bypass_reason: ConnectBypassReason,
     mut stream: TcpStream,
     close_on_protection_resume: bool,
 ) -> Result<(), String> {
@@ -780,7 +813,12 @@ async fn handle_raw_connect_tunnel(
         LogLevel::Info,
         LogEventType::ProxyBypass,
         "bypassing",
-        "CONNECT tunnel passed through without inspection",
+        format!(
+            "CONNECT tunnel passed through without inspection target={}:{} reason={}",
+            authority.host,
+            authority.port,
+            bypass_reason.as_str()
+        ),
     );
     match copy_passthrough_tunnel(
         &state,
@@ -851,7 +889,8 @@ async fn proxy_http_request(
     body: Bytes,
     operation_id: String,
 ) -> Response {
-    let route = state.routes.decide(&headers, Some(&uri));
+    let route = route_for_request(&state, &headers, &uri);
+    let resolve_inbound = state.resolve_inbound_for_route(route);
     record_proxy_event(
         &state,
         &operation_id,
@@ -859,11 +898,13 @@ async fn proxy_http_request(
         LogEventType::ProxyForward,
         "route_decision",
         format!(
-            "route target={} provider={} protection_enabled={} resolve_inbound={} request_bytes={}",
+            "route target={} provider={} method={} path={} protection_enabled={} resolve_inbound={} request_bytes={}",
             route.target().name,
             route.target().provider,
+            method,
+            uri.path(),
             state.protection_enabled(),
-            state.resolve_inbound,
+            resolve_inbound,
             body.len()
         ),
     );
@@ -897,6 +938,7 @@ async fn proxy_http_request(
                 body,
                 operation_id,
                 action: "bypassing",
+                related_domains: Arc::new(Vec::new()),
             },
         )
         .await;
@@ -941,6 +983,7 @@ async fn proxy_http_request(
             reference_vault: Some(state.vault.as_ref()),
             consent_store: state.consent_store.as_deref(),
             event_sink: state.log_sink.as_deref(),
+            ..dam_pipeline::ProtectTextContext::default()
         },
         state.replacement_options,
     ) {
@@ -995,19 +1038,55 @@ async fn proxy_http_request(
             "request protection did not produce output",
         );
     };
+    let related_domains = Arc::new(related_domains_from_detections(&protected.detections));
+    let body_changed = protected_body.as_str() != body_text;
+    let mut protected_headers = headers;
+    if body_changed {
+        let removed = strip_body_integrity_headers(&mut protected_headers);
+        if removed > 0 {
+            record_proxy_event(
+                &state,
+                &operation_id,
+                LogLevel::Info,
+                LogEventType::ProxyForward,
+                "request_integrity_headers_removed",
+                format!("removed body integrity headers count={removed}"),
+            );
+        }
+    }
     forward_or_provider_down(
         state.clone(),
         route,
         ForwardAttempt {
             method,
             uri,
-            headers,
+            headers: protected_headers,
             body: Bytes::from(protected_body),
             operation_id,
             action: "protected",
+            related_domains,
         },
     )
     .await
+}
+
+fn related_domains_from_detections(detections: &[dam_core::Detection]) -> Vec<String> {
+    let mut domains = BTreeSet::new();
+    for detection in detections
+        .iter()
+        .filter(|detection| detection.kind == dam_core::SensitiveType::Email)
+    {
+        let email =
+            dam_core::canonical_sensitive_value(dam_core::SensitiveType::Email, &detection.value);
+        let Some((_, domain)) = email.rsplit_once('@') else {
+            continue;
+        };
+        let domain = dam_core::canonical_sensitive_value(dam_core::SensitiveType::Domain, domain);
+        if domain.contains('.') {
+            domains.insert(domain);
+        }
+    }
+    domains.into_iter().collect()
 }
 
 async fn handle_upgraded_connect(
@@ -1049,6 +1128,8 @@ async fn handle_upgraded_connect(
 async fn handle_upgraded_tunnel(
     state: Arc<ProxyState>,
     operation_id: String,
+    authority: TargetAuthority,
+    bypass_reason: ConnectBypassReason,
     upgrade: hyper::upgrade::OnUpgrade,
     mut upstream: TcpStream,
     close_on_protection_resume: bool,
@@ -1074,7 +1155,12 @@ async fn handle_upgraded_tunnel(
         LogLevel::Info,
         LogEventType::ProxyBypass,
         "bypassing",
-        "CONNECT tunnel passed through without inspection",
+        format!(
+            "CONNECT tunnel passed through without inspection target={}:{} reason={}",
+            authority.host,
+            authority.port,
+            bypass_reason.as_str()
+        ),
     );
     match copy_passthrough_tunnel(
         &state,
@@ -1220,7 +1306,7 @@ async fn handle_intercepted_websocket<T>(
 where
     T: AsyncRead + AsyncWrite + Unpin,
 {
-    let route = state.routes.decide(&request.headers, Some(&request.uri));
+    let route = route_for_request(&state, &request.headers, &request.uri);
     if route.config_required() {
         record_proxy_event(
             &state,
@@ -1302,22 +1388,26 @@ where
 {
     let (mut client_reader, mut client_writer) = tokio::io::split(client_tls);
     let (mut upstream_reader, mut upstream_writer) = tokio::io::split(upstream_tls);
+    let related_domains = Arc::new(Mutex::new(Vec::new()));
     let outcome = {
         let client_to_upstream = proxy_websocket_client_frames(
             state.clone(),
             operation_id.to_string(),
             &mut client_reader,
             &mut upstream_writer,
+            related_domains.clone(),
         );
-        let upstream_to_client = tokio::io::copy(&mut upstream_reader, &mut client_writer);
+        let upstream_to_client = proxy_websocket_upstream_frames(
+            state.clone(),
+            operation_id.to_string(),
+            &mut upstream_reader,
+            &mut client_writer,
+            related_domains,
+        );
 
         tokio::select! {
             result = client_to_upstream => result,
-            result = upstream_to_client => {
-                result
-                    .map(|_| WebSocketClientFrameOutcome::Completed)
-                    .map_err(|error| format!("WebSocket upstream copy failed: {error}"))
-            }
+            result = upstream_to_client => result,
         }
     }?;
 
@@ -1338,6 +1428,7 @@ async fn proxy_websocket_client_frames<R, W>(
     operation_id: String,
     reader: &mut R,
     writer: &mut W,
+    related_domains: Arc<Mutex<Vec<String>>>,
 ) -> Result<WebSocketClientFrameOutcome, String>
 where
     R: AsyncRead + Unpin,
@@ -1359,6 +1450,7 @@ where
                     reference_vault: Some(state.vault.as_ref()),
                     consent_store: state.consent_store.as_deref(),
                     event_sink: state.log_sink.as_deref(),
+                    ..dam_pipeline::ProtectTextContext::default()
                 },
                 state.replacement_options,
             )
@@ -1374,6 +1466,7 @@ where
                 );
                 return Ok(WebSocketClientFrameOutcome::PolicyBlocked);
             }
+            remember_related_domains(&related_domains, &protected.detections);
             let Some(output) = protected.output else {
                 return Err("WebSocket request frame protection did not produce output".to_string());
             };
@@ -1402,6 +1495,106 @@ where
         websocket::write_masked_frame(writer, &frame).await?;
         if is_close {
             return Ok(WebSocketClientFrameOutcome::Completed);
+        }
+    }
+}
+
+async fn proxy_websocket_upstream_frames<R, W>(
+    state: Arc<ProxyState>,
+    operation_id: String,
+    reader: &mut R,
+    writer: &mut W,
+    related_domains: Arc<Mutex<Vec<String>>>,
+) -> Result<WebSocketClientFrameOutcome, String>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    loop {
+        let Some(mut frame) = websocket::read_frame(reader).await? else {
+            return Ok(WebSocketClientFrameOutcome::Completed);
+        };
+        if frame.is_unfragmented_text() && state.protection_enabled() {
+            let text = std::str::from_utf8(&frame.payload)
+                .map_err(|_| "WebSocket response text frame is not utf-8".to_string())?;
+            let domains = related_domains.lock().unwrap().clone();
+            let protected = dam_pipeline::protect_text(
+                text,
+                &operation_id,
+                &state.policy,
+                state.vault.as_ref(),
+                dam_pipeline::ProtectTextContext {
+                    reference_vault: Some(state.vault.as_ref()),
+                    consent_store: state.consent_store.as_deref(),
+                    event_sink: state.log_sink.as_deref(),
+                    related_domains: &domains,
+                    ..dam_pipeline::ProtectTextContext::default()
+                },
+                state.replacement_options,
+            )
+            .map_err(|_| "WebSocket response frame protection failed".to_string())?;
+            if protected.is_blocked() {
+                record_proxy_event(
+                    &state,
+                    &operation_id,
+                    LogLevel::Warn,
+                    LogEventType::ProxyFailure,
+                    "inbound_blocked",
+                    "WebSocket response frame blocked by policy",
+                );
+                frame.payload = b"[blocked by DAM policy]".to_vec();
+            } else {
+                let Some(output) = protected.output else {
+                    return Err(
+                        "WebSocket response frame protection did not produce output".to_string()
+                    );
+                };
+                frame.payload = output.into_bytes();
+            }
+            if !protected.detections.is_empty() {
+                record_proxy_event(
+                    &state,
+                    &operation_id,
+                    LogLevel::Info,
+                    LogEventType::ProxyForward,
+                    "inbound_protection",
+                    format!(
+                        "WebSocket response text frame protected detections={} replacements={} tokenized={} blocked={}",
+                        protected.detections.len(),
+                        protected.plan.replacements.len(),
+                        protected.plan.tokenized_count(),
+                        protected.plan.blocked_count()
+                    ),
+                );
+            }
+        } else if state.protection_enabled()
+            && (frame.is_fragmented_text_or_continuation() || frame.is_binary())
+        {
+            record_proxy_event(
+                &state,
+                &operation_id,
+                LogLevel::Warn,
+                LogEventType::ProxyBypass,
+                "bypassing",
+                "WebSocket response frame passed without protection because fragmented/binary frames are parked",
+            );
+        }
+        let is_close = frame.opcode == websocket::OPCODE_CLOSE;
+        websocket::write_unmasked_frame(writer, &frame).await?;
+        if is_close {
+            return Ok(WebSocketClientFrameOutcome::Completed);
+        }
+    }
+}
+
+fn remember_related_domains(
+    related_domains: &Arc<Mutex<Vec<String>>>,
+    detections: &[dam_core::Detection],
+) {
+    let mut related_domains = related_domains.lock().unwrap();
+    for domain in related_domains_from_detections(detections) {
+        if !related_domains.contains(&domain) {
+            related_domains.push(domain);
         }
     }
 }
@@ -1705,6 +1898,55 @@ fn route_matches_ai_target(
     route.provider_kind().id() == ai_route.provider
         && (target.name == ai_route.target_name
             || normalize_host(&target.upstream) == normalize_host(&ai_route.upstream))
+}
+
+impl ProxyState {
+    fn resolve_inbound_for_route(&self, route: dam_router::RouteDecision<'_>) -> bool {
+        self.resolve_inbound
+            && self
+                .route_resolve_inbound
+                .get(&route.target().name)
+                .copied()
+                .unwrap_or(true)
+    }
+}
+
+fn route_resolve_inbound(profile: &dam_net::TrafficProfile) -> HashMap<String, bool> {
+    let mut policies = HashMap::new();
+    for app in &profile.apps {
+        if !app.enabled || app.action != dam_net::TrafficAction::Inspect {
+            continue;
+        }
+        let target_name = app
+            .target_name
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(&app.id);
+        policies.insert(target_name.clone(), app.inbound.resolve_references);
+    }
+    policies
+}
+
+fn route_for_request<'a>(
+    state: &'a ProxyState,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> dam_router::RouteDecision<'a> {
+    if let Some(ai_route) = ai_route_for_request(state, headers, uri) {
+        return state.routes.decide_for_ai_route(headers, &ai_route);
+    }
+
+    state.routes.decide(headers, Some(uri))
+}
+
+fn ai_route_for_request(
+    state: &ProxyState,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> Option<dam_net::AiRoute> {
+    let interception = state.transparent_interception.as_ref()?;
+    let authority = https_authority(uri, headers).or_else(|| http_authority(uri, headers))?;
+    dam_net::classify_ai_host_with_routes(&authority.host, &interception.ai_routes)
 }
 
 async fn read_intercepted_http_request<T>(
@@ -2064,9 +2306,15 @@ fn passthrough_request_should_skip_header(name: &HeaderName) -> bool {
 }
 
 fn protection_control_enabled(path: &PathBuf) -> bool {
-    fs::read_to_string(path)
-        .map(|value| !value.trim().eq_ignore_ascii_case("disabled"))
-        .unwrap_or(true)
+    let Ok(value) = fs::read_to_string(path) else {
+        return true;
+    };
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&value)
+        && let Some(enabled) = json.get("enabled").and_then(serde_json::Value::as_bool)
+    {
+        return enabled;
+    }
+    !value.trim().eq_ignore_ascii_case("disabled")
 }
 
 fn normalize_host(host: &str) -> String {
@@ -2120,6 +2368,7 @@ struct ForwardAttempt {
     body: Bytes,
     operation_id: String,
     action: &'static str,
+    related_domains: Arc<Vec<String>>,
 }
 
 async fn forward_or_provider_down(
@@ -2135,6 +2384,7 @@ async fn forward_or_provider_down(
         attempt.headers,
         attempt.body,
         &attempt.operation_id,
+        Arc::clone(&attempt.related_domains),
     )
     .await
     {
@@ -2182,14 +2432,18 @@ async fn forward_request(
     headers: HeaderMap,
     body: Bytes,
     operation_id: &str,
+    related_domains: Arc<Vec<String>>,
 ) -> Result<Response, String> {
     let target_api_key = route.target_api_key();
+    let resolve_inbound = state.resolve_inbound_for_route(route);
+    let transform_inbound = resolve_inbound || state.protection_enabled();
     match state.providers.get(route.provider_kind()) {
         ProviderAdapter::OpenAi(provider) => {
             let target_name = route.target().name.clone();
             let target_provider = route.target().provider.clone();
             let response_state = Arc::clone(state);
             let response_operation_id = operation_id.to_owned();
+            let response_related_domains = Arc::clone(&related_domains);
             let request = dam_provider_openai::ForwardRequest {
                 upstream: &route.target().upstream,
                 method,
@@ -2197,7 +2451,7 @@ async fn forward_request(
                 headers,
                 body,
                 target_api_key,
-                transform_streaming_response: state.resolve_inbound,
+                transform_streaming_response: transform_inbound,
             };
             record_proxy_event(
                 state,
@@ -2206,13 +2460,19 @@ async fn forward_request(
                 LogEventType::ProxyForward,
                 "provider_forward_start",
                 format!(
-                    "provider forward start target={target_name} provider={target_provider} resolve_streaming={}",
-                    state.resolve_inbound
+                    "provider forward start target={target_name} provider={target_provider} resolve_inbound={} transform_streaming={}",
+                    resolve_inbound, transform_inbound
                 ),
             );
             let response = provider
                 .forward(request, move |response_body| {
-                    resolve_response_body(&response_state, &response_operation_id, response_body)
+                    resolve_response_body(
+                        &response_state,
+                        &response_operation_id,
+                        response_body,
+                        resolve_inbound,
+                        response_related_domains.as_slice(),
+                    )
                 })
                 .await
                 .map_err(|error| error.to_string())?;
@@ -2224,6 +2484,7 @@ async fn forward_request(
             let target_provider = route.target().provider.clone();
             let response_state = Arc::clone(state);
             let response_operation_id = operation_id.to_owned();
+            let response_related_domains = Arc::clone(&related_domains);
             let request = dam_provider_anthropic::ForwardRequest {
                 upstream: &route.target().upstream,
                 method,
@@ -2231,7 +2492,7 @@ async fn forward_request(
                 headers,
                 body,
                 target_api_key,
-                transform_streaming_response: state.resolve_inbound,
+                transform_streaming_response: transform_inbound,
             };
             record_proxy_event(
                 state,
@@ -2240,13 +2501,19 @@ async fn forward_request(
                 LogEventType::ProxyForward,
                 "provider_forward_start",
                 format!(
-                    "provider forward start target={target_name} provider={target_provider} resolve_streaming={}",
-                    state.resolve_inbound
+                    "provider forward start target={target_name} provider={target_provider} resolve_inbound={} transform_streaming={}",
+                    resolve_inbound, transform_inbound
                 ),
             );
             let response = provider
                 .forward(request, move |response_body| {
-                    resolve_response_body(&response_state, &response_operation_id, response_body)
+                    resolve_response_body(
+                        &response_state,
+                        &response_operation_id,
+                        response_body,
+                        resolve_inbound,
+                        response_related_domains.as_slice(),
+                    )
                 })
                 .await
                 .map_err(|error| error.to_string())?;
@@ -2256,8 +2523,14 @@ async fn forward_request(
     }
 }
 
-fn resolve_response_body(state: &ProxyState, operation_id: &str, body: Bytes) -> Bytes {
-    if !state.resolve_inbound {
+fn resolve_response_body(
+    state: &ProxyState,
+    operation_id: &str,
+    body: Bytes,
+    resolve_inbound: bool,
+    related_domains: &[String],
+) -> Bytes {
+    if !resolve_inbound {
         record_proxy_event(
             state,
             operation_id,
@@ -2266,7 +2539,13 @@ fn resolve_response_body(state: &ProxyState, operation_id: &str, body: Bytes) ->
             "resolve_disabled",
             format!("inbound resolution disabled response_bytes={}", body.len()),
         );
-        return body;
+        let body_text = match std::str::from_utf8(body.as_ref()) {
+            Ok(text) => text,
+            Err(_) => return body,
+        };
+        return protect_inbound_response_body(state, operation_id, body_text, related_domains)
+            .map(Bytes::from)
+            .unwrap_or(body);
     }
 
     let body_text = match std::str::from_utf8(body.as_ref()) {
@@ -2307,7 +2586,85 @@ fn resolve_response_body(state: &ProxyState, operation_id: &str, body: Bytes) ->
             body.len()
         ),
     );
-    result.output.map(Bytes::from).unwrap_or(body)
+    if let Some(output) = result.output {
+        return Bytes::from(output);
+    }
+
+    protect_inbound_response_body(state, operation_id, body_text, related_domains)
+        .map(Bytes::from)
+        .unwrap_or(body)
+}
+
+fn protect_inbound_response_body(
+    state: &ProxyState,
+    operation_id: &str,
+    body_text: &str,
+    related_domains: &[String],
+) -> Option<String> {
+    if !state.protection_enabled() {
+        return None;
+    }
+
+    let protected = match dam_pipeline::protect_text(
+        body_text,
+        operation_id,
+        &state.policy,
+        state.vault.as_ref(),
+        dam_pipeline::ProtectTextContext {
+            reference_vault: Some(state.vault.as_ref()),
+            consent_store: state.consent_store.as_deref(),
+            event_sink: state.log_sink.as_deref(),
+            related_domains,
+            ..dam_pipeline::ProtectTextContext::default()
+        },
+        state.replacement_options,
+    ) {
+        Ok(result) => result,
+        Err(_) => {
+            record_proxy_event(
+                state,
+                operation_id,
+                LogLevel::Warn,
+                LogEventType::ProxyFailure,
+                "inbound_protection_failed",
+                "inbound response protection failed",
+            );
+            return None;
+        }
+    };
+
+    if protected.detections.is_empty() {
+        return None;
+    }
+
+    record_proxy_event(
+        state,
+        operation_id,
+        LogLevel::Info,
+        LogEventType::ProxyForward,
+        "inbound_protection",
+        format!(
+            "inbound protection detections={} replacements={} tokenized={} blocked={}",
+            protected.detections.len(),
+            protected.plan.replacements.len(),
+            protected.plan.tokenized_count(),
+            protected.plan.blocked_count()
+        ),
+    );
+
+    if protected.is_blocked() {
+        record_proxy_event(
+            state,
+            operation_id,
+            LogLevel::Warn,
+            LogEventType::ProxyFailure,
+            "inbound_blocked",
+            "inbound response blocked by policy",
+        );
+        return Some("[blocked by DAM policy]".to_string());
+    }
+
+    protected.output
 }
 
 fn request_has_unsupported_content_encoding(headers: &HeaderMap) -> bool {
@@ -2321,6 +2678,30 @@ fn request_has_unsupported_content_encoding(headers: &HeaderMap) -> bool {
                 .filter(|part| !part.is_empty())
                 .any(|part| !part.eq_ignore_ascii_case("identity"))
         })
+}
+
+fn strip_body_integrity_headers(headers: &mut HeaderMap) -> usize {
+    let mut removed = 0;
+    for name in [
+        "content-digest",
+        "content-md5",
+        "digest",
+        "repr-digest",
+        "signature",
+        "signature-input",
+        "x-content-digest",
+        "x-content-md5",
+        "x-body-digest",
+        "x-body-sha256",
+        "x-payload-digest",
+        "x-payload-sha256",
+        "x-signature",
+    ] {
+        if headers.remove(name).is_some() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 fn status_response(
@@ -2423,6 +2804,91 @@ mod tests {
         format!("http://{addr}")
     }
 
+    #[tokio::test]
+    async fn websocket_response_text_frames_are_tokenized_before_client() {
+        let config = proxy_config("https://chatgpt.com".to_string());
+        let log_path = config.log.sqlite_path.clone();
+        let state = build_state(config, None).unwrap();
+        let mut upstream = Vec::new();
+        websocket::write_unmasked_frame(
+            &mut upstream,
+            &websocket::WebSocketFrame {
+                fin: true,
+                opcode: websocket::OPCODE_TEXT,
+                payload: br#"{"content":"banana@example.com"}"#.to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+        websocket::write_unmasked_frame(&mut upstream, &websocket::WebSocketFrame::close(1000, ""))
+            .await
+            .unwrap();
+        let mut client = Vec::new();
+
+        proxy_websocket_upstream_frames(
+            state,
+            "websocket-inbound-test".to_string(),
+            &mut upstream.as_slice(),
+            &mut client,
+            Arc::new(Mutex::new(Vec::new())),
+        )
+        .await
+        .unwrap();
+
+        let frame = websocket::read_frame(&mut client.as_slice())
+            .await
+            .unwrap()
+            .unwrap();
+        let body = String::from_utf8(frame.payload).unwrap();
+        assert!(!body.contains("banana@example.com"));
+        assert!(body.contains("[email:"));
+        let logs = dam_log::LogStore::open(log_path).unwrap().list().unwrap();
+        assert!(logs.iter().any(|entry| {
+            entry.action.as_deref() == Some("inbound_protection")
+                && entry
+                    .message
+                    .contains("WebSocket response text frame protected")
+        }));
+    }
+
+    #[tokio::test]
+    async fn websocket_response_uses_related_domains_from_request_context() {
+        let state = build_state(proxy_config("https://chatgpt.com".to_string()), None).unwrap();
+        let mut upstream = Vec::new();
+        websocket::write_unmasked_frame(
+            &mut upstream,
+            &websocket::WebSocketFrame {
+                fin: true,
+                opcode: websocket::OPCODE_TEXT,
+                payload: br#"{"content":"wolol3o22.com"}"#.to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+        websocket::write_unmasked_frame(&mut upstream, &websocket::WebSocketFrame::close(1000, ""))
+            .await
+            .unwrap();
+        let mut client = Vec::new();
+
+        proxy_websocket_upstream_frames(
+            state,
+            "websocket-related-domain-test".to_string(),
+            &mut upstream.as_slice(),
+            &mut client,
+            Arc::new(Mutex::new(vec!["wolol3o22.com".to_string()])),
+        )
+        .await
+        .unwrap();
+
+        let frame = websocket::read_frame(&mut client.as_slice())
+            .await
+            .unwrap()
+            .unwrap();
+        let body = String::from_utf8(frame.payload).unwrap();
+        assert!(!body.contains("wolol3o22.com"));
+        assert!(body.contains("[domain:"));
+    }
+
     async fn spawn_echo_upstream() -> String {
         async fn echo(body: Bytes) -> Response {
             (StatusCode::OK, body).into_response()
@@ -2445,6 +2911,79 @@ mod tests {
         spawn_app(
             Router::new()
                 .route("/v1/chat/completions", post(echo))
+                .with_state(seen_body),
+        )
+        .await
+    }
+
+    async fn spawn_raw_sensitive_response_upstream(
+        seen_body: Arc<Mutex<Option<String>>>,
+    ) -> String {
+        async fn raw_response(
+            State(seen_body): State<Arc<Mutex<Option<String>>>>,
+            body: Bytes,
+        ) -> Response {
+            let body_text =
+                String::from_utf8(body.to_vec()).expect("upstream body should be utf-8");
+            *seen_body.lock().unwrap() = Some(body_text);
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"message":{"content":"provider returned leak@example.com"}}"#,
+                ))
+                .unwrap()
+        }
+
+        spawn_app(
+            Router::new()
+                .route("/v1/chat/completions", post(raw_response))
+                .with_state(seen_body),
+        )
+        .await
+    }
+
+    async fn spawn_raw_domain_response_upstream(seen_body: Arc<Mutex<Option<String>>>) -> String {
+        async fn raw_response(
+            State(seen_body): State<Arc<Mutex<Option<String>>>>,
+            body: Bytes,
+        ) -> Response {
+            let body_text =
+                String::from_utf8(body.to_vec()).expect("upstream body should be utf-8");
+            *seen_body.lock().unwrap() = Some(body_text);
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"message":{"content":"provider returned leak.example"}}"#,
+                ))
+                .unwrap()
+        }
+
+        spawn_app(
+            Router::new()
+                .route("/v1/chat/completions", post(raw_response))
+                .with_state(seen_body),
+        )
+        .await
+    }
+
+    async fn spawn_capture_codex_compact_upstream(seen_body: Arc<Mutex<Option<String>>>) -> String {
+        async fn compact(
+            State(seen_body): State<Arc<Mutex<Option<String>>>>,
+            body: Bytes,
+        ) -> Response {
+            let body_text =
+                String::from_utf8(body.to_vec()).expect("upstream body should be utf-8");
+            *seen_body.lock().unwrap() = Some(body_text.clone());
+            (StatusCode::OK, body_text).into_response()
+        }
+
+        spawn_app(
+            Router::new()
+                .route("/backend-api/codex/responses/compact", post(compact))
                 .with_state(seen_body),
         )
         .await
@@ -2545,6 +3084,41 @@ mod tests {
         .await
     }
 
+    async fn spawn_capture_headers_and_body_upstream(
+        seen_headers: Arc<Mutex<Vec<(String, String)>>>,
+        seen_body: Arc<Mutex<Option<String>>>,
+    ) -> String {
+        async fn echo(
+            State((seen_headers, seen_body)): State<(
+                Arc<Mutex<Vec<(String, String)>>>,
+                Arc<Mutex<Option<String>>>,
+            )>,
+            headers: HeaderMap,
+            body: Bytes,
+        ) -> Response {
+            *seen_headers.lock().unwrap() = headers
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .to_str()
+                        .ok()
+                        .map(|value| (name.as_str().to_string(), value.to_string()))
+                })
+                .collect();
+            let body_text =
+                String::from_utf8(body.to_vec()).expect("upstream body should be utf-8");
+            *seen_body.lock().unwrap() = Some(body_text.clone());
+            (StatusCode::OK, body_text).into_response()
+        }
+
+        spawn_app(
+            Router::new()
+                .route("/v1/chat/completions", post(echo))
+                .with_state((seen_headers, seen_body)),
+        )
+        .await
+    }
+
     async fn spawn_capture_anthropic_headers_upstream(
         seen_headers: Arc<Mutex<Vec<(String, String)>>>,
         seen_body: Arc<Mutex<Option<String>>>,
@@ -2608,6 +3182,40 @@ mod tests {
             let chunks = stream::iter([
                 Ok::<_, std::io::Error>(Bytes::from(first_event)),
                 Ok(Bytes::from(second_event)),
+                Ok(Bytes::from_static(
+                    b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+                )),
+            ]);
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .body(Body::from_stream(chunks))
+                .unwrap()
+        }
+
+        spawn_app(
+            Router::new()
+                .route("/v1/messages", post(sse))
+                .with_state(seen_body),
+        )
+        .await
+    }
+
+    async fn spawn_anthropic_sse_raw_domain_upstream(
+        seen_body: Arc<Mutex<Option<String>>>,
+    ) -> String {
+        async fn sse(State(seen_body): State<Arc<Mutex<Option<String>>>>, body: Bytes) -> Response {
+            let body_text =
+                String::from_utf8(body.to_vec()).expect("upstream body should be utf-8");
+            *seen_body.lock().unwrap() = Some(body_text);
+            let chunks = stream::iter([
+                Ok::<_, std::io::Error>(Bytes::from_static(
+                    br#"event: content_block_delta
+data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"splonk.io"}}
+
+"#,
+                )),
                 Ok(Bytes::from_static(
                     b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
                 )),
@@ -2857,6 +3465,11 @@ mod tests {
         let logs = dam_log::LogStore::open(log_path).unwrap().list().unwrap();
         assert!(logs.iter().any(|entry| {
             entry.event_type == "proxy_bypass"
+                && entry.message.contains(&format!("target={origin_addr}"))
+                && entry.message.contains("reason=protection_paused")
+        }));
+        assert!(logs.iter().any(|entry| {
+            entry.event_type == "proxy_bypass"
                 && entry.message.contains("closed because protection resumed")
         }));
         let _ = shutdown_tx.send(());
@@ -2936,6 +3549,21 @@ mod tests {
 
         assert!(response.status().is_success());
         assert_eq!(upstream_seen.lock().unwrap().as_deref(), Some(body));
+    }
+
+    #[test]
+    fn protection_control_reads_json_and_legacy_disabled_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let control_path = dir.path().join("protection.state");
+
+        std::fs::write(&control_path, "{\"enabled\": false}\n").unwrap();
+        assert!(!protection_control_enabled(&control_path));
+
+        std::fs::write(&control_path, "{\"enabled\": true}\n").unwrap();
+        assert!(protection_control_enabled(&control_path));
+
+        std::fs::write(&control_path, "disabled\n").unwrap();
+        assert!(!protection_control_enabled(&control_path));
     }
 
     #[tokio::test]
@@ -3095,11 +3723,114 @@ mod tests {
         let response = read_intercepted_test_response(&mut tls).await;
 
         assert!(response.starts_with("HTTP/1.1 200"));
-        assert!(response.contains("alice@example.com"));
-        assert!(!response.contains("[email:"));
+        assert!(!response.contains("alice@example.com"));
+        assert!(response.contains("[email:"));
         let upstream_body = upstream_seen.lock().unwrap().clone().unwrap();
         assert!(!upstream_body.contains("alice@example.com"));
         assert!(upstream_body.contains("[email:"));
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn transparent_chatgpt_backend_http_requests_use_ai_route_target() {
+        use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::{
+            ClientConfig, RootCertStore,
+            pki_types::{CertificateDer, ServerName},
+        };
+
+        let fallback_seen = Arc::new(Mutex::new(None::<String>));
+        let fallback_upstream = spawn_capture_echo_upstream(fallback_seen.clone()).await;
+        let chatgpt_seen = Arc::new(Mutex::new(None::<String>));
+        let chatgpt_upstream = spawn_capture_codex_compact_upstream(chatgpt_seen.clone()).await;
+
+        let mut config = proxy_config_with_provider(fallback_upstream, dam_net::ANTHROPIC_PROVIDER);
+        config.proxy.targets[0].name = "anthropic".to_string();
+        config.proxy.targets.push(dam_config::ProxyTargetConfig {
+            name: "chatgpt-codex".to_string(),
+            provider: dam_net::OPENAI_COMPATIBLE_PROVIDER.to_string(),
+            upstream: chatgpt_upstream,
+            failure_mode: None,
+            api_key_env: None,
+            api_key: None,
+        });
+        let log_path = config.log.sqlite_path.clone();
+
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = dam_trust::generate_local_ca_artifact_at(dir.path(), 1).unwrap();
+        let mut record = artifact.record.clone();
+        record.installed_at_unix = Some(2);
+        let trust = dam_trust::TrustState {
+            mode: dam_trust::TrustMode::LocalCa,
+            local_ca: Some(record),
+            ..dam_trust::TrustState::default()
+        };
+        let interception = TransparentInterceptionConfig {
+            state_dir: dir.path().to_path_buf(),
+            network_mode: dam_net::CaptureMode::SystemProxy,
+            system_proxy_active: true,
+            tun_active: false,
+            ai_routes: dam_net::known_ai_routes(),
+            trust,
+            user_consented: true,
+            protection_control_path: None,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            serve_transparent_with_shutdown(listener, config, interception, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut stream,
+            b"CONNECT chatgpt.com:443 HTTP/1.1\r\nHost: chatgpt.com:443\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        let connect_response = read_until_headers(&mut stream).await;
+        assert!(String::from_utf8_lossy(&connect_response).starts_with("HTTP/1.1 200"));
+
+        let mut roots = RootCertStore::empty();
+        let ca_der = dam_trust::issue_local_ca_leaf_certificate(dir.path(), "chatgpt.com")
+            .unwrap()
+            .ca_certificate_der;
+        roots.add(CertificateDer::from(ca_der)).unwrap();
+        let client_config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connector = TlsConnector::from(Arc::new(client_config));
+        let server_name = ServerName::try_from("chatgpt.com".to_string()).unwrap();
+        let mut tls = connector.connect(server_name, stream).await.unwrap();
+
+        let body = r#"{"input":"email codex@example.com"}"#;
+        let request = format!(
+            "POST /backend-api/codex/responses/compact HTTP/1.1\r\nHost: chatgpt.com\r\nCookie: test=session\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut tls, request.as_bytes())
+            .await
+            .unwrap();
+        let response = read_intercepted_test_response(&mut tls).await;
+
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(!response.contains("codex@example.com"));
+        assert!(response.contains("[email:"));
+        assert!(fallback_seen.lock().unwrap().is_none());
+        let upstream_body = chatgpt_seen.lock().unwrap().clone().unwrap();
+        assert!(!upstream_body.contains("codex@example.com"));
+        assert!(upstream_body.contains("[email:"));
+        let logs = dam_log::LogStore::open(log_path).unwrap().list().unwrap();
+        assert!(logs.iter().any(|entry| {
+            entry.action.as_deref() == Some("route_decision")
+                && entry.message.contains("target=chatgpt-codex")
+        }));
         let _ = shutdown_tx.send(());
     }
 
@@ -3623,6 +4354,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protected_body_strips_body_integrity_headers() {
+        let seen_headers = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let seen_body = Arc::new(Mutex::new(None::<String>));
+        let upstream =
+            spawn_capture_headers_and_body_upstream(seen_headers.clone(), seen_body.clone()).await;
+        let proxy = spawn_app(build_app(proxy_config(upstream)).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .header("content-digest", "sha-256=:original:")
+            .header("digest", "sha-256=original")
+            .header("content-md5", "original")
+            .header("signature", "sig1=:original:")
+            .header("signature-input", "sig1=(\"content-digest\")")
+            .header("x-keep-me", "ok")
+            .body(r#"{"messages":[{"content":"email alice@example.com"}]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let upstream_body = seen_body.lock().unwrap().clone().unwrap();
+        assert!(!upstream_body.contains("alice@example.com"));
+        assert!(upstream_body.contains("[email:"));
+
+        let headers = seen_headers.lock().unwrap();
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| name.eq_ignore_ascii_case("x-keep-me") && value == "ok")
+        );
+        for stripped in [
+            "content-digest",
+            "digest",
+            "content-md5",
+            "signature",
+            "signature-input",
+        ] {
+            assert!(
+                !headers
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(stripped)),
+                "{stripped} should be stripped after body mutation"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unchanged_body_keeps_body_integrity_headers() {
+        let seen_headers = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let seen_body = Arc::new(Mutex::new(None::<String>));
+        let upstream =
+            spawn_capture_headers_and_body_upstream(seen_headers.clone(), seen_body.clone()).await;
+        let proxy = spawn_app(build_app(proxy_config(upstream)).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .header("content-digest", "sha-256=:original:")
+            .header("x-keep-me", "ok")
+            .body(r#"{"messages":[{"content":"hello"}]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            seen_body.lock().unwrap().as_deref(),
+            Some(r#"{"messages":[{"content":"hello"}]}"#)
+        );
+
+        let headers = seen_headers.lock().unwrap();
+        assert!(
+            headers.iter().any(|(name, value)| {
+                name.eq_ignore_ascii_case("content-digest") && value == "sha-256=:original:"
+            }),
+            "content-digest should stay when the body is not changed"
+        );
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| name.eq_ignore_ascii_case("x-keep-me") && value == "ok")
+        );
+    }
+
+    #[tokio::test]
     async fn resolves_inbound_response_references_by_default() {
         let upstream_seen = Arc::new(Mutex::new(None::<String>));
         let upstream = spawn_capture_echo_upstream(upstream_seen.clone()).await;
@@ -3728,6 +4544,125 @@ mod tests {
         let logs = dam_log::LogStore::open(log_path).unwrap().list().unwrap();
         assert!(logs.iter().any(|entry| entry.event_type == "vault_read"));
         assert!(logs.iter().any(|entry| entry.event_type == "resolve"));
+    }
+
+    #[tokio::test]
+    async fn tokenizes_raw_sensitive_inbound_response_without_references() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_raw_sensitive_response_upstream(upstream_seen.clone()).await;
+        let config = proxy_config(upstream);
+        let log_path = config.log.sqlite_path.clone();
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body(r#"{"messages":[{"content":"hello"}]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.unwrap();
+        assert!(!body.contains("leak@example.com"));
+        assert!(body.contains("[email:"));
+
+        assert_eq!(
+            upstream_seen.lock().unwrap().as_deref(),
+            Some(r#"{"messages":[{"content":"hello"}]}"#)
+        );
+
+        let logs = dam_log::LogStore::open(log_path).unwrap().list().unwrap();
+        assert!(logs.iter().any(|entry| {
+            entry.event_type == "proxy_forward"
+                && entry.action.as_deref() == Some("inbound_protection")
+        }));
+        assert!(logs.iter().any(|entry| {
+            entry.event_type == "redaction" && entry.action.as_deref() == Some("tokenized")
+        }));
+    }
+
+    #[tokio::test]
+    async fn tokenizes_raw_email_domain_in_inbound_response_from_request_context() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_raw_domain_response_upstream(upstream_seen.clone()).await;
+        let config = proxy_config(upstream);
+        let log_path = config.log.sqlite_path.clone();
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body(r#"{"messages":[{"content":"email person@leak.example"}]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.unwrap();
+        assert!(!body.contains("leak.example"));
+        assert!(body.contains("[domain:"));
+
+        let upstream_body = upstream_seen.lock().unwrap().clone().unwrap();
+        assert!(!upstream_body.contains("person@leak.example"));
+        assert!(upstream_body.contains("[email:"));
+
+        let logs = dam_log::LogStore::open(log_path).unwrap().list().unwrap();
+        assert!(logs.iter().any(|entry| {
+            entry.event_type == "proxy_forward"
+                && entry.action.as_deref() == Some("inbound_protection")
+        }));
+        assert!(logs.iter().any(|entry| {
+            entry.kind.as_deref() == Some("domain")
+                && entry.event_type == "redaction"
+                && entry.action.as_deref() == Some("tokenized")
+        }));
+    }
+
+    #[tokio::test]
+    async fn tokenizes_raw_email_domain_in_anthropic_stream_from_request_context() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_anthropic_sse_raw_domain_upstream(upstream_seen.clone()).await;
+        let mut config = anthropic_proxy_config(upstream);
+        config.proxy.targets[0].name = "anthropic".to_string();
+        let log_path = config.log.sqlite_path.clone();
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/messages"))
+            .body(r#"{"messages":[{"content":"email banana@splonk.io"}],"stream":true}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/event-stream")
+        );
+        let body = response.text().await.unwrap();
+        assert!(!body.contains("splonk.io"));
+        assert!(body.contains("[domain:"));
+
+        let upstream_body = upstream_seen.lock().unwrap().clone().unwrap();
+        assert!(!upstream_body.contains("banana@splonk.io"));
+        assert!(upstream_body.contains("[email:"));
+
+        let logs = dam_log::LogStore::open(log_path).unwrap().list().unwrap();
+        assert!(logs.iter().any(|entry| {
+            entry.event_type == "proxy_forward"
+                && entry.action.as_deref() == Some("resolve_disabled")
+        }));
+        assert!(logs.iter().any(|entry| {
+            entry.event_type == "proxy_forward"
+                && entry.action.as_deref() == Some("inbound_protection")
+        }));
+        assert!(logs.iter().any(|entry| {
+            entry.kind.as_deref() == Some("domain")
+                && entry.event_type == "redaction"
+                && entry.action.as_deref() == Some("tokenized")
+        }));
     }
 
     #[tokio::test]

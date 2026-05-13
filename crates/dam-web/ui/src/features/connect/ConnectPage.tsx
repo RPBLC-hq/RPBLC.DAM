@@ -26,6 +26,7 @@ import type { ConnectView, PendingRequest, PendingRequestsView, SetupStep } from
 
 const CONNECT_QUERY_KEY = ['connect'] as const
 const PENDING_REQUESTS_QUERY_KEY = ['pending-requests'] as const
+const CONNECT_STATS_REFETCH_INTERVAL_MS = 5_000
 
 export function ConnectPage() {
   const { locale, t } = useI18n()
@@ -35,6 +36,9 @@ export function ConnectPage() {
   const connect = useQuery({
     queryKey: CONNECT_QUERY_KEY,
     queryFn: ({ signal }) => api<ConnectView>('/connect', { signal }),
+    // Counts include dam-log rows written by dam-proxy, which is outside
+    // dam-web's in-process event bus.
+    refetchInterval: CONNECT_STATS_REFETCH_INTERVAL_MS,
   })
 
   const action = useMutation({
@@ -575,6 +579,7 @@ function CountsRow({
   formatNumber: (value: number) => string
 }) {
   const { t } = useI18n()
+  const redactedToday = view.counts.redacted_today ?? view.counts.blocked_today
 
   return (
     <ul className="dam-connect__counts" aria-label={t('connect.countsLabel')}>
@@ -591,12 +596,12 @@ function CountsRow({
       <li className="dam-connect__counts-cell--link">
         <Link
           to="/activity"
-          search={{ decision: 'denied', since: 'today' }}
+          search={{ decision: 'sealed', since: 'today' }}
           className="dam-connect__counts-link"
-          aria-label={t('connect.blockedTodayAria')}
+          aria-label={t('connect.redactedTodayAria')}
         >
-          <b>{formatNumber(view.counts.blocked_today)}</b>
-          <span>{t('connect.blockedToday')}</span>
+          <b>{formatNumber(redactedToday)}</b>
+          <span>{t('connect.redactedToday')}</span>
         </Link>
       </li>
       <li className="dam-connect__counts-cell--link">

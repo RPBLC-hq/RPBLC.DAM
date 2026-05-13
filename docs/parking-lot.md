@@ -29,15 +29,41 @@ Current state: macOS onboarding is covered by Rust unit tests for setup-plan sta
 
 Parked work:
 
-- Add Playwright coverage for the Connect onboarding checklist using mocked `/api/v1/connect` states for each one-action step: startup choice, System Extension approval, reboot, network configuration, manager enablement, manager start, local CA, profile apply, and daemon start.
+- Add Playwright coverage for the Connect onboarding checklist using mocked `/api/v1/connect` states for each one-action step: startup choice, System Extension approval, reboot, network configuration, manager enablement, manager start, local CA, and daemon start.
 - Add a deterministic macOS helper/status fixture so tests can simulate deleted, disabled, enabled-disconnected, and connected Network Extension manager states without changing the developer machine.
 - Verify the tray-width layout and CTA transitions in Playwright screenshots before treating onboarding UX as seamless.
+
+## Integration Profile Catalog And Portability
+
+Current state: the visible bundled app profile catalog is intentionally narrow: `claude-code` and the merged `codex` profile are available, but only `claude-code` is enabled by default when no user app-selection state exists. The merged Codex profile covers both OpenAI API-key traffic and ChatGPT subscription/login traffic through separate traffic app IDs, and must be explicitly enabled for now. Generic OpenAI-compatible, generic Anthropic-compatible, xAI-compatible, and split Codex API/ChatGPT-login profiles are removed from the visible catalog for now. Existing local state that references retired profile IDs is normalized where possible so upgrades do not break the Settings or Connect views.
+
+Parked work:
+
+- Reintroduce generic OpenAI-compatible, generic Anthropic-compatible, xAI-compatible, and other third-party app/service profiles only after the profile model has a first-class catalog/editor story.
+- Add create, import, and export profile features for JSON integration profiles and traffic-profile app entries.
+- Restore the Settings profile creator only after it writes validated one-profile-per-JSON files into `$DAM_STATE_DIR/integrations/profiles/` and reconciles traffic-profile app entries through the same import/export model.
+- Add an in-app profile/config builder so a user can add a normal website or service by filling in host match rules, upstream, adapter kind, auth/header behavior, timeout, and outbound/inbound policy without writing Rust.
+- Define profile validation, signing/trust metadata, versioning, conflict handling, and safe rollback semantics for imported profiles.
+- Decide how imported profiles surface in Settings without making onboarding depend on explicit-proxy profile setup.
+- Add fixtures proving retired profile IDs migrate cleanly and imported profiles cannot introduce secrets, unsafe upstreams, or unsupported protocol claims.
+
+## Generic Adapter And Provider-Crate Cleanup
+
+Current state: `dam-provider-openai` and `dam-provider-anthropic` still contain reusable HTTP forwarding behavior mixed with provider-named auth/header defaults and response transformation assumptions. That was acceptable for the first LLM slice, but it does not match the target model where a random website or service can be mediated from a quick JSON config and the Rust code supplies generic protocol adapters only.
+
+Parked work:
+
+- Extract shared HTTP forwarding, timeout, redirect, header-stripping, body-integrity, response transformation, and auth injection behavior into generic adapter/config contracts.
+- Express provider/site differences in traffic-profile or integration-profile JSON: match rules, upstream, adapter kind, timeout, auth header policy, body parser mode, mutation-safe header policy, inbound resolution, and field/path include/exclude rules.
+- Keep OpenAI, Anthropic, Codex, and arbitrary websites as bundled or user-created profiles that consume the generic adapters, not as a reason to add more provider crates.
+- Retire or shrink provider-named crates once compact/Codex, Claude, and API-key paths are reliable and covered by fixtures.
+- Add profile-builder validation so unsupported payloads, unsafe upstreams, secrets, and body-signature requirements are surfaced before a user enables a custom config.
 
 ## Security And Privacy Design Work
 
 ### Full-Device Routing And TLS Trust
 
-Current state: local protection is app-layer routing for supported AI harnesses, explicit proxy paths, the macOS `system_proxy` fallback, and macOS Network Extension control-plane support for `tun`. `dam-net` defines capture-mode/backend vocabulary, protocol adapter readiness, routing readiness, and host-only AI traffic classification for the effective traffic profile registry. `dam-tray` owns macOS System Extension activation from `DAM.app`, and `dam-net-macos` can install/remove macOS PAC routing for proxy-capable HTTP/HTTPS traffic with rollback and configure Network Extension capture through a signed helper/app bundle. `dam-proxy` passes unknown hosts through untouched and has a daemon-gated HTTP/1.1 CONNECT/TLS runtime plus outbound Codex ChatGPT-login WebSocket client text-frame protection for active traffic profile hosts when routing, trust, and consent are ready. `dam-daemon` tracks pause/resume protection state so `dam disconnect` can stop redaction without removing routing.
+Current state: local protection is app-layer routing for supported AI harnesses, explicit proxy paths, the macOS `system_proxy` fallback, and macOS Network Extension control-plane support for `tun`. `dam-net` defines capture-mode/backend vocabulary, protocol adapter readiness, routing readiness, and host-only AI traffic classification for the effective traffic profile registry. `dam-tray` owns macOS System Extension activation from `DAM.app`, and `dam-net-macos` can install/remove macOS PAC routing for proxy-capable HTTP/HTTPS traffic with rollback and configure Network Extension capture through a signed helper/app bundle. `dam-proxy` passes unknown hosts through untouched and has a daemon-gated HTTP/1.1 CONNECT/TLS runtime plus Codex ChatGPT-login WebSocket client/server text-frame protection for active traffic profile hosts when routing, trust, and consent are ready. `dam-daemon` tracks pause/resume protection state so `dam disconnect` can stop redaction without removing routing.
 
 Parked work:
 
@@ -65,7 +91,7 @@ Parked work:
 
 ### Streaming Response Protection
 
-Current state: outbound requests are protected; inbound provider responses are not redetected. Inbound responses resolve known DAM references by default when `proxy.resolve_inbound` is enabled. JSON-shaped responses are transformed string-by-string for provider-escaped references, including newline-delimited JSON. `text/event-stream` responses are transformed for reference resolution. Raw stream transformation handles references split across adjacent chunks; provider-aware SSE text-delta transformation handles references split across OpenAI-compatible and Anthropic JSON delta events with a bounded trailing event window instead of EOF buffering.
+Current state: outbound requests are protected; agent HTTP traffic apps keep inbound DAM references tokenized in local transcripts and redetect/tokenize supported raw provider-returned values. The inbound redetection context includes email-derived domains from the protected outbound request. JSON-shaped responses are transformed string-by-string, including newline-delimited JSON. `text/event-stream` responses are transformed for inbound protection. Raw stream transformation handles references split across adjacent chunks; provider-aware SSE text-delta transformation handles references and raw values split across OpenAI-compatible and Anthropic JSON delta events with a bounded trailing event window instead of EOF buffering.
 
 Parked work:
 

@@ -250,7 +250,7 @@ fn dam_connect_status_disconnect_tracks_profile_target() {
         .args([
             "connect",
             "--profile",
-            "xai-compatible",
+            "codex",
             "--listen",
             "127.0.0.1:0",
             "--db",
@@ -276,8 +276,8 @@ fn dam_connect_status_disconnect_tracks_profile_target() {
     );
     let connect_stdout = utf8(&connect_output.stdout);
     assert!(connect_stdout.contains("DAM connected at http://127.0.0.1:"));
-    assert!(connect_stdout.contains("target: xai"));
-    assert!(connect_stdout.contains("upstream: https://api.x.ai"));
+    assert!(connect_stdout.contains("target: openai"));
+    assert!(connect_stdout.contains("upstream: https://api.openai.com"));
 
     let status_output = Command::new(binary("dam"))
         .arg("status")
@@ -293,9 +293,9 @@ fn dam_connect_status_disconnect_tracks_profile_target() {
     );
     let status_stdout = utf8(&status_output.stdout);
     assert!(status_stdout.contains("state: connected"));
-    assert!(status_stdout.contains("target: xai"));
+    assert!(status_stdout.contains("target: openai"));
     assert!(status_stdout.contains("provider: openai-compatible"));
-    assert!(status_stdout.contains("upstream: https://api.x.ai"));
+    assert!(status_stdout.contains("upstream: https://api.openai.com"));
     assert!(status_stdout.contains("protection: protected"));
 
     let json_status_output = Command::new(binary("dam"))
@@ -313,12 +313,12 @@ fn dam_connect_status_disconnect_tracks_profile_target() {
     let status_json: serde_json::Value =
         serde_json::from_slice(&json_status_output.stdout).expect("status json");
     assert_eq!(status_json["state"], "connected");
-    assert_eq!(status_json["daemon"]["target_name"], "xai");
+    assert_eq!(status_json["daemon"]["target_name"], "openai");
     assert_eq!(
         status_json["daemon"]["target_provider"],
         "openai-compatible"
     );
-    assert_eq!(status_json["daemon"]["upstream"], "https://api.x.ai");
+    assert_eq!(status_json["daemon"]["upstream"], "https://api.openai.com");
 
     let disconnect_output = daemon.stop();
     assert!(
@@ -340,11 +340,14 @@ fn dam_connect_status_disconnect_tracks_profile_target() {
 }
 
 #[test]
-fn dam_connect_profile_apply_writes_claude_settings_and_starts_daemon() {
+fn dam_connect_profile_apply_keeps_claude_catalog_json_and_starts_daemon() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     let home_dir = dir.path().join("home");
-    let settings_path = home_dir.join(".claude").join("settings.json");
+    let profile_path = state_dir
+        .join("integrations")
+        .join("profiles")
+        .join("claude-code.json");
     let vault_path = dir.path().join("vault.db");
     let log_path = dir.path().join("log.db");
     let consent_path = dir.path().join("consent.db");
@@ -370,6 +373,8 @@ fn dam_connect_profile_apply_writes_claude_settings_and_starts_daemon() {
     let connect_output = Command::new(binary("dam"))
         .args([
             "connect",
+            "--profile",
+            "claude-code",
             "--apply",
             "--listen",
             &addr.to_string(),
@@ -397,15 +402,15 @@ fn dam_connect_profile_apply_writes_claude_settings_and_starts_daemon() {
     );
     let stdout = utf8(&connect_output.stdout);
     assert!(stdout.contains("profile: claude-code"));
-    assert!(stdout.contains("integration profile applied"));
-    assert!(stdout.contains("rollback: dam integrations rollback claude-code"));
+    assert!(stdout.contains("integration profile content is already present"));
+    assert!(!stdout.contains("rollback: dam integrations rollback claude-code"));
     assert!(stdout.contains(&format!("DAM connected at http://{addr}")));
 
-    let settings: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
-    assert_eq!(settings["env"]["HTTPS_PROXY"], format!("http://{addr}"));
-    assert_eq!(settings["env"]["HTTP_PROXY"], format!("http://{addr}"));
-    assert!(settings["env"]["ANTHROPIC_BASE_URL"].is_null());
+    let profile: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&profile_path).unwrap()).unwrap();
+    assert_eq!(profile["id"], "claude-code");
+    assert_eq!(profile["settings"][0]["value"], "{{proxy_url}}");
+    assert_eq!(profile["settings"][1]["value"], "{{proxy_url}}");
 
     let status = Command::new(binary("dam"))
         .arg("status")
@@ -420,16 +425,14 @@ fn dam_connect_profile_apply_writes_claude_settings_and_starts_daemon() {
     assert!(status_stdout.contains("state: connected"));
     assert!(status_stdout.contains("active_profile: claude-code"));
 
-    let rollback = Command::new(binary("dam"))
-        .args(["integrations", "rollback", "claude-code"])
-        .current_dir(dir.path())
-        .env("DAM_STATE_DIR", &state_dir)
-        .env("HOME", &home_dir)
-        .output()
-        .expect("run dam integrations rollback");
-
-    assert!(rollback.status.success(), "{}", utf8(&rollback.stderr));
-    assert!(!settings_path.exists());
+    assert!(
+        !state_dir
+            .join("integrations")
+            .join("apply-records")
+            .join("claude-code")
+            .join("latest.json")
+            .exists()
+    );
 
     let disconnect = daemon.stop();
     assert!(disconnect.status.success(), "{}", utf8(&disconnect.stderr));
@@ -465,6 +468,8 @@ async fn dam_disconnect_pauses_explicit_claude_profile_without_closing_proxy() {
     let connect_output = Command::new(binary("dam"))
         .args([
             "connect",
+            "--profile",
+            "claude-code",
             "--apply",
             "--listen",
             &proxy_addr.to_string(),
@@ -539,8 +544,12 @@ async fn dam_disconnect_pauses_explicit_claude_profile_without_closing_proxy() {
     let resume = Command::new(binary("dam"))
         .args([
             "connect",
+            "--profile",
+            "claude-code",
             "--listen",
             &proxy_addr.to_string(),
+            "--upstream",
+            &upstream_url,
             "--db",
             vault_path.to_str().unwrap(),
             "--log",
@@ -548,9 +557,9 @@ async fn dam_disconnect_pauses_explicit_claude_profile_without_closing_proxy() {
             "--consent-db",
             consent_path.to_str().unwrap(),
             "--network-mode",
-            "tun",
+            "explicit_proxy",
             "--trust-mode",
-            "local_ca",
+            "disabled",
         ])
         .current_dir(dir.path())
         .env("DAM_STATE_DIR", &state_dir)
@@ -572,15 +581,6 @@ async fn dam_disconnect_pauses_explicit_claude_profile_without_closing_proxy() {
         .await
         .unwrap();
     assert_eq!(resumed_health["state"], "protected");
-
-    let rollback = Command::new(binary("dam"))
-        .args(["integrations", "rollback", "claude-code"])
-        .current_dir(dir.path())
-        .env("DAM_STATE_DIR", &state_dir)
-        .env("HOME", &home_dir)
-        .output()
-        .expect("run dam integrations rollback");
-    assert!(rollback.status.success(), "{}", utf8(&rollback.stderr));
 
     let stop = daemon.stop();
     assert!(stop.status.success(), "{}", utf8(&stop.stderr));
@@ -649,6 +649,8 @@ async fn dam_connect_apply_restarts_paused_daemon_when_profile_target_changes() 
     let resume = Command::new(binary("dam"))
         .args([
             "connect",
+            "--profile",
+            "claude-code",
             "--apply",
             "--listen",
             &proxy_addr.to_string(),
@@ -676,7 +678,7 @@ async fn dam_connect_apply_restarts_paused_daemon_when_profile_target_changes() 
         utf8(&resume.stdout),
         utf8(&resume.stderr)
     );
-    assert!(utf8(&resume.stdout).contains("profile target setup changed"));
+    assert!(utf8(&resume.stdout).contains("profile traffic scope changed"));
 
     let status = Command::new(binary("dam"))
         .args(["status", "--json"])
@@ -725,22 +727,22 @@ async fn dam_connect_apply_restarts_paused_daemon_when_profile_target_changes() 
 }
 
 #[test]
-fn dam_integrations_apply_codex_api_and_rollback_from_binary() {
+fn dam_integrations_apply_codex_and_rollback_from_binary() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
-    let env_path = dir.path().join("codex.env");
-    let original_env = "export EXISTING=1\n";
-    std::fs::write(&env_path, original_env).unwrap();
+    let profile_path = dir.path().join("codex.json");
+    let original_profile = "{\"id\":\"old-profile\"}\n";
+    std::fs::write(&profile_path, original_profile).unwrap();
 
     ensure_binaries();
     let dry_run = Command::new(binary("dam"))
         .args([
             "integrations",
             "apply",
-            "codex-api",
+            "codex",
             "--dry-run",
             "--target-path",
-            env_path.to_str().unwrap(),
+            profile_path.to_str().unwrap(),
             "--proxy-url",
             "http://127.0.0.1:9000",
         ])
@@ -751,16 +753,19 @@ fn dam_integrations_apply_codex_api_and_rollback_from_binary() {
 
     assert!(dry_run.status.success(), "{}", utf8(&dry_run.stderr));
     assert!(utf8(&dry_run.stdout).contains("dry run complete; no files changed"));
-    assert_eq!(std::fs::read_to_string(&env_path).unwrap(), original_env);
+    assert_eq!(
+        std::fs::read_to_string(&profile_path).unwrap(),
+        original_profile
+    );
 
     let apply = Command::new(binary("dam"))
         .args([
             "integrations",
             "apply",
-            "codex-api",
+            "codex",
             "--write",
             "--target-path",
-            env_path.to_str().unwrap(),
+            profile_path.to_str().unwrap(),
             "--proxy-url",
             "http://127.0.0.1:9000",
         ])
@@ -772,14 +777,15 @@ fn dam_integrations_apply_codex_api_and_rollback_from_binary() {
     assert!(apply.status.success(), "{}", utf8(&apply.stderr));
     assert!(utf8(&apply.stdout).contains("integration profile applied"));
 
-    let env = std::fs::read_to_string(&env_path).unwrap();
-    assert!(env.contains("# DAM integration profile: codex-api"));
-    assert!(env.contains("export HTTPS_PROXY=http://127.0.0.1:9000"));
-    assert!(env.contains("export HTTP_PROXY=http://127.0.0.1:9000"));
-    assert!(!env.contains("dam_openai"));
+    let raw = std::fs::read_to_string(&profile_path).unwrap();
+    let profile: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(profile["id"], "codex");
+    assert_eq!(profile["settings"][0]["value"], "http://127.0.0.1:9000");
+    assert_eq!(profile["settings"][1]["value"], "http://127.0.0.1:9000");
+    assert!(!raw.contains("dam_openai"));
 
     let rollback = Command::new(binary("dam"))
-        .args(["integrations", "rollback", "codex-api"])
+        .args(["integrations", "rollback", "codex"])
         .current_dir(dir.path())
         .env("DAM_STATE_DIR", &state_dir)
         .output()
@@ -787,16 +793,19 @@ fn dam_integrations_apply_codex_api_and_rollback_from_binary() {
 
     assert!(rollback.status.success(), "{}", utf8(&rollback.stderr));
     assert!(utf8(&rollback.stdout).contains("integration profile rolled back"));
-    assert_eq!(std::fs::read_to_string(&env_path).unwrap(), original_env);
+    assert_eq!(
+        std::fs::read_to_string(&profile_path).unwrap(),
+        original_profile
+    );
 }
 
 #[test]
-fn dam_integrations_apply_claude_code_settings_and_rollback_from_binary() {
+fn dam_integrations_apply_claude_code_profile_json_and_rollback_from_binary() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
-    let settings_path = dir.path().join("settings.json");
-    let original_settings = r#"{"env":{"FOO":"bar"}}"#;
-    std::fs::write(&settings_path, original_settings).unwrap();
+    let profile_path = dir.path().join("claude-code.json");
+    let original_profile = "{\"id\":\"old-profile\"}\n";
+    std::fs::write(&profile_path, original_profile).unwrap();
 
     ensure_binaries();
     let apply = Command::new(binary("dam"))
@@ -806,7 +815,7 @@ fn dam_integrations_apply_claude_code_settings_and_rollback_from_binary() {
             "claude-code",
             "--write",
             "--target-path",
-            settings_path.to_str().unwrap(),
+            profile_path.to_str().unwrap(),
             "--proxy-url",
             "http://127.0.0.1:9000",
         ])
@@ -818,12 +827,11 @@ fn dam_integrations_apply_claude_code_settings_and_rollback_from_binary() {
     assert!(apply.status.success(), "{}", utf8(&apply.stderr));
     assert!(utf8(&apply.stdout).contains("integration profile applied"));
 
-    let settings: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
-    assert_eq!(settings["env"]["FOO"], "bar");
-    assert_eq!(settings["env"]["HTTPS_PROXY"], "http://127.0.0.1:9000");
-    assert_eq!(settings["env"]["HTTP_PROXY"], "http://127.0.0.1:9000");
-    assert!(settings["env"]["ANTHROPIC_BASE_URL"].is_null());
+    let profile: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&profile_path).unwrap()).unwrap();
+    assert_eq!(profile["id"], "claude-code");
+    assert_eq!(profile["settings"][0]["value"], "http://127.0.0.1:9000");
+    assert_eq!(profile["settings"][1]["value"], "http://127.0.0.1:9000");
 
     let rollback = Command::new(binary("dam"))
         .args(["integrations", "rollback", "claude-code"])
@@ -835,8 +843,8 @@ fn dam_integrations_apply_claude_code_settings_and_rollback_from_binary() {
     assert!(rollback.status.success(), "{}", utf8(&rollback.stderr));
     assert!(utf8(&rollback.stdout).contains("integration profile rolled back"));
     assert_eq!(
-        std::fs::read_to_string(&settings_path).unwrap(),
-        original_settings
+        std::fs::read_to_string(&profile_path).unwrap(),
+        original_profile
     );
 }
 

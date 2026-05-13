@@ -45,7 +45,7 @@ With an explicit proxy URL:
 
 ```bash
 cargo run -p damctl -- status --proxy-url http://127.0.0.1:7828
-cargo run -p damctl -- integrations check codex-api --proxy-url http://127.0.0.1:7828
+cargo run -p damctl -- integrations check codex --proxy-url http://127.0.0.1:7828
 ```
 
 JSON output:
@@ -243,8 +243,8 @@ Exit codes:
 
 ```bash
 cargo run -p damctl -- integrations check
-cargo run -p damctl -- integrations check codex-api
-cargo run -p damctl -- integrations check codex-api --target-path ./codex-test.env
+cargo run -p damctl -- integrations check codex
+cargo run -p damctl -- integrations check codex --target-path ./codex-test.json
 ```
 
 It reports each profile as:

@@ -1,17 +1,24 @@
-//! Settings, app toggles, integrations apply/rollback, danger-zone actions.
+//! Settings, app profile toggles, compatibility apply/rollback routes, danger-zone actions.
 //!
 //! The shape follows `RPBLC.Architecture/dam/web/specs/settings-tab.md`.
 
 use axum::Json;
 use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
-use std::{env, path::PathBuf, process::Stdio};
+use std::{collections::BTreeSet, env, path::PathBuf, process::Stdio};
 
 use crate::AppState;
 use crate::error::{Ok, WebError, WebErrorCode, WebResult};
 use crate::events_bus::EventTopic;
 
 const DAM_STATE_DIR_ENV: &str = "DAM_STATE_DIR";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CaptureScope {
+    hosts: Vec<String>,
+    traffic_app_ids: Option<Vec<String>>,
+    proxy_targets: Vec<dam_config::ProxyTargetConfig>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsView {
@@ -83,6 +90,8 @@ fn settings_view(state: &AppState) -> Result<SettingsView, WebError> {
 fn app_settings(state: &AppState) -> Result<Vec<AppSetting>, WebError> {
     let state_dir = dam_state_dir()?;
     let integration_state_dir = state_dir.join("integrations");
+    dam_integrations::ensure_bundled_profile_files(&integration_state_dir)
+        .map_err(settings_error)?;
     let proxy_url = proxy_url(state);
     let enabled = dam_integrations::read_effective_enabled_integrations(&integration_state_dir)
         .map_err(settings_error)?
@@ -90,26 +99,20 @@ fn app_settings(state: &AppState) -> Result<Vec<AppSetting>, WebError> {
         .map(|profile| profile.profile_id)
         .collect::<std::collections::BTreeSet<_>>();
 
-    dam_integrations::profiles(&proxy_url)
+    dam_integrations::profiles_from_state(&proxy_url, &integration_state_dir)
+        .map_err(settings_error)?
         .into_iter()
         .map(|profile| {
             let target_path =
-                default_target_path(&profile.id, &integration_state_dir).map_err(settings_error)?;
-            let inspection = dam_integrations::inspect_apply(
-                &profile.id,
-                &proxy_url,
-                target_path.clone(),
-                &state_dir,
-            )
-            .map_err(settings_error)?;
+                dam_integrations::profile_definition_path(&integration_state_dir, &profile.id);
             Ok(AppSetting {
+                enabled: enabled.contains(&profile.id),
                 id: profile.id,
                 name: profile.name,
                 purpose: profile.summary,
-                enabled: enabled.contains(&inspection.profile_id),
                 profile: "default".into(),
                 profiles: vec!["default".into()],
-                install_state: integration_status_tag(inspection.status).into(),
+                install_state: "applied".into(),
                 target_path: Some(display_path(&target_path)),
             })
         })
@@ -155,18 +158,6 @@ fn dam_state_dir() -> Result<PathBuf, WebError> {
         .map_err(|_| WebError::new(WebErrorCode::DaemonUnreachable))
 }
 
-fn default_target_path(
-    profile_id: &str,
-    integration_state_dir: &std::path::Path,
-) -> Result<PathBuf, String> {
-    dam_integrations::default_apply_path(
-        profile_id,
-        integration_state_dir,
-        None,
-        env::var_os("HOME").map(PathBuf::from),
-    )
-}
-
 fn display_path(path: &std::path::Path) -> String {
     if let Some(home) = env::var_os("HOME").map(PathBuf::from)
         && let Ok(relative) = path.strip_prefix(&home)
@@ -174,14 +165,6 @@ fn display_path(path: &std::path::Path) -> String {
         return format!("~/{}", relative.display());
     }
     path.display().to_string()
-}
-
-fn integration_status_tag(status: dam_integrations::IntegrationApplyStatus) -> &'static str {
-    match status {
-        dam_integrations::IntegrationApplyStatus::Applied => "applied",
-        dam_integrations::IntegrationApplyStatus::NeedsApply => "needs_apply",
-        dam_integrations::IntegrationApplyStatus::Modified => "modified",
-    }
 }
 
 fn settings_error(error: String) -> WebError {
@@ -239,28 +222,8 @@ pub async fn post_rollback(
 fn set_app_enabled(state: &AppState, profile_id: &str, enabled: bool) -> Result<(), WebError> {
     let state_dir = dam_state_dir()?;
     let integration_state_dir = state_dir.join("integrations");
-    let proxy_url = proxy_url(state);
-    if enabled {
-        let target_path =
-            default_target_path(profile_id, &integration_state_dir).map_err(settings_error)?;
-        let inspection = dam_integrations::inspect_apply(
-            profile_id,
-            &proxy_url,
-            target_path.clone(),
-            &state_dir,
-        )
+    dam_integrations::ensure_bundled_profile_files(&integration_state_dir)
         .map_err(settings_error)?;
-        if inspection.status == dam_integrations::IntegrationApplyStatus::Modified {
-            return Err(WebError::new(WebErrorCode::ApplyModifiedTarget));
-        }
-        let prepared = dam_integrations::prepare_apply(profile_id, &proxy_url, target_path)
-            .map_err(settings_error)?;
-        dam_integrations::run_apply(prepared, false, &state_dir).map_err(settings_error)?;
-    } else if let Err(error) = dam_integrations::rollback_profile(profile_id, &state_dir)
-        && !error.contains("failed to read rollback record")
-    {
-        return Err(settings_error(error));
-    }
     dam_integrations::set_integration_enabled(profile_id, enabled, &integration_state_dir)
         .map_err(settings_error)?;
     reconcile_running_capture_scope(state, &state_dir)?;
@@ -279,47 +242,85 @@ fn reconcile_running_capture_scope(
         }
         Err(_) => return Err(WebError::new(WebErrorCode::DaemonUnreachable)),
     };
-    let hosts = configured_ai_hosts_for_state(state.config.as_ref(), state_dir)?;
+    let scope = capture_scope_for_state(state.config.as_ref(), state_dir)?;
     match daemon.network_mode {
         dam_net::CaptureMode::Tun => {
-            dam_net_macos::install_network_extension_for_hosts(state_dir, &hosts)
+            dam_net_macos::install_network_extension_for_hosts(state_dir, &scope.hosts)
                 .map_err(|_| WebError::new(WebErrorCode::SetupStepFailed))?;
         }
         dam_net::CaptureMode::SystemProxy => {
-            dam_net_macos::install_system_proxy_for_hosts(state_dir, &daemon.proxy_url, &hosts)
-                .map_err(|_| WebError::new(WebErrorCode::SetupStepFailed))?;
+            dam_net_macos::install_system_proxy_for_hosts(
+                state_dir,
+                &daemon.proxy_url,
+                &scope.hosts,
+            )
+            .map_err(|_| WebError::new(WebErrorCode::SetupStepFailed))?;
         }
         dam_net::CaptureMode::ExplicitProxy => {}
     }
-    reconnect_daemon_for_app_scope(state, state_dir, &daemon)
+    reconnect_daemon_for_app_scope(state, state_dir, &daemon, &scope)
 }
 
-fn configured_ai_hosts_for_state(
+fn capture_scope_for_state(
     config: &dam_config::DamConfig,
     state_dir: &std::path::Path,
-) -> Result<Vec<String>, WebError> {
+) -> Result<CaptureScope, WebError> {
     let mut config = config.clone();
     let integration_state_dir = state_dir.join("integrations");
+    let mut traffic_app_ids = None;
     if let Some(profile_ids) = dam_integrations::runtime_enabled_profile_ids(&integration_state_dir)
         .map_err(settings_error)?
     {
-        config.traffic.enabled_app_ids = Some(
-            dam_integrations::traffic_app_ids_for_profile_ids(&profile_ids)
-                .map_err(settings_error)?,
-        );
+        let app_ids = dam_integrations::traffic_app_ids_for_profile_ids_from_state(
+            &profile_ids,
+            &integration_state_dir,
+        )
+        .map_err(settings_error)?;
+        config.traffic.enabled_app_ids = Some(app_ids.clone());
+        traffic_app_ids = Some(app_ids);
     }
-    Ok(
-        dam_net::ai_routes_from_profile(&config.traffic.effective_profile())
-            .into_iter()
-            .map(|route| route.host)
-            .collect(),
-    )
+    let routes = dam_net::ai_routes_from_profile(&config.traffic.effective_profile());
+    Ok(CaptureScope {
+        hosts: routes.iter().map(|route| route.host.clone()).collect(),
+        traffic_app_ids,
+        proxy_targets: proxy_targets_from_ai_routes(&routes),
+    })
+}
+
+fn proxy_targets_from_ai_routes(routes: &[dam_net::AiRoute]) -> Vec<dam_config::ProxyTargetConfig> {
+    let mut seen = BTreeSet::new();
+    let mut targets = Vec::new();
+    for route in routes {
+        let key = (
+            route.target_name.clone(),
+            route.provider.clone(),
+            route.upstream.clone(),
+        );
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let (name, provider, upstream) = key;
+        targets.push(dam_config::ProxyTargetConfig {
+            name,
+            provider,
+            upstream,
+            failure_mode: None,
+            api_key_env: None,
+            api_key: None,
+        });
+    }
+    targets
+}
+
+fn proxy_target_arg(target: &dam_config::ProxyTargetConfig) -> String {
+    format!("{}|{}|{}", target.name, target.provider, target.upstream)
 }
 
 fn reconnect_daemon_for_app_scope(
     state: &AppState,
     state_dir: &std::path::Path,
     daemon: &dam_daemon::DaemonState,
+    scope: &CaptureScope,
 ) -> Result<(), WebError> {
     let dam_bin =
         locate_dam_binary().ok_or_else(|| WebError::new(WebErrorCode::DaemonUnreachable))?;
@@ -335,6 +336,18 @@ fn reconnect_daemon_for_app_scope(
         "--trust-mode".to_string(),
         daemon.trust.mode.tag().to_string(),
     ]);
+    for target in &scope.proxy_targets {
+        args.extend(["--target".to_string(), proxy_target_arg(target)]);
+    }
+    if let Some(app_ids) = &scope.traffic_app_ids {
+        if app_ids.is_empty() {
+            args.push("--no-traffic-apps".to_string());
+        } else {
+            for app_id in app_ids {
+                args.extend(["--traffic-app".to_string(), app_id.clone()]);
+            }
+        }
+    }
     match &daemon.log_path {
         Some(path) => args.extend(["--log".to_string(), path.display().to_string()]),
         None => args.push("--no-log".to_string()),
@@ -530,22 +543,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn integration_status_tags_match_api_contract() {
-        assert_eq!(
-            integration_status_tag(dam_integrations::IntegrationApplyStatus::Applied),
-            "applied"
-        );
-        assert_eq!(
-            integration_status_tag(dam_integrations::IntegrationApplyStatus::NeedsApply),
-            "needs_apply"
-        );
-        assert_eq!(
-            integration_status_tag(dam_integrations::IntegrationApplyStatus::Modified),
-            "modified"
-        );
-    }
-
-    #[test]
     fn settings_errors_map_to_stable_codes() {
         assert_eq!(
             settings_error("target changed outside DAM".into()).code,
@@ -559,5 +556,60 @@ mod tests {
             settings_error("some unexpected integration error".into()).code,
             WebErrorCode::Unknown
         );
+    }
+
+    #[test]
+    fn capture_scope_expands_enabled_profiles_to_hosts_apps_and_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let integration_dir = dir.path().join("integrations");
+        dam_integrations::ensure_bundled_profile_files(&integration_dir).unwrap();
+        dam_integrations::set_integration_enabled("codex", true, &integration_dir).unwrap();
+
+        let scope = capture_scope_for_state(&dam_config::DamConfig::default(), dir.path()).unwrap();
+
+        assert_eq!(
+            scope.traffic_app_ids,
+            Some(vec![
+                "anthropic-api".to_string(),
+                "openai-api".to_string(),
+                "chatgpt-codex".to_string(),
+            ])
+        );
+        assert!(scope.hosts.contains(&"api.anthropic.com".to_string()));
+        assert!(scope.hosts.contains(&"api.openai.com".to_string()));
+        assert!(scope.hosts.contains(&"chatgpt.com".to_string()));
+        assert!(scope.hosts.contains(&"ab.chatgpt.com".to_string()));
+        assert!(
+            scope
+                .proxy_targets
+                .iter()
+                .any(|target| target.name == "anthropic")
+        );
+        assert!(
+            scope
+                .proxy_targets
+                .iter()
+                .any(|target| target.name == "openai")
+        );
+        assert!(
+            scope
+                .proxy_targets
+                .iter()
+                .any(|target| target.name == "chatgpt-codex")
+        );
+    }
+
+    #[test]
+    fn capture_scope_preserves_explicit_empty_enabled_profile_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let integration_dir = dir.path().join("integrations");
+        dam_integrations::ensure_bundled_profile_files(&integration_dir).unwrap();
+        dam_integrations::set_integration_enabled("claude-code", false, &integration_dir).unwrap();
+
+        let scope = capture_scope_for_state(&dam_config::DamConfig::default(), dir.path()).unwrap();
+
+        assert_eq!(scope.traffic_app_ids, Some(Vec::new()));
+        assert!(scope.hosts.is_empty());
+        assert!(scope.proxy_targets.is_empty());
     }
 }

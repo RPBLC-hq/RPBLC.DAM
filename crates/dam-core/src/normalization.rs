@@ -3,6 +3,7 @@ use crate::SensitiveType;
 pub fn canonical_sensitive_value(kind: SensitiveType, value: &str) -> String {
     match kind {
         SensitiveType::Email => canonical_email_value(value),
+        SensitiveType::Domain => canonical_domain_value(value),
         SensitiveType::Phone | SensitiveType::Ssn | SensitiveType::CreditCard => value.to_string(),
     }
 }
@@ -18,6 +19,15 @@ fn canonical_email_value(value: &str) -> String {
     };
 
     format!("{local}@{}", domain.to_ascii_lowercase())
+}
+
+fn canonical_domain_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !matches!(character, ' ' | '\t' | '\r' | '\n'))
+        .collect::<String>()
+        .trim_end_matches('.')
+        .to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -41,6 +51,14 @@ mod tests {
         assert_eq!(
             canonical_sensitive_value(SensitiveType::Phone, "+1 555 555 5555"),
             "+1 555 555 5555"
+        );
+    }
+
+    #[test]
+    fn canonicalizes_domain_spacing_and_case() {
+        assert_eq!(
+            canonical_sensitive_value(SensitiveType::Domain, "Example .COM"),
+            "example.com"
         );
     }
 }

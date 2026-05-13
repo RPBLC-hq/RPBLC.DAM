@@ -4,7 +4,7 @@
 //! (`dam_daemon::daemon_status`) and the diagnostics setup plan
 //! (`dam_diagnostics::setup_plan`). Pause/resume call
 //! `dam_daemon::set_protection_enabled` directly; first-run setup steps
-//! (NE install, CA install, profile apply, daemon start) and full
+//! (NE install, CA install, system-proxy fallback, daemon start) and full
 //! connect/disconnect-stop are deferred to the native tray IPC, since
 //! they require process spawning and the macOS NE entitlement that
 //! only the tray bundle has. The SPA dispatches those through
@@ -13,12 +13,10 @@
 use axum::Json;
 use axum::extract::State;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::AppState;
-use crate::activity_map::{Decision, actor_from_message, derive_event_with_actor};
 use crate::error::{Ok, WebError, WebErrorCode, WebResult};
 use crate::events_bus::EventTopic;
 
@@ -48,6 +46,10 @@ pub struct ConnectView {
 #[derive(Debug, Clone, Serialize)]
 pub struct ConnectCounts {
     pub grants: u64,
+    pub redacted_today: u64,
+    // Legacy wire name kept for older local clients. It now mirrors
+    // redacted_today because the Connect tile is a redaction dividend,
+    // not a provider-failure counter.
     pub blocked_today: u64,
     pub apps_mediated: u64,
 }
@@ -171,12 +173,14 @@ pub async fn get(State(state): State<AppState>) -> WebResult<ConnectView> {
 }
 
 fn connect_counts(state: &AppState) -> ConnectCounts {
+    let redacted_today = redacted_today_count(
+        &state.logs.list().unwrap_or_default(),
+        now_unix_secs().unwrap_or_default(),
+    );
     ConnectCounts {
         grants: active_grants_count(state.consent_store.as_deref()),
-        blocked_today: blocked_today_count(
-            &state.logs.list().unwrap_or_default(),
-            now_unix_secs().unwrap_or_default(),
-        ),
+        redacted_today,
+        blocked_today: redacted_today,
         apps_mediated: apps_mediated_count().unwrap_or_default(),
     }
 }
@@ -197,16 +201,18 @@ fn active_grants_count(store: Option<&dam_consent::ConsentStore>) -> u64 {
         .unwrap_or_default()
 }
 
-fn blocked_today_count(entries: &[dam_log::LogEntry], now: i64) -> u64 {
+fn redacted_today_count(entries: &[dam_log::LogEntry], now: i64) -> u64 {
     let today = epoch_day(now);
-    let actors = operation_actors(entries);
     entries
         .iter()
         .filter(|entry| epoch_day(entry.timestamp) == today)
-        .filter_map(|entry| {
-            derive_event_with_actor(entry, actors.get(&entry.operation_id).map(String::as_str))
+        .filter(|entry| {
+            entry.event_type == "redaction"
+                && matches!(
+                    entry.action.as_deref(),
+                    Some("tokenized") | Some("redacted")
+                )
         })
-        .filter(|event| matches!(event.decision, Decision::Denied))
         .count() as u64
 }
 
@@ -220,15 +226,6 @@ fn apps_mediated_count() -> Result<u64, String> {
 fn apps_mediated_count_from(integration_state_dir: &Path) -> Result<u64, String> {
     dam_integrations::read_effective_enabled_integrations(integration_state_dir)
         .map(|profiles| profiles.len() as u64)
-}
-
-fn operation_actors(entries: &[dam_log::LogEntry]) -> HashMap<String, String> {
-    entries
-        .iter()
-        .filter_map(|entry| {
-            actor_from_message(&entry.message).map(|actor| (entry.operation_id.clone(), actor))
-        })
-        .collect()
 }
 
 fn epoch_day(timestamp: i64) -> i64 {
@@ -373,11 +370,7 @@ fn map_setup_step(step: &dam_diagnostics::SetupStep) -> SetupStep {
         dam_diagnostics::SetupStepKind::LocalCa => "ca_install",
         dam_diagnostics::SetupStepKind::ProfileApply => "apply_profiles",
         dam_diagnostics::SetupStepKind::Daemon => "daemon_start",
-        // SystemProxy is a same-bucket setup task as ProfileApply for
-        // the SPA's checklist contract — both are "make the proxy
-        // visible to traffic". Folded under apply_profiles so the SPA
-        // doesn't need a separate slot.
-        dam_diagnostics::SetupStepKind::SystemProxy => "apply_profiles",
+        dam_diagnostics::SetupStepKind::SystemProxy => "system_proxy",
     }
     .to_string();
 
@@ -440,37 +433,38 @@ mod tests {
     }
 
     #[test]
-    fn blocked_today_count_uses_activity_denial_mapping_for_current_utc_day() {
+    fn redacted_today_count_uses_current_utc_day_redaction_rows() {
         let today = 2 * 86_400 + 60;
         let yesterday = today - 86_400;
         let entries = vec![
             log_entry(
                 1,
                 today,
-                "policy_decision",
-                Some("block"),
+                "redaction",
+                Some("tokenized"),
                 "email",
-                "blocked",
+                "replacement applied",
             ),
             log_entry(
                 2,
                 today,
                 "policy_decision",
-                Some("allow"),
+                Some("tokenize"),
                 "email",
-                "allowed",
+                "policy decision is not the replacement row",
             ),
+            log_entry(3, yesterday, "redaction", Some("tokenized"), "email", "old"),
             log_entry(
-                3,
-                yesterday,
-                "policy_decision",
-                Some("block"),
-                "email",
-                "old",
+                4,
+                today,
+                "proxy_failure",
+                Some("provider_down"),
+                "provider",
+                "provider down is not a redaction",
             ),
         ];
 
-        assert_eq!(blocked_today_count(&entries, today), 1);
+        assert_eq!(redacted_today_count(&entries, today), 1);
     }
 
     #[test]
@@ -480,8 +474,7 @@ mod tests {
 
         dam_integrations::set_integration_enabled("claude-code", true, &integration_state_dir)
             .unwrap();
-        dam_integrations::set_integration_enabled("codex-api", true, &integration_state_dir)
-            .unwrap();
+        dam_integrations::set_integration_enabled("codex", true, &integration_state_dir).unwrap();
 
         assert_eq!(apps_mediated_count_from(&integration_state_dir).unwrap(), 2);
     }

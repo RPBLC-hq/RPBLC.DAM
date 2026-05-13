@@ -9,6 +9,8 @@ final class TCPFlowProxy: @unchecked Sendable {
     private let flow: NEAppProxyTCPFlow
     private let endpoint: FlowEndpoint
     private let runtimeConfiguration: DAMProxyRuntimeConfiguration
+    private let sourceSigningIdentifier: String?
+    private let sourceProcess: DAMProcessInfo?
     private let queue: DispatchQueue
     private let onFinish: @Sendable (UUID) -> Void
 
@@ -19,11 +21,15 @@ final class TCPFlowProxy: @unchecked Sendable {
         flow: NEAppProxyTCPFlow,
         endpoint: FlowEndpoint,
         runtimeConfiguration: DAMProxyRuntimeConfiguration,
+        sourceSigningIdentifier: String?,
+        sourceProcess: DAMProcessInfo?,
         onFinish: @escaping @Sendable (UUID) -> Void
     ) {
         self.flow = flow
         self.endpoint = endpoint
         self.runtimeConfiguration = runtimeConfiguration
+        self.sourceSigningIdentifier = sourceSigningIdentifier
+        self.sourceProcess = sourceProcess
         self.queue = DispatchQueue(label: "com.rpblc.dam.network-extension.flow.\(id.uuidString)")
         self.onFinish = onFinish
     }
@@ -70,13 +76,23 @@ final class TCPFlowProxy: @unchecked Sendable {
     }
 
     private func sendConnectPreface() {
-        let request = [
+        var headers = [
             "CONNECT \(endpoint.authority) HTTP/1.1",
             "Host: \(endpoint.authority)",
-            "Proxy-Connection: keep-alive",
-            "",
-            "",
-        ].joined(separator: "\r\n")
+        ]
+        if let signingIdentifier = sanitizedHeaderValue(sourceSigningIdentifier) {
+            headers.append("X-DAM-Source-Signing-Identifier: \(signingIdentifier)")
+        }
+        if let pid = sourceProcess?.pid {
+            headers.append("X-DAM-Source-PID: \(pid)")
+        }
+        if let processPath = sanitizedHeaderValue(sourceProcess?.path) {
+            headers.append("X-DAM-Source-Path: \(processPath)")
+        }
+        headers.append("Proxy-Connection: keep-alive")
+        headers.append("")
+        headers.append("")
+        let request = headers.joined(separator: "\r\n")
 
         connection?.send(content: Data(request.utf8), completion: .contentProcessed { [weak self] error in
             guard let self else {
@@ -88,6 +104,24 @@ final class TCPFlowProxy: @unchecked Sendable {
             }
             self.readConnectResponse(buffer: Data())
         })
+    }
+
+    private func sanitizedHeaderValue(_ value: String?) -> String? {
+        guard let value else {
+            return nil
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+        let sanitizedCharacters: [Character] = trimmed.unicodeScalars.map { scalar -> Character in
+            if scalar.value >= 0x20 && scalar.value <= 0x7e {
+                return Character(scalar)
+            }
+            return "_"
+        }
+        let sanitized = String(sanitizedCharacters).trimmingCharacters(in: .whitespaces)
+        return sanitized.isEmpty ? nil : sanitized
     }
 
     private func readConnectResponse(buffer: Data) {

@@ -213,8 +213,6 @@ pub fn setup_plan(
         .clone()
         .unwrap_or_else(|| format!("http://{}", config.proxy.listen));
     let active_profile = dam_integrations::read_active_profile(&integration_state_dir)?;
-    let enabled_profiles =
-        dam_integrations::read_effective_enabled_integrations(&integration_state_dir)?;
     let effective_config = config_with_runtime_enabled_apps(config, &integration_state_dir)?;
     let has_active_routes =
         !dam_net::ai_routes_from_profile(&effective_config.traffic.effective_profile()).is_empty();
@@ -237,11 +235,6 @@ pub fn setup_plan(
         options.trust_mode,
         &state_dir,
         has_active_routes,
-    ));
-    steps.push(profile_setup_step(
-        &enabled_profiles,
-        &integration_state_dir,
-        &proxy_url,
     ));
     steps.push(daemon_setup_step(
         options.network_mode,
@@ -284,159 +277,14 @@ fn config_with_runtime_enabled_apps(
     let mut config = config.clone();
     if let Some(profile_ids) = dam_integrations::runtime_enabled_profile_ids(integration_state_dir)?
     {
-        config.traffic.enabled_app_ids = Some(dam_integrations::traffic_app_ids_for_profile_ids(
-            &profile_ids,
-        )?);
+        config.traffic.enabled_app_ids = Some(
+            dam_integrations::traffic_app_ids_for_profile_ids_from_state(
+                &profile_ids,
+                integration_state_dir,
+            )?,
+        );
     }
     Ok(config)
-}
-
-fn profile_setup_step(
-    enabled_profiles: &[dam_integrations::EnabledIntegrationState],
-    integration_state_dir: &std::path::Path,
-    proxy_url: &str,
-) -> SetupStep {
-    if enabled_profiles.is_empty() {
-        return SetupStep {
-            kind: SetupStepKind::ProfileApply,
-            status: SetupStepStatus::Skipped,
-            message: "no enabled profiles; default transparent routes can be used".to_string(),
-            command: None,
-            requires_confirmation: false,
-            changes_system: false,
-        };
-    }
-
-    let mut any_needs_apply = false;
-    let profile_ids = enabled_profiles
-        .iter()
-        .map(|profile| profile.profile_id.as_str())
-        .collect::<Vec<_>>();
-    for enabled_profile in enabled_profiles {
-        if dam_integrations::profile(
-            &enabled_profile.profile_id,
-            dam_integrations::DEFAULT_PROXY_URL,
-        )
-        .is_none()
-        {
-            return SetupStep {
-                kind: SetupStepKind::ProfileApply,
-                status: SetupStepStatus::Blocked,
-                message: format!(
-                    "enabled profile {} is not a known integration profile",
-                    enabled_profile.profile_id
-                ),
-                command: None,
-                requires_confirmation: false,
-                changes_system: false,
-            };
-        }
-        let target_path = match dam_integrations::default_apply_path(
-            &enabled_profile.profile_id,
-            integration_state_dir,
-            std::env::var_os("CODEX_HOME").map(PathBuf::from),
-            std::env::var_os("HOME").map(PathBuf::from),
-        ) {
-            Ok(path) => path,
-            Err(error) => {
-                return SetupStep {
-                    kind: SetupStepKind::ProfileApply,
-                    status: SetupStepStatus::Blocked,
-                    message: format!(
-                        "enabled profile {} cannot be inspected: {error}",
-                        enabled_profile.profile_id
-                    ),
-                    command: Some(vec![
-                        "damctl".to_string(),
-                        "integrations".to_string(),
-                        "check".to_string(),
-                        enabled_profile.profile_id.clone(),
-                    ]),
-                    requires_confirmation: false,
-                    changes_system: false,
-                };
-            }
-        };
-        let inspection = match dam_integrations::inspect_apply(
-            &enabled_profile.profile_id,
-            proxy_url,
-            target_path,
-            integration_state_dir,
-        ) {
-            Ok(inspection) => inspection,
-            Err(error) => {
-                return SetupStep {
-                    kind: SetupStepKind::ProfileApply,
-                    status: SetupStepStatus::Blocked,
-                    message: format!(
-                        "enabled profile {} cannot be inspected: {error}",
-                        enabled_profile.profile_id
-                    ),
-                    command: Some(vec![
-                        "damctl".to_string(),
-                        "integrations".to_string(),
-                        "check".to_string(),
-                        enabled_profile.profile_id.clone(),
-                    ]),
-                    requires_confirmation: false,
-                    changes_system: false,
-                };
-            }
-        };
-        if inspection.record_error.is_some()
-            || inspection.status == dam_integrations::IntegrationApplyStatus::Modified
-        {
-            return SetupStep {
-                kind: SetupStepKind::ProfileApply,
-                status: SetupStepStatus::Blocked,
-                message: format!(
-                    "enabled profile {} needs review: {}",
-                    enabled_profile.profile_id, inspection.message
-                ),
-                command: Some(vec![
-                    "damctl".to_string(),
-                    "integrations".to_string(),
-                    "check".to_string(),
-                    enabled_profile.profile_id.clone(),
-                ]),
-                requires_confirmation: false,
-                changes_system: false,
-            };
-        }
-        if inspection.status == dam_integrations::IntegrationApplyStatus::NeedsApply {
-            any_needs_apply = true;
-        }
-    }
-
-    if any_needs_apply {
-        return SetupStep {
-            kind: SetupStepKind::ProfileApply,
-            status: SetupStepStatus::Needed,
-            message: format!(
-                "enabled CLI profiles need explicit proxy fallback setup: {}",
-                profile_ids.join(", ")
-            ),
-            command: Some(vec![
-                "dam".to_string(),
-                "connect".to_string(),
-                "--apply".to_string(),
-            ]),
-            requires_confirmation: false,
-            changes_system: false,
-        };
-    }
-
-    SetupStep {
-        kind: SetupStepKind::ProfileApply,
-        status: SetupStepStatus::Done,
-        message: format!(
-            "enabled CLI profiles have explicit proxy fallback setup: {}",
-            profile_ids.join(", ")
-        ),
-        command: None,
-        requires_confirmation: false,
-        changes_system: false,
-    }
 }
 
 /// Marker written after DAM registers its app bundle with macOS Login
@@ -569,6 +417,14 @@ fn routing_setup_steps(
     config_path: Option<&PathBuf>,
     has_active_routes: bool,
 ) -> Vec<SetupStep> {
+    if network_mode == dam_net::CaptureMode::Tun {
+        return tun_capture_setup_steps(
+            dam_net::CapturePlatform::current(),
+            state_dir,
+            config_path,
+            has_active_routes,
+        );
+    }
     if !has_active_routes {
         return vec![SetupStep {
             kind: SetupStepKind::SystemProxy,
@@ -580,24 +436,23 @@ fn routing_setup_steps(
             changes_system: false,
         }];
     }
-    if network_mode == dam_net::CaptureMode::Tun {
-        tun_capture_setup_steps(dam_net::CapturePlatform::current(), state_dir, config_path)
-    } else {
-        vec![system_proxy_setup_step(
-            network_mode,
-            state_dir,
-            config_path,
-        )]
-    }
+    vec![system_proxy_setup_step(
+        network_mode,
+        state_dir,
+        config_path,
+    )]
 }
 
 fn tun_capture_setup_steps(
     platform: dam_net::CapturePlatform,
     state_dir: &std::path::Path,
     config_path: Option<&PathBuf>,
+    has_active_routes: bool,
 ) -> Vec<SetupStep> {
     match platform {
-        dam_net::CapturePlatform::Macos => network_extension_setup_steps(state_dir, config_path),
+        dam_net::CapturePlatform::Macos => {
+            network_extension_setup_steps(state_dir, config_path, has_active_routes)
+        }
         dam_net::CapturePlatform::Linux => vec![platform_capture_planned_step(
             SetupStepKind::LinuxTransparentProxy,
             "Linux transparent capture onboarding is planned; use explicit proxy mode on Linux for now.",
@@ -634,6 +489,7 @@ fn platform_capture_planned_step(kind: SetupStepKind, message: &str) -> SetupSte
 fn network_extension_setup_steps(
     state_dir: &std::path::Path,
     config_path: Option<&PathBuf>,
+    has_active_routes: bool,
 ) -> Vec<SetupStep> {
     let status = dam_net_macos::network_extension_status(state_dir).ok();
     let record = status.as_ref().and_then(|status| status.record.as_ref());
@@ -725,6 +581,38 @@ fn network_extension_setup_steps(
         .as_ref()
         .is_some_and(|status| status.plan.backend_status.active)
         || manager.is_some_and(|status| status.connected);
+    let empty_scope_ready = !has_active_routes
+        && activation_method == Some("network_extension_empty_scope_no_capture")
+        && manager_configured;
+
+    if empty_scope_ready {
+        return vec![
+            network_extension_step(
+                SetupStepKind::NetworkExtension,
+                SetupStepStatus::Done,
+                "DAM Network Protection system extension is approved",
+                None,
+            ),
+            network_extension_step(
+                SetupStepKind::NetworkExtensionConfiguration,
+                SetupStepStatus::Done,
+                "DAM Network Protection is configured with no protected app traffic",
+                None,
+            ),
+            network_extension_step(
+                SetupStepKind::NetworkExtensionEnable,
+                SetupStepStatus::Skipped,
+                "Network Extension enablement is deferred until an app profile is enabled",
+                None,
+            ),
+            network_extension_step(
+                SetupStepKind::NetworkExtensionStart,
+                SetupStepStatus::Skipped,
+                "Protection layer start is deferred until an app profile is enabled",
+                None,
+            ),
+        ];
+    }
 
     vec![
         network_extension_step(
@@ -803,18 +691,8 @@ fn network_extension_install_command(config_path: Option<&PathBuf>) -> Vec<Strin
 fn local_ca_setup_step(
     trust_mode: dam_trust::TrustMode,
     state_dir: &std::path::Path,
-    has_active_routes: bool,
+    _has_active_routes: bool,
 ) -> SetupStep {
-    if !has_active_routes {
-        return SetupStep {
-            kind: SetupStepKind::LocalCa,
-            status: SetupStepStatus::Skipped,
-            message: "local CA trust is not required while no app profiles are enabled".to_string(),
-            command: None,
-            requires_confirmation: false,
-            changes_system: false,
-        };
-    }
     match trust_mode {
         dam_trust::TrustMode::Disabled => SetupStep {
             kind: SetupStepKind::LocalCa,
@@ -1783,9 +1661,12 @@ mod tests {
 
         assert_eq!(plan.state, SetupPlanState::NeedsAction);
         assert!(plan.message.contains("DAM is disconnected"));
-        assert!(plan.steps.iter().any(|step| {
-            step.kind == SetupStepKind::ProfileApply && step.status == SetupStepStatus::Skipped
-        }));
+        assert!(
+            !plan
+                .steps
+                .iter()
+                .any(|step| step.kind == SetupStepKind::ProfileApply)
+        );
         assert!(plan.steps.iter().any(|step| {
             step.kind == SetupStepKind::SystemProxy && step.status == SetupStepStatus::Skipped
         }));
@@ -1800,11 +1681,11 @@ mod tests {
     }
 
     #[test]
-    fn setup_plan_requires_explicit_proxy_fallback_for_enabled_cli_profile() {
+    fn setup_plan_does_not_block_on_profile_apply() {
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().join("state");
         let integration_state_dir = state_dir.join("integrations");
-        dam_integrations::set_active_profile("openai-compatible", &integration_state_dir).unwrap();
+        dam_integrations::set_active_profile("codex", &integration_state_dir).unwrap();
         let config = proxy_config("https://api.openai.com", "openai-compatible");
 
         let plan = setup_plan(
@@ -1816,25 +1697,15 @@ mod tests {
         )
         .unwrap();
 
-        let step = plan
-            .steps
-            .iter()
-            .find(|step| step.kind == SetupStepKind::ProfileApply)
-            .unwrap();
-        assert_eq!(step.status, SetupStepStatus::Needed);
-        assert_eq!(
-            step.command,
-            Some(vec![
-                "dam".to_string(),
-                "connect".to_string(),
-                "--apply".to_string()
-            ])
-        );
-        assert!(!step.requires_confirmation);
         assert!(
-            step.message
-                .contains("enabled CLI profiles need explicit proxy fallback setup")
+            !plan
+                .steps
+                .iter()
+                .any(|step| step.kind == SetupStepKind::ProfileApply)
         );
+        assert!(plan.steps.iter().any(|step| {
+            step.kind == SetupStepKind::Daemon && step.status == SetupStepStatus::Needed
+        }));
     }
 
     #[test]
@@ -1963,9 +1834,9 @@ mod tests {
     fn tun_capture_setup_steps_are_platform_specific_for_linux_and_windows() {
         let dir = tempfile::tempdir().unwrap();
         let linux_steps =
-            tun_capture_setup_steps(dam_net::CapturePlatform::Linux, dir.path(), None);
+            tun_capture_setup_steps(dam_net::CapturePlatform::Linux, dir.path(), None, true);
         let windows_steps =
-            tun_capture_setup_steps(dam_net::CapturePlatform::Windows, dir.path(), None);
+            tun_capture_setup_steps(dam_net::CapturePlatform::Windows, dir.path(), None, true);
 
         assert_eq!(linux_steps[0].kind, SetupStepKind::LinuxTransparentProxy);
         assert_eq!(linux_steps[0].status, SetupStepStatus::Blocked);
@@ -1987,6 +1858,98 @@ mod tests {
                 "disabled".to_string()
             ])
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn setup_plan_installs_network_extension_and_trust_for_empty_app_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let integration_state_dir = state_dir.join("integrations");
+        dam_integrations::set_integration_enabled("claude-code", false, &integration_state_dir)
+            .unwrap();
+        dam_integrations::set_integration_enabled("codex", false, &integration_state_dir).unwrap();
+        let config = proxy_config("https://api.openai.com", "openai-compatible");
+
+        let plan = setup_plan(
+            &config,
+            &SetupPlanOptions {
+                state_dir: Some(state_dir),
+                network_mode: dam_net::CaptureMode::Tun,
+                trust_mode: dam_trust::TrustMode::LocalCa,
+                ..SetupPlanOptions::default()
+            },
+        )
+        .unwrap();
+
+        let ne_step = plan
+            .steps
+            .iter()
+            .find(|step| step.kind == SetupStepKind::NetworkExtension)
+            .unwrap();
+        let trust_step = plan
+            .steps
+            .iter()
+            .find(|step| step.kind == SetupStepKind::LocalCa)
+            .unwrap();
+
+        assert_eq!(ne_step.status, SetupStepStatus::Needed);
+        assert_eq!(trust_step.status, SetupStepStatus::Needed);
+        assert!(ne_step.message.contains("Network Extension"));
+        assert!(trust_step.message.contains("local CA"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn setup_plan_treats_empty_scope_network_extension_config_as_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let integration_state_dir = state_dir.join("integrations");
+        dam_integrations::set_integration_enabled("claude-code", false, &integration_state_dir)
+            .unwrap();
+        dam_integrations::set_integration_enabled("codex", false, &integration_state_dir).unwrap();
+        let record_dir = state_dir.join("network/macos-network-extension");
+        std::fs::create_dir_all(&record_dir).unwrap();
+        std::fs::write(
+            record_dir.join("latest.json"),
+            r#"{
+                "version": 1,
+                "bundle_identifier": "com.rpblc.dam.network-extension",
+                "team_identifier": null,
+                "ai_hosts": [],
+                "installed_at_unix": 1,
+                "active": false,
+                "activation_method": "network_extension_empty_scope_no_capture",
+                "pending_reboot": false
+            }"#,
+        )
+        .unwrap();
+        let config = proxy_config("https://api.openai.com", "openai-compatible");
+
+        let plan = setup_plan(
+            &config,
+            &SetupPlanOptions {
+                state_dir: Some(state_dir),
+                network_mode: dam_net::CaptureMode::Tun,
+                trust_mode: dam_trust::TrustMode::Disabled,
+                ..SetupPlanOptions::default()
+            },
+        )
+        .unwrap();
+
+        let enable_step = plan
+            .steps
+            .iter()
+            .find(|step| step.kind == SetupStepKind::NetworkExtensionEnable)
+            .unwrap();
+        let start_step = plan
+            .steps
+            .iter()
+            .find(|step| step.kind == SetupStepKind::NetworkExtensionStart)
+            .unwrap();
+
+        assert_eq!(enable_step.status, SetupStepStatus::Skipped);
+        assert_eq!(start_step.status, SetupStepStatus::Skipped);
     }
 
     #[cfg(target_os = "macos")]

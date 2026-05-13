@@ -166,9 +166,9 @@ function AppRow({ app }: { app: AppSetting }) {
   const [optimistic, setOptimistic] = useState<boolean | null>(null)
   const checked = optimistic ?? app.enabled
 
-  const apply = useMutation({
+  const enableApp = useMutation({
     mutationFn: () =>
-      apiPost<SettingsView>(`/settings/integrations/${app.id}/apply`, {}),
+      apiPost<SettingsView>(`/settings/apps/${app.id}`, { enabled: true }),
     onSuccess: (next) => {
       queryClient.setQueryData(SETTINGS_QUERY_KEY, next)
       setOptimistic(null)
@@ -177,9 +177,9 @@ function AppRow({ app }: { app: AppSetting }) {
       setOptimistic(null)
     },
   })
-  const rollback = useMutation({
+  const disableApp = useMutation({
     mutationFn: () =>
-      apiPost<SettingsView>(`/settings/integrations/${app.id}/rollback`, {}),
+      apiPost<SettingsView>(`/settings/apps/${app.id}`, { enabled: false }),
     onSuccess: (next) => {
       queryClient.setQueryData(SETTINGS_QUERY_KEY, next)
       setOptimistic(null)
@@ -199,7 +199,7 @@ function AppRow({ app }: { app: AppSetting }) {
   const installLabel = appInstallLabel(app.install_state, t)
   const status = appStatus(app.install_state, checked)
   const blocked = app.install_state === 'modified'
-  const error = apply.error ?? rollback.error ?? setProfile.error
+  const error = enableApp.error ?? disableApp.error ?? setProfile.error
   const errorCode = error instanceof ApiError ? error.message : undefined
 
   return (
@@ -213,14 +213,14 @@ function AppRow({ app }: { app: AppSetting }) {
         <Toggle
           size="sm"
           checked={checked}
-          disabled={blocked || apply.isPending || rollback.isPending}
+          disabled={blocked || enableApp.isPending || disableApp.isPending}
           aria-label={
             checked ? t('settings.appsToggleOn') : t('settings.appsToggleOff')
           }
           onCheckedChange={(next) => {
             setOptimistic(next)
-            if (next) apply.mutate()
-            else rollback.mutate()
+            if (next) enableApp.mutate()
+            else disableApp.mutate()
           }}
         />
       }
@@ -257,8 +257,8 @@ function AppRow({ app }: { app: AppSetting }) {
                   size="sm"
                   type="button"
                   onClick={() => {
-                    apply.reset()
-                    rollback.reset()
+                    enableApp.reset()
+                    disableApp.reset()
                     setProfile.reset()
                   }}
                 >
@@ -613,6 +613,7 @@ function appInstallLabel(state: string, t: (key: MessageKey) => string): string 
 function integrationErrorKey(code: string): MessageKey {
   if (code === 'apply_modified_target') return 'settings.error.modifiedTarget'
   if (code === 'apply_target_unwritable') return 'settings.error.targetUnwritable'
+  if (code === 'invalid_request') return 'settings.error.invalidRequest'
   if (code === 'not_implemented') return 'settings.error.notImplemented'
   return 'settings.error.unknown'
 }

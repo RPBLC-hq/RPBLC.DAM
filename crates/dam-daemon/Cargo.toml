@@ -8,6 +8,7 @@ license.workspace = true
 axum.workspace = true
 dam-config.workspace = true
 dam-intercept.workspace = true
+dam-integrations.workspace = true
 dam-net.workspace = true
 dam-net-macos.workspace = true
 dam-proxy.workspace = true

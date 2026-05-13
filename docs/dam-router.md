@@ -21,12 +21,13 @@ request headers
 
 Supported provider IDs are:
 
+- `generic-http`
 - `openai-compatible`
 - `anthropic`
 
-The first implementation intentionally selects the first configured target to preserve existing `dam-proxy` semantics. Multi-target routing, host/path/profile matching, model discovery, and integration profile selection are future expansions on this boundary.
+The route table supports multiple configured targets. It selects Anthropic or OpenAI-compatible targets from request path/header shape, and transparent traffic can select the target from the matched AI route. `generic-http` is selected by explicit target/profile route metadata and does not require a provider-specific auth header shape, but generic website profile creation/import is parked in the current app. Ambiguous direct app-layer requests still fall back to the first configured target.
 
-Transparent host classification for future system-proxy/TUN routing lives in `dam-net`, not in `dam-router`. `dam-router` still owns app-layer target/auth/failure decisions after traffic has entered the DAM proxy path.
+Transparent host classification for system-proxy/TUN routing lives in `dam-net`, not in `dam-router`. `dam-router` still owns target/auth/failure decisions after `dam-proxy` has identified an active AI route from the transparent request authority.
 
 ## Auth Decisions
 
@@ -40,12 +41,14 @@ For `openai-compatible`, caller auth means an `Authorization` header is present.
 
 For `anthropic`, caller auth means `x-api-key` or `Authorization` is present. Anthropic provider forwarding still owns the provider-specific rule that injected target keys use `x-api-key` and drop inbound `Authorization`.
 
+For `generic-http`, caller auth is always considered pass-through. DAM must not require or inject a provider API key unless a future explicit generic credential contract is designed.
+
 ## Boundaries
 
 The crate does not:
 
 - parse or transform request bodies;
-- inspect URLs or select among multiple targets yet;
+- classify transparent hosts or parse traffic profiles;
 - forward requests to providers;
 - emit log events;
 - construct `dam-api` reports;

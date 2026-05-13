@@ -269,7 +269,7 @@ mod tests {
         let profile = llm_mvp_profile();
 
         assert_eq!(profile.default_action, TrafficAction::Bypass);
-        assert_eq!(profile.apps.len(), 4);
+        assert_eq!(profile.apps.len(), 3);
         assert_eq!(profile.apps[0].id, "openai-api");
         assert_eq!(profile.apps[0].action, TrafficAction::Inspect);
         assert_eq!(
@@ -342,6 +342,7 @@ mod tests {
 
         assert_eq!(routes.len(), 4);
         assert!(routes.iter().any(|route| route.host == "chatgpt.com"));
+        assert!(routes.iter().any(|route| route.host == "ab.chatgpt.com"));
     }
 
     #[test]

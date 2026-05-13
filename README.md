@@ -199,7 +199,7 @@ It provides:
 - `/doctor` for local readiness checks shared with `damctl doctor`.
 - `/diagnostics` for config and proxy health checks.
 
-`/connect` uses enabled JSON app profile state from `dam-integrations`. Without enabled apps, the visible default is Protect Everything and the Connect action runs the default `dam connect` path. With enabled apps, Connect runs `dam connect --apply --network-mode tun --trust-mode local_ca`; the enabled profiles select the required daemon targets, narrow the active `traffic.enabled_apps` set, and keep reversible explicit-proxy fallback files for source builds and unsupported environments. The Connect action shells out to the local `dam` binary from `PATH`; set `DAM_BIN=/path/to/dam` when running from a source tree or custom install.
+`/connect` uses enabled JSON app profile state from `dam-integrations`. Without enabled apps, the visible default is Protect Everything and the Connect action runs the default `dam connect` path. With enabled apps, Connect runs `dam connect --apply --network-mode tun --trust-mode local_ca`; the enabled profiles select the required daemon targets, narrow the active `traffic.enabled_apps` set, and keep DAM-owned profile catalog JSON under `$DAM_STATE_DIR/integrations/profiles/` for source builds, imports, and unsupported environments. The Connect action shells out to the local `dam` binary from `PATH`; set `DAM_BIN=/path/to/dam` when running from a source tree or custom install.
 
 The web UI displays vault values in clear text. Treat it as a local control surface, not a public web app.
 
@@ -263,7 +263,7 @@ DAM options:
 
 ```text
 --profile <id>        Use integration profile daemon defaults
---apply               Write selected or enabled profile setup before connecting
+--apply               Ensure selected or enabled DAM profile files before connecting
 --openai              Use the OpenAI-compatible daemon preset
 --anthropic           Use the Anthropic daemon preset
 --config <path>       Load DAM config before daemon overrides
@@ -320,10 +320,10 @@ Policy maps detections to `tokenize`, `redact`, `allow`, or `block`. The default
 - `dam disconnect` pauses protection while leaving the daemon active in pass-through mode so running clients keep network connectivity. When protection resumes, DAM closes selected-AI pass-through tunnels that were opened while paused so the client reconnects through the protected path. `dam disconnect --stop` is reserved for explicit restore/stop flows after routing or app profile setup has been restored.
 - DAM is designed for macOS, Linux, and Windows, but platform-specific routing, trust, tray, and packaging implementations are staged. Partial or delayed platform behavior is tracked in `docs/parking-lot.md` or the relevant module parking-lot doc until implementation, docs, and tests agree.
 - `dam profile set <id>` selects the legacy active harness profile for the local user. The web/tray Settings flow persists enabled app profiles for simultaneous app protection; `dam connect` uses enabled profiles when present and falls back to the legacy active profile when no enabled state exists.
-- `dam connect` starts a local proxy/interception endpoint. Enabled profiles select daemon targets and active traffic app IDs so multiple selected providers can share one daemon. Tray/web Connect uses Network Extension capture as the primary path and keeps reversible explicit-proxy fallback files for source builds and unsupported environments. Resume/default connect is idempotent for the current daemon setup; explicit mismatched `--network-mode` or `--trust-mode` flags require `dam disconnect --stop` first. Transparent modes preflight routing and local CA trust before startup. `dam integrations apply <profile>` previews by default; add `--write` to explicitly edit Claude Code settings or DAM-managed proxy environment files with rollback support.
+- `dam connect` starts a local proxy/interception endpoint. Enabled profiles select daemon targets and active traffic app IDs so multiple selected providers can share one daemon. Tray/web Connect uses Network Extension capture as the primary path and keeps DAM-owned profile catalog JSON for source builds and unsupported environments. Resume/default connect is idempotent for the current daemon setup; explicit mismatched `--network-mode` or `--trust-mode` flags require `dam disconnect --stop` first. Transparent modes preflight routing and local CA trust before startup. `dam integrations apply <profile>` previews by default; add `--write` to ensure the DAM-managed catalog file, or pass `--target-path` to write a rendered JSON export with rollback support.
 - The one-shot `dam claude`, `dam codex`, and `dam codex --api` launchers have been removed because DAM no longer protects by rewriting provider API base URLs or Codex provider config.
-- Codex ChatGPT-login mode uses the `codex-chatgpt` profile and the WebSocket adapter for `chatgpt.com`. The MVP adapter protects unfragmented client text frames and currently passes server-to-client WebSocket frames through without local reference resolution.
-- Inbound HTTP provider responses are not redetected. Known DAM references are resolved locally by default, including provider-escaped JSON/JSON-lines string values and provider SSE text fields; use `--no-resolve-inbound` to leave them unresolved.
+- Codex ChatGPT-login mode is covered by the merged `codex` profile and the WebSocket adapter for `chatgpt.com` and `ab.chatgpt.com`. The MVP adapter protects unfragmented client and server text frames; fragmented, binary, or compressed frame protection remains parked.
+- Known DAM references are resolved locally by default in inbound HTTP provider responses, including provider-escaped JSON/JSON-lines string values and provider SSE text fields; use `--no-resolve-inbound` to leave them unresolved. When no DAM reference resolves, inbound HTTP response text is redetected and tokenized so raw provider-returned values do not re-enter local agent history.
 - The current vault/log/consent stores are local SQLite implementations.
 - The detector does not yet cover names, addresses, organizations, private keys, JWTs, API keys, IBANs, or IP addresses.
 - The npm package is a Node entry point around native DAM binaries; release packaging must include the platform binaries under `npm/native`.
@@ -335,7 +335,7 @@ Recommended order for the next engineering sessions:
 1. Smoke test `dam connect`, enabled Claude/Codex profiles, and `dam-tray` against fake or real provider paths, then inspect the vault and log SQLite databases.
 2. Exercise the macOS Network Extension helper end-to-end with unknown-host pass-through, paused protection, Codex API-key mode, Codex ChatGPT-login outbound WebSocket mode, and Claude Code.
 3. Expand transparent TLS beyond the current HTTP/1.1/WebSocket slice: HTTP/2, inbound/fragmented/compressed WebSocket payloads, multiple requests per tunnel, target-specific consent, and certificate caching.
-4. Expand profile apply support beyond Claude/Codex where harness config files can be changed safely.
+4. Expand profile import/export and editor support for JSON profile files.
 5. Add login/startup UX for the daemon after traffic-interception startup is stable.
 6. Package the tray app with signed native binaries and npm/native release assets.
 
@@ -363,7 +363,7 @@ Implemented extraction modules:
 
 Near-term product slices still to build:
 
-- broader integration profile apply/install support with safe rollback where harness config files can be changed reliably.
+- broader integration profile import/export/editor support with validation, conflict handling, and optional backup/restore for imported profile files.
 - transparent TLS hardening beyond the first daemon-gated HTTP/1.1 CONNECT runtime.
 - login/startup UX for the local daemon after traffic-interception startup is stable.
 - signed native tray/menu-bar packaging and release installation.

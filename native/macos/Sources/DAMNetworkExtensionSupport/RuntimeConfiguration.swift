@@ -14,17 +14,26 @@ public struct DAMProxyRuntimeConfiguration: Equatable, Sendable {
     public static let defaultProtectedHosts = [
         "api.openai.com",
         "api.anthropic.com",
-        "api.x.ai",
         "chatgpt.com",
     ]
 
     public static let defaultExcludedSigningIdentifiers = [
         "com.rpblc.dam",
+        "com.rpblc.dam.cli",
         "com.rpblc.dam.daemon",
+        "com.rpblc.dam.helper",
+        "com.rpblc.dam.mcp",
         "com.rpblc.dam.proxy",
         "com.rpblc.dam.tray",
+        "com.rpblc.dam.web",
         "com.rpblc.dam.network-extension",
-        "com.rpblc.dam.helper",
+        "dam",
+        "dam-daemon",
+        "dam-macos-ne-helper",
+        "dam-mcp",
+        "dam-proxy",
+        "dam-tray",
+        "dam-web",
     ]
 
     public var proxyHost: String
@@ -48,17 +57,22 @@ public struct DAMProxyRuntimeConfiguration: Equatable, Sendable {
     }
 
     public init(providerConfiguration: [String: Any]?) {
-        let proxyHost = providerConfiguration?[DAMProviderConfigurationKey.proxyHost] as? String
-        let proxyPort = providerConfiguration?[DAMProviderConfigurationKey.proxyPort] as? Int
-        let protectedHosts = providerConfiguration?[DAMProviderConfigurationKey.protectedHosts] as? [String]
-        let excludedSigningIdentifiers = providerConfiguration?[DAMProviderConfigurationKey.excludedSigningIdentifiers] as? [String]
-        let routingFailurePolicy = (providerConfiguration?[DAMProviderConfigurationKey.routingFailurePolicy] as? String)
+        guard let providerConfiguration else {
+            self.init(protectedHosts: [])
+            return
+        }
+
+        let proxyHost = providerConfiguration[DAMProviderConfigurationKey.proxyHost] as? String
+        let proxyPort = providerConfiguration[DAMProviderConfigurationKey.proxyPort] as? Int
+        let protectedHosts = providerConfiguration[DAMProviderConfigurationKey.protectedHosts] as? [String]
+        let excludedSigningIdentifiers = providerConfiguration[DAMProviderConfigurationKey.excludedSigningIdentifiers] as? [String]
+        let routingFailurePolicy = (providerConfiguration[DAMProviderConfigurationKey.routingFailurePolicy] as? String)
             .flatMap(DAMRoutingFailurePolicy.init(rawValue:))
 
         self.init(
             proxyHost: proxyHost ?? Self.defaultProxyHost,
             proxyPort: UInt16(clamping: proxyPort ?? Int(Self.defaultProxyPort)),
-            protectedHosts: protectedHosts ?? Self.defaultProtectedHosts,
+            protectedHosts: protectedHosts ?? [],
             excludedSigningIdentifiers: excludedSigningIdentifiers ?? Self.defaultExcludedSigningIdentifiers,
             routingFailurePolicy: routingFailurePolicy ?? DAMRoutingFailurePolicy.defaultPolicy
         )
@@ -74,15 +88,10 @@ public struct DAMProxyRuntimeConfiguration: Equatable, Sendable {
         ]
     }
 
-    public func shouldBypassSource(signingIdentifier: String?) -> Bool {
-        guard let signingIdentifier else {
-            return false
+    public func shouldBypassSource(signingIdentifier: String?, processPath: String? = nil) -> Bool {
+        sourceCandidates(signingIdentifier: signingIdentifier, processPath: processPath).contains { candidate in
+            excludedSigningIdentifiers.contains(candidate)
         }
-        let normalized = signingIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !normalized.isEmpty else {
-            return false
-        }
-        return excludedSigningIdentifiers.contains(normalized)
     }
 
     public func shouldProtect(host: String) -> Bool {
@@ -137,4 +146,24 @@ func normalizeIdentifiers(_ identifiers: [String]) -> [String] {
         }
     }
     return result
+}
+
+private func sourceCandidates(signingIdentifier: String?, processPath: String?) -> [String] {
+    var candidates: [String] = []
+    appendNormalized(signingIdentifier, to: &candidates)
+    appendNormalized(processPath, to: &candidates)
+    if let processPath {
+        appendNormalized(URL(fileURLWithPath: processPath).lastPathComponent, to: &candidates)
+    }
+    return candidates
+}
+
+private func appendNormalized(_ value: String?, to candidates: inout [String]) {
+    guard let value else {
+        return
+    }
+    let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if !normalized.isEmpty && !candidates.contains(normalized) {
+        candidates.append(normalized)
+    }
 }

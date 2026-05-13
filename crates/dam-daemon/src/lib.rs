@@ -1164,11 +1164,11 @@ mod tests {
             network_mode_explicit: true,
             trust_mode: dam_trust::TrustMode::LocalCa,
             trust_mode_explicit: true,
-            target_name: "xai".to_string(),
+            target_name: "custom-openai".to_string(),
             provider: "openai-compatible".to_string(),
-            upstream: "https://api.x.ai".to_string(),
+            upstream: "https://api.custom.example".to_string(),
             targets: None,
-            traffic_app_ids: Some(vec!["xai-api".to_string()]),
+            traffic_app_ids: Some(vec!["custom-openai-api".to_string()]),
             vault_path: PathBuf::from("vault.db"),
             log_path: None,
             consent_path: Some(PathBuf::from("consent.db")),
@@ -1220,7 +1220,7 @@ mod tests {
         let options = ProxyOptions::default();
         let config = proxy_config(&options).unwrap();
 
-        assert_eq!(config.proxy.targets.len(), 4);
+        assert_eq!(config.proxy.targets.len(), 3);
         assert_eq!(config.proxy.targets[0].name, "openai");
         assert_eq!(config.proxy.targets[0].provider, "openai-compatible");
         assert_eq!(config.proxy.targets[0].api_key_env, None);
@@ -1274,7 +1274,7 @@ mod tests {
             options
         );
         let config = proxy_config(&options).unwrap();
-        assert_eq!(config.proxy.targets.len(), 4);
+        assert_eq!(config.proxy.targets.len(), 3);
         assert_eq!(config.proxy.targets[1].provider, "anthropic");
     }
 

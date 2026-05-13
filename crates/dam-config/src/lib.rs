@@ -10,6 +10,7 @@ pub const DEFAULT_CONFIG_PATH: &str = "dam.toml";
 const DEFAULT_REMOTE_TIMEOUT_MS: u64 = 2_000;
 const OPENAI_COMPATIBLE_PROVIDER: &str = "openai-compatible";
 const ANTHROPIC_PROVIDER: &str = "anthropic";
+const GENERIC_HTTP_PROVIDER: &str = "generic-http";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DamConfig {
@@ -791,6 +792,12 @@ fn merge_env(config: &mut DamConfig, env: &BTreeMap<String, String>) -> Result<(
             parse_policy_action("DAM_POLICY_EMAIL_ACTION", value)?,
         );
     }
+    if let Some(value) = env.get("DAM_POLICY_DOMAIN_ACTION") {
+        config.policy.kind_actions.insert(
+            dam_core::SensitiveType::Domain,
+            parse_policy_action("DAM_POLICY_DOMAIN_ACTION", value)?,
+        );
+    }
     if let Some(value) = env.get("DAM_POLICY_PHONE_ACTION") {
         config.policy.kind_actions.insert(
             dam_core::SensitiveType::Phone,
@@ -851,6 +858,9 @@ fn merge_env(config: &mut DamConfig, env: &BTreeMap<String, String>) -> Result<(
         }
         if let Some(value) = env.get("DAM_PROXY_TARGET_PROVIDER") {
             target.provider = value.clone();
+            if value == GENERIC_HTTP_PROVIDER && !env.contains_key("DAM_PROXY_TARGET_API_KEY_ENV") {
+                target.api_key_env = None;
+            }
         }
         if let Some(value) = env.get("DAM_PROXY_TARGET_UPSTREAM") {
             target.upstream = value.clone();
@@ -914,6 +924,9 @@ fn merge_overrides(config: &mut DamConfig, overrides: &ConfigOverrides) -> Resul
         }
         if let Some(provider) = &overrides.proxy_target_provider {
             target.provider = provider.clone();
+            if provider == GENERIC_HTTP_PROVIDER && overrides.proxy_target_api_key_env.is_none() {
+                target.api_key_env = None;
+            }
         }
         if let Some(upstream) = &overrides.proxy_target_upstream {
             target.upstream = upstream.clone();
@@ -1011,12 +1024,12 @@ fn validate(config: &DamConfig) -> Result<(), ConfigError> {
             }
             if !matches!(
                 target.provider.as_str(),
-                OPENAI_COMPATIBLE_PROVIDER | ANTHROPIC_PROVIDER
+                GENERIC_HTTP_PROVIDER | OPENAI_COMPATIBLE_PROVIDER | ANTHROPIC_PROVIDER
             ) {
                 return Err(ConfigError::invalid_value(
                     "proxy.targets.provider",
                     target.provider.clone(),
-                    "expected openai-compatible or anthropic",
+                    "expected generic-http, openai-compatible, or anthropic",
                 ));
             }
             if target.upstream.trim().is_empty() {
@@ -1041,17 +1054,6 @@ fn validate_traffic(traffic: &TrafficConfig) -> Result<(), ConfigError> {
             message: error.to_string(),
         }
     })?;
-
-    if let Some(enabled_app_ids) = &traffic.enabled_app_ids {
-        for app_id in enabled_app_ids {
-            if traffic.profile.app(app_id).is_none() {
-                return Err(ConfigError::InvalidTrafficProfile {
-                    path: profile_path.clone(),
-                    message: format!("enabled app {app_id} does not exist in traffic profile"),
-                });
-            }
-        }
-    }
 
     Ok(())
 }
@@ -1196,7 +1198,7 @@ fn parse_sensitive_type(
     value: &str,
 ) -> Result<dam_core::SensitiveType, ConfigError> {
     dam_core::SensitiveType::from_tag(value).ok_or_else(|| {
-        ConfigError::invalid_value(field, value, "expected email, phone, ssn, or cc")
+        ConfigError::invalid_value(field, value, "expected email, domain, phone, ssn, or cc")
     })
 }
 
@@ -1361,7 +1363,7 @@ mod tests {
         assert_eq!(config.consent.sqlite_path, PathBuf::from("consent.db"));
         assert_eq!(config.consent.default_ttl_seconds, 86_400);
         assert!(config.consent.mcp_write_enabled);
-        assert_eq!(config.traffic.profile.apps.len(), 4);
+        assert_eq!(config.traffic.profile.apps.len(), 3);
         assert_eq!(config.traffic.profile.apps[0].id, "openai-api");
         assert!(config.traffic.enabled_app_ids.is_none());
         assert_eq!(config.web.addr, "127.0.0.1:2896");
@@ -1736,6 +1738,23 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn generic_http_provider_is_valid_for_proxy_targets() {
+        let config = load_with_env(
+            &ConfigOverrides::default(),
+            env(&[
+                ("DAM_PROXY_ENABLED", "true"),
+                ("DAM_PROXY_TARGET_NAME", "example"),
+                ("DAM_PROXY_TARGET_PROVIDER", "generic-http"),
+                ("DAM_PROXY_TARGET_UPSTREAM", "https://example.test"),
+            ]),
+        )
+        .unwrap();
+
+        assert_eq!(config.proxy.targets[0].provider, "generic-http");
+        assert_eq!(config.proxy.targets[0].api_key_env, None);
     }
 
     #[test]

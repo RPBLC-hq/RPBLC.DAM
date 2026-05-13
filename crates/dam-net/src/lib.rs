@@ -12,6 +12,7 @@ pub use protocol::*;
 
 pub const OPENAI_COMPATIBLE_PROVIDER: &str = "openai-compatible";
 pub const ANTHROPIC_PROVIDER: &str = "anthropic";
+pub const GENERIC_HTTP_PROVIDER: &str = "generic-http";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -446,11 +447,15 @@ mod tests {
             classify_ai_host("api.anthropic.com:443").unwrap().provider,
             ANTHROPIC_PROVIDER.to_string()
         );
-        assert_eq!(classify_ai_host("API.X.AI.").unwrap().target_name, "xai");
         assert_eq!(
             classify_ai_host("chatgpt.com").unwrap().kind,
             AiTrafficKind::ChatGptCodexBackend
         );
+        assert_eq!(
+            classify_ai_host("ab.chatgpt.com").unwrap().kind,
+            AiTrafficKind::ChatGptCodexBackend
+        );
+        assert!(classify_ai_host("API.X.AI.").is_none());
         assert!(classify_ai_host("example.com").is_none());
     }
 
