@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::fs;
 use std::net::SocketAddr;
@@ -1054,6 +1054,24 @@ fn validate_traffic(traffic: &TrafficConfig) -> Result<(), ConfigError> {
             message: error.to_string(),
         }
     })?;
+    if let Some(enabled_app_ids) = &traffic.enabled_app_ids {
+        let app_ids = traffic
+            .profile
+            .apps
+            .iter()
+            .map(|app| app.id.as_str())
+            .collect::<BTreeSet<_>>();
+        for app_id in enabled_app_ids {
+            if !app_ids.contains(app_id.as_str()) {
+                return Err(ConfigError::InvalidTrafficProfile {
+                    path: profile_path.clone(),
+                    message: format!(
+                        "enabled app id {app_id} is not present in the traffic profile"
+                    ),
+                });
+            }
+        }
+    }
 
     Ok(())
 }
@@ -1816,6 +1834,31 @@ mod tests {
         assert_eq!(routes[0].provider, "openai-compatible");
         assert_eq!(routes[0].target_name, "enterprise-ai");
         assert_eq!(routes[0].upstream, "https://api.enterprise-ai.example");
+    }
+
+    #[test]
+    fn traffic_enabled_apps_reject_unknown_profile_app_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("dam.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [traffic]
+                enabled_apps = ["typo-id"]
+            "#,
+        )
+        .unwrap();
+
+        let error = load_with_env(
+            &ConfigOverrides {
+                config_path: Some(config_path),
+                ..ConfigOverrides::default()
+            },
+            env(&[]),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("enabled app id typo-id"));
     }
 
     #[test]

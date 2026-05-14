@@ -18,7 +18,7 @@ use std::{
     future::Future,
     net::SocketAddr,
     path::PathBuf,
-    sync::{Arc, Mutex, Once},
+    sync::{Arc, Mutex, Once, RwLock},
     time::Duration,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -1414,7 +1414,7 @@ where
 {
     let (mut client_reader, mut client_writer) = tokio::io::split(client_tls);
     let (mut upstream_reader, mut upstream_writer) = tokio::io::split(upstream_tls);
-    let related_domains = Arc::new(Mutex::new(Vec::new()));
+    let related_domains = Arc::new(RwLock::new(Vec::new()));
     let outcome = {
         let client_to_upstream = proxy_websocket_client_frames(
             state.clone(),
@@ -1446,6 +1446,7 @@ where
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WebSocketClientFrameOutcome {
     Completed,
     PolicyBlocked,
@@ -1456,7 +1457,7 @@ async fn proxy_websocket_client_frames<R, W>(
     operation_id: String,
     reader: &mut R,
     writer: &mut W,
-    related_domains: Arc<Mutex<Vec<String>>>,
+    related_domains: Arc<RwLock<Vec<String>>>,
     protection_enabled: bool,
 ) -> Result<WebSocketClientFrameOutcome, String>
 where
@@ -1464,7 +1465,21 @@ where
     W: AsyncWrite + Unpin,
 {
     loop {
-        let Some(mut frame) = websocket::read_frame(reader).await? else {
+        let Some(mut frame) = (match websocket::read_frame(reader).await {
+            Ok(frame) => frame,
+            Err(error) if protection_enabled && websocket_frame_error_is_unsupported(&error) => {
+                record_proxy_event(
+                    &state,
+                    &operation_id,
+                    LogLevel::Warn,
+                    LogEventType::ProxyFailure,
+                    "unsupported_websocket_frame",
+                    "WebSocket request frame closed because unsupported protected frame shape was received",
+                );
+                return Ok(WebSocketClientFrameOutcome::PolicyBlocked);
+            }
+            Err(error) => return Err(error),
+        }) else {
             return Ok(WebSocketClientFrameOutcome::Completed);
         };
         if frame.is_unfragmented_text() && protection_enabled {
@@ -1495,7 +1510,7 @@ where
                 );
                 return Ok(WebSocketClientFrameOutcome::PolicyBlocked);
             }
-            remember_related_domains(&related_domains, &protected.detections);
+            remember_related_domains(&related_domains, &protected.detections)?;
             let Some(output) = protected.output else {
                 return Err("WebSocket request frame protection did not produce output".to_string());
             };
@@ -1508,17 +1523,16 @@ where
                 "protected",
                 "WebSocket request text frame protected",
             );
-        } else if protection_enabled
-            && (frame.is_fragmented_text_or_continuation() || frame.is_binary())
-        {
+        } else if protection_enabled && websocket_frame_requires_body_protection(&frame) {
             record_proxy_event(
                 &state,
                 &operation_id,
                 LogLevel::Warn,
-                LogEventType::ProxyBypass,
-                "bypassing",
-                "WebSocket frame passed without protection because fragmented/binary frames are parked",
+                LogEventType::ProxyFailure,
+                "unsupported_websocket_frame",
+                "WebSocket request frame closed because fragmented/binary protection is parked",
             );
+            return Ok(WebSocketClientFrameOutcome::PolicyBlocked);
         }
         let is_close = frame.opcode == websocket::OPCODE_CLOSE;
         websocket::write_masked_frame(writer, &frame).await?;
@@ -1533,7 +1547,7 @@ async fn proxy_websocket_upstream_frames<R, W>(
     operation_id: String,
     reader: &mut R,
     writer: &mut W,
-    related_domains: Arc<Mutex<Vec<String>>>,
+    related_domains: Arc<RwLock<Vec<String>>>,
     protection_enabled: bool,
 ) -> Result<WebSocketClientFrameOutcome, String>
 where
@@ -1541,13 +1555,29 @@ where
     W: AsyncWrite + Unpin,
 {
     loop {
-        let Some(mut frame) = websocket::read_frame(reader).await? else {
+        let Some(mut frame) = (match websocket::read_frame(reader).await {
+            Ok(frame) => frame,
+            Err(error) if protection_enabled && websocket_frame_error_is_unsupported(&error) => {
+                record_proxy_event(
+                    &state,
+                    &operation_id,
+                    LogLevel::Warn,
+                    LogEventType::ProxyFailure,
+                    "unsupported_websocket_frame",
+                    "WebSocket response frame closed because unsupported protected frame shape was received",
+                );
+                return Ok(WebSocketClientFrameOutcome::PolicyBlocked);
+            }
+            Err(error) => return Err(error),
+        }) else {
             return Ok(WebSocketClientFrameOutcome::Completed);
         };
         if frame.is_unfragmented_text() && protection_enabled {
             let text = std::str::from_utf8(&frame.payload)
                 .map_err(|_| "WebSocket response text frame is not utf-8".to_string())?;
-            let domains = related_domains.lock().unwrap().clone();
+            let domains = related_domains.read().map_err(|_| {
+                "WebSocket related-domain state is unavailable after a prior failure".to_string()
+            })?;
             let protected = dam_pipeline::protect_text(
                 text,
                 &operation_id,
@@ -1557,7 +1587,7 @@ where
                     reference_vault: Some(state.vault.as_ref()),
                     consent_store: state.consent_store.as_deref(),
                     event_sink: state.log_sink.as_deref(),
-                    related_domains: &domains,
+                    related_domains: domains.as_slice(),
                     ..dam_pipeline::ProtectTextContext::default()
                 },
                 state.replacement_options,
@@ -1572,7 +1602,7 @@ where
                     "inbound_blocked",
                     "WebSocket response frame blocked by policy",
                 );
-                frame.payload = b"[blocked by DAM policy]".to_vec();
+                return Ok(WebSocketClientFrameOutcome::PolicyBlocked);
             } else {
                 let Some(output) = protected.output else {
                     return Err(
@@ -1597,17 +1627,16 @@ where
                     ),
                 );
             }
-        } else if protection_enabled
-            && (frame.is_fragmented_text_or_continuation() || frame.is_binary())
-        {
+        } else if protection_enabled && websocket_frame_requires_body_protection(&frame) {
             record_proxy_event(
                 &state,
                 &operation_id,
                 LogLevel::Warn,
-                LogEventType::ProxyBypass,
-                "bypassing",
-                "WebSocket response frame passed without protection because fragmented/binary frames are parked",
+                LogEventType::ProxyFailure,
+                "unsupported_websocket_frame",
+                "WebSocket response frame closed because fragmented/binary protection is parked",
             );
+            return Ok(WebSocketClientFrameOutcome::PolicyBlocked);
         }
         let is_close = frame.opcode == websocket::OPCODE_CLOSE;
         websocket::write_unmasked_frame(writer, &frame).await?;
@@ -1618,15 +1647,26 @@ where
 }
 
 fn remember_related_domains(
-    related_domains: &Arc<Mutex<Vec<String>>>,
+    related_domains: &Arc<RwLock<Vec<String>>>,
     detections: &[dam_core::Detection],
-) {
-    let mut related_domains = related_domains.lock().unwrap();
+) -> Result<(), String> {
+    let mut related_domains = related_domains.write().map_err(|_| {
+        "WebSocket related-domain state is unavailable after a prior failure".to_string()
+    })?;
     for domain in related_domains_from_detections(detections) {
         if !related_domains.contains(&domain) {
             related_domains.push(domain);
         }
     }
+    Ok(())
+}
+
+fn websocket_frame_requires_body_protection(frame: &websocket::WebSocketFrame) -> bool {
+    frame.is_fragmented_text_or_continuation() || frame.is_binary()
+}
+
+fn websocket_frame_error_is_unsupported(error: &str) -> bool {
+    error.contains("compressed or extension WebSocket frames are not supported")
 }
 
 async fn write_websocket_upgrade_request<T>(
@@ -2933,7 +2973,7 @@ mod tests {
             "websocket-inbound-test".to_string(),
             &mut upstream.as_slice(),
             &mut client,
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(RwLock::new(Vec::new())),
             true,
         )
         .await
@@ -2979,7 +3019,7 @@ mod tests {
             "websocket-related-domain-test".to_string(),
             &mut upstream.as_slice(),
             &mut client,
-            Arc::new(Mutex::new(vec!["wolol3o22.com".to_string()])),
+            Arc::new(RwLock::new(vec!["wolol3o22.com".to_string()])),
             true,
         )
         .await
@@ -3018,7 +3058,7 @@ mod tests {
             "websocket-snapshot-test".to_string(),
             &mut upstream.as_slice(),
             &mut client,
-            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(RwLock::new(Vec::new())),
             false,
         )
         .await
@@ -3031,6 +3071,130 @@ mod tests {
         let body = String::from_utf8(frame.payload).unwrap();
         assert!(body.contains("banana@example.com"));
         assert!(!body.contains("[email:"));
+    }
+
+    #[tokio::test]
+    async fn websocket_response_fragmented_text_fails_closed_when_protected() {
+        let state = build_state(proxy_config("https://chatgpt.com".to_string()), None).unwrap();
+        let mut upstream = Vec::new();
+        websocket::write_unmasked_frame(
+            &mut upstream,
+            &websocket::WebSocketFrame {
+                fin: false,
+                opcode: websocket::OPCODE_TEXT,
+                payload: br#"{"content":"banana@example.com"}"#.to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+        let mut client = Vec::new();
+
+        let outcome = proxy_websocket_upstream_frames(
+            state,
+            "websocket-fragmented-inbound-test".to_string(),
+            &mut upstream.as_slice(),
+            &mut client,
+            Arc::new(RwLock::new(Vec::new())),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, WebSocketClientFrameOutcome::PolicyBlocked);
+        assert!(client.is_empty());
+    }
+
+    #[tokio::test]
+    async fn websocket_response_compressed_frame_fails_closed_when_protected() {
+        let state = build_state(proxy_config("https://chatgpt.com".to_string()), None).unwrap();
+        let mut upstream = vec![0x80 | 0x40 | websocket::OPCODE_TEXT, 5];
+        upstream.extend_from_slice(b"hello");
+        let mut client = Vec::new();
+
+        let outcome = proxy_websocket_upstream_frames(
+            state,
+            "websocket-compressed-inbound-test".to_string(),
+            &mut upstream.as_slice(),
+            &mut client,
+            Arc::new(RwLock::new(Vec::new())),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, WebSocketClientFrameOutcome::PolicyBlocked);
+        assert!(client.is_empty());
+    }
+
+    #[tokio::test]
+    async fn websocket_response_policy_block_fails_closed() {
+        let mut config = proxy_config("https://chatgpt.com".to_string());
+        config.policy.default_action = dam_core::PolicyAction::Block;
+        let state = build_state(config, None).unwrap();
+        let mut upstream = Vec::new();
+        websocket::write_unmasked_frame(
+            &mut upstream,
+            &websocket::WebSocketFrame {
+                fin: true,
+                opcode: websocket::OPCODE_TEXT,
+                payload: br#"{"content":"banana@example.com"}"#.to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+        let mut client = Vec::new();
+
+        let outcome = proxy_websocket_upstream_frames(
+            state,
+            "websocket-inbound-block-test".to_string(),
+            &mut upstream.as_slice(),
+            &mut client,
+            Arc::new(RwLock::new(Vec::new())),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, WebSocketClientFrameOutcome::PolicyBlocked);
+        assert!(client.is_empty());
+    }
+
+    #[tokio::test]
+    async fn websocket_upgrade_request_strips_extension_negotiation() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "chatgpt.com".parse().unwrap());
+        headers.insert("sec-websocket-key", "abc".parse().unwrap());
+        headers.insert(
+            "sec-websocket-extensions",
+            "permessage-deflate".parse().unwrap(),
+        );
+        let request = InterceptedHttpRequest {
+            method: Method::GET,
+            uri: Uri::from_static("https://chatgpt.com/backend-api/ws?x=1"),
+            headers,
+            body: Bytes::new(),
+        };
+        let mut output = Vec::new();
+
+        write_websocket_upgrade_request(
+            &mut output,
+            &request,
+            &TargetAuthority {
+                host: "chatgpt.com".to_string(),
+                port: 443,
+            },
+        )
+        .await
+        .unwrap();
+        let text = String::from_utf8(output).unwrap();
+
+        assert!(text.starts_with("GET /backend-api/ws?x=1 HTTP/1.1\r\n"));
+        assert!(text.contains("sec-websocket-key: abc\r\n"));
+        assert!(
+            !text
+                .to_ascii_lowercase()
+                .contains("sec-websocket-extensions")
+        );
     }
 
     async fn spawn_echo_upstream() -> String {

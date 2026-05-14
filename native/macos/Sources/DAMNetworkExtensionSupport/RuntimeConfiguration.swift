@@ -27,13 +27,11 @@ public struct DAMProxyRuntimeConfiguration: Equatable, Sendable {
         "com.rpblc.dam.tray",
         "com.rpblc.dam.web",
         "com.rpblc.dam.network-extension",
-        "dam",
-        "dam-daemon",
-        "dam-macos-ne-helper",
-        "dam-mcp",
-        "dam-proxy",
-        "dam-tray",
-        "dam-web",
+    ]
+
+    public static let defaultExcludedProcessPathPrefixes = [
+        "/applications/dam.app/contents/macos/",
+        "/applications/dam.app/contents/helpers/",
     ]
 
     public var proxyHost: String
@@ -64,16 +62,20 @@ public struct DAMProxyRuntimeConfiguration: Equatable, Sendable {
 
         let proxyHost = providerConfiguration[DAMProviderConfigurationKey.proxyHost] as? String
         let proxyPort = providerConfiguration[DAMProviderConfigurationKey.proxyPort] as? Int
-        let protectedHosts = providerConfiguration[DAMProviderConfigurationKey.protectedHosts] as? [String]
-        let excludedSigningIdentifiers = providerConfiguration[DAMProviderConfigurationKey.excludedSigningIdentifiers] as? [String]
-        let routingFailurePolicy = (providerConfiguration[DAMProviderConfigurationKey.routingFailurePolicy] as? String)
+        let protectedHosts =
+            providerConfiguration[DAMProviderConfigurationKey.protectedHosts] as? [String]
+        let excludedSigningIdentifiers =
+            providerConfiguration[DAMProviderConfigurationKey.excludedSigningIdentifiers] as? [String]
+        let routingFailurePolicy =
+            (providerConfiguration[DAMProviderConfigurationKey.routingFailurePolicy] as? String)
             .flatMap(DAMRoutingFailurePolicy.init(rawValue:))
 
         self.init(
             proxyHost: proxyHost ?? Self.defaultProxyHost,
             proxyPort: UInt16(clamping: proxyPort ?? Int(Self.defaultProxyPort)),
             protectedHosts: protectedHosts ?? [],
-            excludedSigningIdentifiers: excludedSigningIdentifiers ?? Self.defaultExcludedSigningIdentifiers,
+            excludedSigningIdentifiers: excludedSigningIdentifiers
+                ?? Self.defaultExcludedSigningIdentifiers,
             routingFailurePolicy: routingFailurePolicy ?? DAMRoutingFailurePolicy.defaultPolicy
         )
     }
@@ -89,8 +91,14 @@ public struct DAMProxyRuntimeConfiguration: Equatable, Sendable {
     }
 
     public func shouldBypassSource(signingIdentifier: String?, processPath: String? = nil) -> Bool {
-        sourceCandidates(signingIdentifier: signingIdentifier, processPath: processPath).contains { candidate in
-            excludedSigningIdentifiers.contains(candidate)
+        guard let signingIdentifier = normalizeIdentifier(signingIdentifier),
+            excludedSigningIdentifiers.contains(signingIdentifier),
+            let processPath = normalizeIdentifier(processPath)
+        else {
+            return false
+        }
+        return Self.defaultExcludedProcessPathPrefixes.contains { prefix in
+            processPath.hasPrefix(prefix)
         }
     }
 
@@ -140,30 +148,20 @@ func normalizeHosts(_ hosts: [String]) -> [String] {
 func normalizeIdentifiers(_ identifiers: [String]) -> [String] {
     var result: [String] = []
     for identifier in identifiers {
-        let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if !normalized.isEmpty && !result.contains(normalized) {
+        guard let normalized = normalizeIdentifier(identifier) else {
+            continue
+        }
+        if !result.contains(normalized) {
             result.append(normalized)
         }
     }
     return result
 }
 
-private func sourceCandidates(signingIdentifier: String?, processPath: String?) -> [String] {
-    var candidates: [String] = []
-    appendNormalized(signingIdentifier, to: &candidates)
-    appendNormalized(processPath, to: &candidates)
-    if let processPath {
-        appendNormalized(URL(fileURLWithPath: processPath).lastPathComponent, to: &candidates)
-    }
-    return candidates
-}
-
-private func appendNormalized(_ value: String?, to candidates: inout [String]) {
+private func normalizeIdentifier(_ value: String?) -> String? {
     guard let value else {
-        return
+        return nil
     }
     let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    if !normalized.isEmpty && !candidates.contains(normalized) {
-        candidates.append(normalized)
-    }
+    return normalized.isEmpty ? nil : normalized
 }

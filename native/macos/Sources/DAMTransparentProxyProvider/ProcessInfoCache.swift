@@ -7,12 +7,14 @@ struct DAMProcessInfo: Equatable, Sendable {
 }
 
 private let DAMProcPidPathInfoMaxSize = UInt32(MAXPATHLEN * 4)
+private let DAMProcessInfoCacheLimit = 1024
 
 final class ProcessInfoCache: @unchecked Sendable {
     private static let shared = ProcessInfoCache()
 
     private let queue = DispatchQueue(label: "com.rpblc.dam.network-extension.process-info")
     private var cache: [Data: DAMProcessInfo] = [:]
+    private var cacheOrder: [Data] = []
 
     static func getInfo(fromAuditToken tokenData: Data?) -> DAMProcessInfo? {
         shared.getInfo(fromAuditToken: tokenData)
@@ -23,7 +25,13 @@ final class ProcessInfoCache: @unchecked Sendable {
             return nil
         }
 
-        if let cached = queue.sync(execute: { cache[tokenData] }) {
+        if let cached = queue.sync(execute: {
+            if let cached = cache[tokenData] {
+                promoteCacheKey(tokenData)
+                return cached
+            }
+            return nil
+        }) {
             return cached
         }
 
@@ -35,24 +43,42 @@ final class ProcessInfoCache: @unchecked Sendable {
             buffer.baseAddress!.assumingMemoryBound(to: audit_token_t.self).pointee
         }
         let pid = audit_token_to_pid(token)
-        let path = processPath(pid: pid)
+        let path = processPath(token: token)
         let info = DAMProcessInfo(pid: UInt32(pid), path: path)
 
         queue.sync {
             cache[tokenData] = info
+            promoteCacheKey(tokenData)
+            evictCacheOverflow()
         }
         return info
     }
 
-    private func processPath(pid: pid_t) -> String? {
+    private func processPath(token: audit_token_t) -> String? {
         let pathBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(DAMProcPidPathInfoMaxSize))
         defer {
             pathBuffer.deallocate()
         }
 
-        guard proc_pidpath(pid, pathBuffer, DAMProcPidPathInfoMaxSize) > 0 else {
+        var mutableToken = token
+        let pathLength = withUnsafeMutablePointer(to: &mutableToken) { tokenPointer in
+            proc_pidpath_audittoken(tokenPointer, pathBuffer, DAMProcPidPathInfoMaxSize)
+        }
+        guard pathLength > 0 else {
             return nil
         }
         return String(cString: pathBuffer)
+    }
+
+    private func promoteCacheKey(_ key: Data) {
+        cacheOrder.removeAll { $0 == key }
+        cacheOrder.append(key)
+    }
+
+    private func evictCacheOverflow() {
+        while cache.count > DAMProcessInfoCacheLimit, !cacheOrder.isEmpty {
+            let evicted = cacheOrder.removeFirst()
+            cache.removeValue(forKey: evicted)
+        }
     }
 }

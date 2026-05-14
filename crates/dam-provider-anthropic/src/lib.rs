@@ -193,12 +193,25 @@ fn should_skip_response_header(name: &str, connection_headers: &[String]) -> boo
             normalized.as_str(),
             "content-length"
                 | "connection"
+                | "content-digest"
+                | "content-md5"
+                | "digest"
+                | "repr-digest"
+                | "signature"
+                | "signature-input"
                 | "transfer-encoding"
                 | "te"
                 | "trailer"
                 | "upgrade"
                 | "keep-alive"
                 | "proxy-authenticate"
+                | "x-body-digest"
+                | "x-body-sha256"
+                | "x-content-digest"
+                | "x-content-md5"
+                | "x-payload-digest"
+                | "x-payload-sha256"
+                | "x-signature"
         )
 }
 
@@ -366,6 +379,13 @@ mod tests {
             url,
             "https://api.example.test/base/v1/messages?stream=false"
         );
+    }
+
+    #[test]
+    fn response_integrity_headers_are_not_forwarded_after_body_transform() {
+        assert!(should_skip_response_header("Content-Digest", &[]));
+        assert!(should_skip_response_header("Repr-Digest", &[]));
+        assert!(should_skip_response_header("Signature-Input", &[]));
     }
 
     #[tokio::test]

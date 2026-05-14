@@ -251,6 +251,7 @@ pub fn profile_definition_path(integration_state_dir: &Path, id: &str) -> PathBu
 }
 
 pub fn ensure_bundled_profile_files(integration_state_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    migrate_legacy_apply_records(integration_state_dir)?;
     let dir = profile_definitions_dir(integration_state_dir);
     fs::create_dir_all(&dir).map_err(|error| {
         format!(
@@ -304,6 +305,9 @@ fn read_stored_profile_files(
         let profile = serde_json::from_str::<IntegrationProfile>(&raw)
             .map_err(|error| format!("failed to parse profile {}: {error}", path.display()))?;
         validate_integration_profile(&profile)?;
+        if !PROFILE_IDS.contains(&profile.id.as_str()) {
+            continue;
+        }
         if !ids.insert(profile.id.clone()) {
             return Err(format!(
                 "duplicate integration profile id {} in {}",
@@ -681,16 +685,16 @@ pub fn prepare_apply_in_state(
     integration_state_dir: &Path,
 ) -> Result<PreparedIntegrationApply, String> {
     if target_path == profile_definition_path(integration_state_dir, profile_id)
-        && let Some((profile_id, profile_name, desired_content, notes)) =
+        && let Some((_stored_profile_id, profile_name, desired_content, notes)) =
             profile_catalog_apply_content(profile_id, integration_state_dir)?
     {
         return prepare_apply_for_content(
-            profile_id.clone(),
+            profile_id.to_string(),
             profile_name,
             proxy_url,
             target_path,
             desired_content,
-            profile_apply_description(&profile_id),
+            profile_apply_description(profile_id),
             notes,
         );
     }
@@ -819,6 +823,7 @@ pub fn run_apply(
         });
     }
 
+    migrate_legacy_apply_records(state_dir)?;
     let profile_dir = profile_state_dir(state_dir, &prepared.profile_id);
     let record_path = profile_dir.join("latest.json");
     let (rollback_available, record_error) =
@@ -937,6 +942,7 @@ fn inspect_prepared_apply(
     profile_id: &str,
     state_dir: &Path,
 ) -> Result<IntegrationApplyInspection, String> {
+    migrate_legacy_apply_records(state_dir)?;
     let record_path = profile_state_dir(state_dir, profile_id).join("latest.json");
     let (rollback_available, record_error) = rollback_record_state(profile_id, &record_path);
     let status = match (prepared.action, rollback_available, false) {
@@ -993,6 +999,7 @@ pub fn rollback_profile(
     profile_id: &str,
     state_dir: &Path,
 ) -> Result<IntegrationRollbackResult, String> {
+    migrate_legacy_apply_records(state_dir)?;
     let record_path = profile_state_dir(state_dir, profile_id).join("latest.json");
     let raw = fs::read_to_string(&record_path).map_err(|error| {
         format!(
@@ -1065,6 +1072,97 @@ pub fn rollback_profile(
 
 pub fn profile_state_dir(state_dir: &Path, profile_id: &str) -> PathBuf {
     state_dir.join(APPLY_RECORDS_DIR).join(profile_id)
+}
+
+#[cfg(test)]
+fn legacy_profile_state_dir(state_dir: &Path, profile_id: &str) -> PathBuf {
+    state_dir.join(PROFILE_DEFINITIONS_DIR).join(profile_id)
+}
+
+fn migrate_legacy_apply_records(state_dir: &Path) -> Result<(), String> {
+    let legacy_root = state_dir.join(PROFILE_DEFINITIONS_DIR);
+    let entries = match fs::read_dir(&legacy_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "failed to read legacy profile state directory {}: {error}",
+                legacy_root.display()
+            ));
+        }
+    };
+
+    let mut legacy_dirs = entries
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|error| format!("failed to read legacy profile state entry: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    legacy_dirs.sort();
+    for legacy_dir in legacy_dirs {
+        if !legacy_dir.is_dir() || !legacy_dir.join("latest.json").exists() {
+            continue;
+        }
+        let Some(profile_id) = legacy_dir
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let target_dir = profile_state_dir(state_dir, &profile_id);
+        if target_dir.join("latest.json").exists() {
+            continue;
+        }
+        if target_dir.exists() {
+            return Err(format!(
+                "cannot migrate legacy rollback record for {profile_id}: target directory already exists at {}",
+                target_dir.display()
+            ));
+        }
+        if let Some(parent) = target_dir.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "failed to create apply records directory {}: {error}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let record_path = legacy_dir.join("latest.json");
+        let record_raw = fs::read_to_string(&record_path).map_err(|error| {
+            format!(
+                "failed to read legacy rollback record {}: {error}",
+                record_path.display()
+            )
+        })?;
+        let mut record =
+            serde_json::from_str::<IntegrationApplyRecord>(&record_raw).map_err(|error| {
+                format!(
+                    "failed to parse legacy rollback record {}: {error}",
+                    record_path.display()
+                )
+            })?;
+        for file in &mut record.files {
+            if let Some(backup_path) = &mut file.backup_path
+                && backup_path.starts_with(&legacy_dir)
+                && let Ok(suffix) = backup_path.strip_prefix(&legacy_dir)
+            {
+                *backup_path = target_dir.join(suffix);
+            }
+        }
+
+        fs::rename(&legacy_dir, &target_dir).map_err(|error| {
+            format!(
+                "failed to migrate legacy rollback record {} to {}: {error}",
+                legacy_dir.display(),
+                target_dir.display()
+            )
+        })?;
+        write_json_file(&target_dir.join("latest.json"), &record)?;
+    }
+    Ok(())
 }
 
 fn integration_profile_content(profile: &IntegrationProfile) -> Result<String, String> {
@@ -1345,6 +1443,115 @@ mod tests {
             vec!["claude-code", "codex"]
         );
         assert!(!state_dir.exists());
+    }
+
+    #[test]
+    fn profiles_from_state_ignores_retired_stored_profile_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("integrations");
+        let profiles_dir = profile_definitions_dir(&state_dir);
+        fs::create_dir_all(&profiles_dir).unwrap();
+        fs::write(
+            profiles_dir.join("anthropic.json"),
+            r#"{
+              "id": "anthropic",
+              "name": "Anthropic",
+              "summary": "Retired profile",
+              "provider": "anthropic",
+              "traffic_app_ids": ["anthropic-api"],
+              "connect_args": [],
+              "settings": [],
+              "commands": [],
+              "notes": [],
+              "automation": "connect_preset"
+            }"#,
+        )
+        .unwrap();
+
+        let profiles = profiles_from_state(DEFAULT_PROXY_URL, &state_dir).unwrap();
+
+        assert_eq!(
+            profiles
+                .iter()
+                .map(|profile| profile.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["claude-code", "codex"]
+        );
+    }
+
+    #[test]
+    fn ensure_bundled_profile_files_migrates_legacy_rollback_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("integrations");
+        let target_path = dir.path().join("codex.json");
+        let legacy_dir = legacy_profile_state_dir(&state_dir, "codex");
+        let legacy_backup_dir = legacy_dir.join("backups").join("123");
+        let legacy_backup_path = legacy_backup_dir.join("target.backup");
+        fs::create_dir_all(&legacy_backup_dir).unwrap();
+        fs::write(&target_path, "{\"id\":\"codex\"}\n").unwrap();
+        fs::write(&legacy_backup_path, "{\"id\":\"old\"}\n").unwrap();
+        write_json_file(
+            &legacy_dir.join("latest.json"),
+            &IntegrationApplyRecord {
+                profile_id: "codex".to_string(),
+                applied_at_unix: 123,
+                files: vec![IntegrationBackupFile {
+                    path: target_path.clone(),
+                    existed: true,
+                    backup_path: Some(legacy_backup_path),
+                }],
+            },
+        )
+        .unwrap();
+
+        ensure_bundled_profile_files(&state_dir).unwrap();
+        let migrated_record_path = profile_state_dir(&state_dir, "codex").join("latest.json");
+        let migrated_raw = fs::read_to_string(&migrated_record_path).unwrap();
+        let migrated_record: IntegrationApplyRecord = serde_json::from_str(&migrated_raw).unwrap();
+        let migrated_backup_path = migrated_record.files[0].backup_path.as_ref().unwrap();
+
+        assert!(migrated_record_path.exists());
+        assert!(migrated_backup_path.starts_with(profile_state_dir(&state_dir, "codex")));
+        assert!(migrated_backup_path.exists());
+        assert!(!legacy_dir.exists());
+
+        let rollback = rollback_profile("codex", &state_dir).unwrap();
+        assert_eq!(rollback.changes[0].action, FileAction::Restore);
+        assert_eq!(
+            fs::read_to_string(&target_path).unwrap(),
+            "{\"id\":\"old\"}\n"
+        );
+    }
+
+    #[test]
+    fn prepare_apply_in_state_keeps_requested_profile_id_for_catalog_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("integrations");
+        let profiles_dir = profile_definitions_dir(&state_dir);
+        fs::create_dir_all(&profiles_dir).unwrap();
+        let target_path = profile_definition_path(&state_dir, "codex");
+        fs::write(
+            &target_path,
+            r#"{
+              "id": "stale-codex",
+              "name": "Stale Codex",
+              "summary": "Stale profile",
+              "provider": "openai-compatible",
+              "traffic_app_ids": ["openai-api"],
+              "connect_args": [],
+              "settings": [],
+              "commands": [],
+              "notes": [],
+              "automation": "connect_preset"
+            }"#,
+        )
+        .unwrap();
+
+        let prepared =
+            prepare_apply_in_state("codex", DEFAULT_PROXY_URL, target_path, &state_dir).unwrap();
+
+        assert_eq!(prepared.profile_id, "codex");
+        assert_eq!(prepared.profile_name, "Stale Codex");
     }
 
     #[test]
