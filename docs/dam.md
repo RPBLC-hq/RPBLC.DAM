@@ -20,7 +20,7 @@ The old `dam claude`, `dam codex`, and `dam codex --api` one-shot launchers have
 
 Background integration profiles configure tools to use the long-running daemon as an HTTP(S) proxy or rely on system proxy routing. The daemon can expose multiple provider targets for selected AI hosts while unknown traffic passes through untouched.
 
-By default, the daemon proxy redacts outbound requests before they reach the provider. Agent traffic apps keep inbound DAM references tokenized in the local transcript, while still redetecting and tokenizing raw provider-returned sensitive values before the tool sees them. Email-derived domains from the protected outbound request are carried into that inbound redetection pass, including Anthropic/OpenAI `text/event-stream` responses, so a domain-only answer derived from a protected email stays tokenized. Set `proxy.resolve_inbound = false` or use `--no-resolve-inbound` to leave HTTP `[kind:id]` references unresolved for every app; explicit reveal/consent flows are separate from agent transcript protection.
+By default, the daemon proxy redacts outbound requests before they reach the provider. Agent traffic apps can keep inbound DAM references tokenized in the local transcript and can opt into raw inbound response redetection/tokenization through traffic profile `inbound.protect_sensitive_data`. Email-derived domains from the protected outbound request are carried into opted-in inbound redetection passes, including Anthropic/OpenAI `text/event-stream` responses, so a domain-only answer derived from a protected email can stay tokenized without rewriting generic browser/bootstrap responses. Set `proxy.resolve_inbound = false` or use `--no-resolve-inbound` to leave HTTP `[kind:id]` references unresolved for every app; explicit reveal/consent flows are separate from agent transcript protection.
 
 ## Auth Model
 
@@ -136,7 +136,7 @@ The previous one-shot `npx @rpblc/dam claude` and `npx @rpblc/dam codex --api` t
 - Codex API-key mode is protected when Codex keeps its normal OpenAI endpoint and routes through DAM capture/proxy routing. Codex ChatGPT-login mode uses the same `codex` profile and WebSocket adapter for `chatgpt.com` and `ab.chatgpt.com`.
 - DAM no longer has a default user-facing provider base-URL routing path. Generic SDK profiles use HTTP(S) proxy settings.
 - `--network-mode tun` can report macOS Network Extension capture installed by `dam network install-network-extension`. When route capture, local CA trust, and consent are ready, the daemon uses HTTP/1.1 CONNECT/TLS plus WebSocket handling for active traffic profile hosts. Decrypted transparent requests are target-selected from their authority/`Host` before provider API path hints, so ChatGPT backend HTTP paths use the `chatgpt-codex` target. `dam connect` preflights routing/trust setup before starting transparent modes and restarts a compatible running daemon when the enabled app traffic scope changes; if runtime readiness is lost after startup, configured traffic follows the routing failure policy (`fail_open` by default, `fail_closed` when configured).
-- HTTP/2 transparent interception, inbound/fragmented/compressed WebSocket payload protection, UDP, and arbitrary web traffic rewriting remain parked.
+- HTTP/2 transparent interception, fragmented/compressed WebSocket payload protection, UDP, and arbitrary web traffic rewriting remain parked. WebSocket protection state is frozen at connection start so enabling or pausing DAM does not mutate an already-established stream mid-flight.
 
 ## Tests
 

@@ -25,7 +25,7 @@
         {"id": "tokenize", "kind": "replace_sensitive_data", "direction": "outbound"}
       ],
       "outbound": {"filter": {"default_action": "tokenize"}},
-      "inbound": {"resolve_references": false}
+      "inbound": {"resolve_references": false, "protect_sensitive_data": true}
     },
     {
       "id": "anthropic-api",
@@ -49,7 +49,7 @@
         {"id": "tokenize", "kind": "replace_sensitive_data", "direction": "outbound"}
       ],
       "outbound": {"filter": {"default_action": "tokenize"}},
-      "inbound": {"resolve_references": false}
+      "inbound": {"resolve_references": false, "protect_sensitive_data": true}
     },
     {
       "id": "chatgpt-codex",

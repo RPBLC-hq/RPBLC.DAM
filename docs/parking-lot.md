@@ -72,7 +72,7 @@ Parked work:
 - Replace the current CLI explicit-proxy fallback with process/network-level capture everywhere signed platform capture is available.
 - Install and remove the local DAM CA on Windows/Linux, add CA rotation, and harden interrupted macOS trust mutation recovery.
 - Implement native Linux and Windows onboarding actions behind the current platform-specific setup ids (`linux_capture`, `windows_capture`) instead of reusing macOS Network Extension steps.
-- Extend transparent TLS interception beyond the current HTTP/1.1/WebSocket slice: HTTP/2, inbound/fragmented/compressed WebSocket payloads, multiple requests per tunnel, target-specific consent, and stronger platform coverage.
+- Extend transparent TLS interception beyond the current HTTP/1.1/WebSocket slice: HTTP/2, fragmented/compressed WebSocket payloads, multiple requests per tunnel, target-specific consent, and stronger platform coverage.
 - Define fail-open, fail-closed, degraded, bypass, and blocked states for transparent protection across system proxy and `tun` modes, including which states are user/admin configurable.
 - Define a future short-lived app wrapper, if needed, that starts or reuses the daemon and routes traffic by proxy/system routing without provider base-url mutation.
 - Add platform tests proving sensitive values do not leave before transparent protection is ready.
@@ -91,7 +91,7 @@ Parked work:
 
 ### Streaming Response Protection
 
-Current state: outbound requests are protected; agent HTTP traffic apps keep inbound DAM references tokenized in local transcripts and redetect/tokenize supported raw provider-returned values. The inbound redetection context includes email-derived domains from the protected outbound request. JSON-shaped responses are transformed string-by-string, including newline-delimited JSON. `text/event-stream` responses are transformed for inbound protection. Raw stream transformation handles references split across adjacent chunks; provider-aware SSE text-delta transformation handles references and raw values split across OpenAI-compatible and Anthropic JSON delta events with a bounded trailing event window instead of EOF buffering.
+Current state: outbound requests are protected; agent HTTP traffic apps keep inbound DAM references tokenized in local transcripts and can opt into redetecting/tokenizing supported raw provider-returned values through traffic profile `inbound.protect_sensitive_data`. The inbound redetection context includes email-derived domains from the protected outbound request. JSON-shaped responses are transformed string-by-string, including newline-delimited JSON, when reference restoration or explicit raw inbound protection is active. `text/event-stream` responses are transformed under the same route policy. Raw stream transformation handles references split across adjacent chunks; provider-aware SSE text-delta transformation handles references and opted-in raw values split across OpenAI-compatible and Anthropic JSON delta events with a bounded trailing event window instead of EOF buffering.
 
 Parked work:
 

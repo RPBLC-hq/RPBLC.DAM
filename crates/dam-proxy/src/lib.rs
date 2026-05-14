@@ -103,6 +103,7 @@ pub struct ProxyState {
     routes: dam_router::RouteTable,
     resolve_inbound: bool,
     route_resolve_inbound: HashMap<String, bool>,
+    route_protect_inbound: HashMap<String, bool>,
     vault: Arc<dyn ProxyVault>,
     consent_store: Option<Arc<dam_consent::ConsentStore>>,
     log_sink: Option<Arc<dyn EventSink>>,
@@ -227,6 +228,7 @@ fn build_state(
         routes,
         resolve_inbound: config.proxy.resolve_inbound,
         route_resolve_inbound: route_resolve_inbound(&config.traffic.effective_profile()),
+        route_protect_inbound: route_protect_inbound(&config.traffic.effective_profile()),
         vault: open_vault(&config)?,
         consent_store: open_consent_store(&config)?,
         log_sink: open_log_sink(&config)?,
@@ -890,7 +892,11 @@ async fn proxy_http_request(
     operation_id: String,
 ) -> Response {
     let route = route_for_request(&state, &headers, &uri);
-    let resolve_inbound = state.resolve_inbound_for_route(route);
+    let protection_enabled = state.protection_enabled();
+    let inbound_plan = InboundTransformPlan {
+        resolve_references: protection_enabled && state.resolve_inbound_for_route(route),
+        protect_sensitive_data: protection_enabled && state.protect_inbound_for_route(route),
+    };
     record_proxy_event(
         &state,
         &operation_id,
@@ -898,13 +904,14 @@ async fn proxy_http_request(
         LogEventType::ProxyForward,
         "route_decision",
         format!(
-            "route target={} provider={} method={} path={} protection_enabled={} resolve_inbound={} request_bytes={}",
+            "route target={} provider={} method={} path={} protection_enabled={} resolve_inbound={} protect_inbound={} request_bytes={}",
             route.target().name,
             route.target().provider,
             method,
             uri.path(),
-            state.protection_enabled(),
-            resolve_inbound,
+            protection_enabled,
+            inbound_plan.resolve_references,
+            inbound_plan.protect_sensitive_data,
             body.len()
         ),
     );
@@ -927,7 +934,7 @@ async fn proxy_http_request(
         );
     }
 
-    if !state.protection_enabled() {
+    if !protection_enabled {
         return forward_or_provider_down(
             state.clone(),
             route,
@@ -939,6 +946,7 @@ async fn proxy_http_request(
                 operation_id,
                 action: "bypassing",
                 related_domains: Arc::new(Vec::new()),
+                inbound_plan,
             },
         )
         .await;
@@ -1065,6 +1073,7 @@ async fn proxy_http_request(
             operation_id,
             action: "protected",
             related_domains,
+            inbound_plan,
         },
     )
     .await
@@ -1307,6 +1316,7 @@ where
     T: AsyncRead + AsyncWrite + Unpin,
 {
     let route = route_for_request(&state, &request.headers, &request.uri);
+    let protection_enabled = state.protection_enabled();
     if route.config_required() {
         record_proxy_event(
             &state,
@@ -1369,11 +1379,26 @@ where
         operation_id,
         LogLevel::Info,
         LogEventType::ProxyForward,
-        "protected",
-        "WebSocket tunnel established with request frame protection",
+        if protection_enabled {
+            "protected"
+        } else {
+            "bypassing"
+        },
+        if protection_enabled {
+            "WebSocket tunnel established with connection protection snapshot enabled"
+        } else {
+            "WebSocket tunnel established with connection protection snapshot disabled"
+        },
     );
 
-    proxy_websocket_frames(state, operation_id, client_tls, upstream_tls).await
+    proxy_websocket_frames(
+        state,
+        operation_id,
+        client_tls,
+        upstream_tls,
+        protection_enabled,
+    )
+    .await
 }
 
 async fn proxy_websocket_frames<C, U>(
@@ -1381,6 +1406,7 @@ async fn proxy_websocket_frames<C, U>(
     operation_id: &str,
     client_tls: C,
     upstream_tls: U,
+    protection_enabled: bool,
 ) -> Result<(), String>
 where
     C: AsyncRead + AsyncWrite + Unpin,
@@ -1396,6 +1422,7 @@ where
             &mut client_reader,
             &mut upstream_writer,
             related_domains.clone(),
+            protection_enabled,
         );
         let upstream_to_client = proxy_websocket_upstream_frames(
             state.clone(),
@@ -1403,6 +1430,7 @@ where
             &mut upstream_reader,
             &mut client_writer,
             related_domains,
+            protection_enabled,
         );
 
         tokio::select! {
@@ -1429,6 +1457,7 @@ async fn proxy_websocket_client_frames<R, W>(
     reader: &mut R,
     writer: &mut W,
     related_domains: Arc<Mutex<Vec<String>>>,
+    protection_enabled: bool,
 ) -> Result<WebSocketClientFrameOutcome, String>
 where
     R: AsyncRead + Unpin,
@@ -1438,7 +1467,7 @@ where
         let Some(mut frame) = websocket::read_frame(reader).await? else {
             return Ok(WebSocketClientFrameOutcome::Completed);
         };
-        if frame.is_unfragmented_text() && state.protection_enabled() {
+        if frame.is_unfragmented_text() && protection_enabled {
             let text = std::str::from_utf8(&frame.payload)
                 .map_err(|_| "WebSocket text frame is not utf-8".to_string())?;
             let protected = dam_pipeline::protect_text(
@@ -1479,7 +1508,7 @@ where
                 "protected",
                 "WebSocket request text frame protected",
             );
-        } else if state.protection_enabled()
+        } else if protection_enabled
             && (frame.is_fragmented_text_or_continuation() || frame.is_binary())
         {
             record_proxy_event(
@@ -1505,6 +1534,7 @@ async fn proxy_websocket_upstream_frames<R, W>(
     reader: &mut R,
     writer: &mut W,
     related_domains: Arc<Mutex<Vec<String>>>,
+    protection_enabled: bool,
 ) -> Result<WebSocketClientFrameOutcome, String>
 where
     R: AsyncRead + Unpin,
@@ -1514,7 +1544,7 @@ where
         let Some(mut frame) = websocket::read_frame(reader).await? else {
             return Ok(WebSocketClientFrameOutcome::Completed);
         };
-        if frame.is_unfragmented_text() && state.protection_enabled() {
+        if frame.is_unfragmented_text() && protection_enabled {
             let text = std::str::from_utf8(&frame.payload)
                 .map_err(|_| "WebSocket response text frame is not utf-8".to_string())?;
             let domains = related_domains.lock().unwrap().clone();
@@ -1567,7 +1597,7 @@ where
                     ),
                 );
             }
-        } else if state.protection_enabled()
+        } else if protection_enabled
             && (frame.is_fragmented_text_or_continuation() || frame.is_binary())
         {
             record_proxy_event(
@@ -1909,6 +1939,13 @@ impl ProxyState {
                 .copied()
                 .unwrap_or(true)
     }
+
+    fn protect_inbound_for_route(&self, route: dam_router::RouteDecision<'_>) -> bool {
+        self.route_protect_inbound
+            .get(&route.target().name)
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 fn route_resolve_inbound(profile: &dam_net::TrafficProfile) -> HashMap<String, bool> {
@@ -1923,6 +1960,22 @@ fn route_resolve_inbound(profile: &dam_net::TrafficProfile) -> HashMap<String, b
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(&app.id);
         policies.insert(target_name.clone(), app.inbound.resolve_references);
+    }
+    policies
+}
+
+fn route_protect_inbound(profile: &dam_net::TrafficProfile) -> HashMap<String, bool> {
+    let mut policies = HashMap::new();
+    for app in &profile.apps {
+        if !app.enabled || app.action != dam_net::TrafficAction::Inspect {
+            continue;
+        }
+        let target_name = app
+            .target_name
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(&app.id);
+        policies.insert(target_name.clone(), app.inbound.protect_sensitive_data);
     }
     policies
 }
@@ -2369,6 +2422,13 @@ struct ForwardAttempt {
     operation_id: String,
     action: &'static str,
     related_domains: Arc<Vec<String>>,
+    inbound_plan: InboundTransformPlan,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InboundTransformPlan {
+    resolve_references: bool,
+    protect_sensitive_data: bool,
 }
 
 async fn forward_or_provider_down(
@@ -2385,6 +2445,7 @@ async fn forward_or_provider_down(
         attempt.body,
         &attempt.operation_id,
         Arc::clone(&attempt.related_domains),
+        attempt.inbound_plan,
     )
     .await
     {
@@ -2433,10 +2494,10 @@ async fn forward_request(
     body: Bytes,
     operation_id: &str,
     related_domains: Arc<Vec<String>>,
+    inbound_plan: InboundTransformPlan,
 ) -> Result<Response, String> {
     let target_api_key = route.target_api_key();
-    let resolve_inbound = state.resolve_inbound_for_route(route);
-    let transform_inbound = resolve_inbound || state.protection_enabled();
+    let transform_inbound = inbound_plan.resolve_references || inbound_plan.protect_sensitive_data;
     match state.providers.get(route.provider_kind()) {
         ProviderAdapter::OpenAi(provider) => {
             let target_name = route.target().name.clone();
@@ -2461,7 +2522,7 @@ async fn forward_request(
                 "provider_forward_start",
                 format!(
                     "provider forward start target={target_name} provider={target_provider} resolve_inbound={} transform_streaming={}",
-                    resolve_inbound, transform_inbound
+                    inbound_plan.resolve_references, transform_inbound
                 ),
             );
             let response = provider
@@ -2470,7 +2531,7 @@ async fn forward_request(
                         &response_state,
                         &response_operation_id,
                         response_body,
-                        resolve_inbound,
+                        inbound_plan,
                         response_related_domains.as_slice(),
                     )
                 })
@@ -2502,7 +2563,7 @@ async fn forward_request(
                 "provider_forward_start",
                 format!(
                     "provider forward start target={target_name} provider={target_provider} resolve_inbound={} transform_streaming={}",
-                    resolve_inbound, transform_inbound
+                    inbound_plan.resolve_references, transform_inbound
                 ),
             );
             let response = provider
@@ -2511,7 +2572,7 @@ async fn forward_request(
                         &response_state,
                         &response_operation_id,
                         response_body,
-                        resolve_inbound,
+                        inbound_plan,
                         response_related_domains.as_slice(),
                     )
                 })
@@ -2527,10 +2588,10 @@ fn resolve_response_body(
     state: &ProxyState,
     operation_id: &str,
     body: Bytes,
-    resolve_inbound: bool,
+    inbound_plan: InboundTransformPlan,
     related_domains: &[String],
 ) -> Bytes {
-    if !resolve_inbound {
+    if !inbound_plan.resolve_references {
         record_proxy_event(
             state,
             operation_id,
@@ -2539,6 +2600,9 @@ fn resolve_response_body(
             "resolve_disabled",
             format!("inbound resolution disabled response_bytes={}", body.len()),
         );
+        if !inbound_plan.protect_sensitive_data {
+            return body;
+        }
         let body_text = match std::str::from_utf8(body.as_ref()) {
             Ok(text) => text,
             Err(_) => return body,
@@ -2590,9 +2654,13 @@ fn resolve_response_body(
         return Bytes::from(output);
     }
 
-    protect_inbound_response_body(state, operation_id, body_text, related_domains)
-        .map(Bytes::from)
-        .unwrap_or(body)
+    if inbound_plan.protect_sensitive_data {
+        protect_inbound_response_body(state, operation_id, body_text, related_domains)
+            .map(Bytes::from)
+            .unwrap_or(body)
+    } else {
+        body
+    }
 }
 
 fn protect_inbound_response_body(
@@ -2795,6 +2863,41 @@ mod tests {
         config
     }
 
+    fn set_test_target_inbound_policy(
+        config: &mut dam_config::DamConfig,
+        resolve_references: bool,
+        protect_sensitive_data: bool,
+    ) {
+        let target = config.proxy.targets[0].clone();
+        config
+            .traffic
+            .profile
+            .apps
+            .push(dam_net::TrafficAppProfile {
+                id: format!("{}-test-route", target.name),
+                name: None,
+                enabled: true,
+                priority: 100,
+                match_rules: dam_net::TrafficMatch {
+                    domains: vec![target.upstream.clone()],
+                    ..dam_net::TrafficMatch::default()
+                },
+                action: dam_net::TrafficAction::Inspect,
+                adapter: dam_net::ProtocolAdapterKind::Http,
+                provider: Some(target.provider),
+                target_name: Some(target.name),
+                upstream: Some(target.upstream),
+                traffic_kind: dam_net::AiTrafficKind::Custom,
+                steps: Vec::new(),
+                outbound: dam_net::TrafficDirectionPolicy::default(),
+                inbound: dam_net::TrafficInboundPolicy {
+                    resolve_references,
+                    protect_sensitive_data,
+                    ..dam_net::TrafficInboundPolicy::default()
+                },
+            });
+    }
+
     async fn spawn_app(app: Router) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2831,6 +2934,7 @@ mod tests {
             &mut upstream.as_slice(),
             &mut client,
             Arc::new(Mutex::new(Vec::new())),
+            true,
         )
         .await
         .unwrap();
@@ -2876,6 +2980,7 @@ mod tests {
             &mut upstream.as_slice(),
             &mut client,
             Arc::new(Mutex::new(vec!["wolol3o22.com".to_string()])),
+            true,
         )
         .await
         .unwrap();
@@ -2887,6 +2992,45 @@ mod tests {
         let body = String::from_utf8(frame.payload).unwrap();
         assert!(!body.contains("wolol3o22.com"));
         assert!(body.contains("[domain:"));
+    }
+
+    #[tokio::test]
+    async fn websocket_response_respects_connection_protection_snapshot() {
+        let state = build_state(proxy_config("https://chatgpt.com".to_string()), None).unwrap();
+        let mut upstream = Vec::new();
+        websocket::write_unmasked_frame(
+            &mut upstream,
+            &websocket::WebSocketFrame {
+                fin: true,
+                opcode: websocket::OPCODE_TEXT,
+                payload: br#"{"content":"banana@example.com"}"#.to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+        websocket::write_unmasked_frame(&mut upstream, &websocket::WebSocketFrame::close(1000, ""))
+            .await
+            .unwrap();
+        let mut client = Vec::new();
+
+        proxy_websocket_upstream_frames(
+            state,
+            "websocket-snapshot-test".to_string(),
+            &mut upstream.as_slice(),
+            &mut client,
+            Arc::new(Mutex::new(Vec::new())),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let frame = websocket::read_frame(&mut client.as_slice())
+            .await
+            .unwrap()
+            .unwrap();
+        let body = String::from_utf8(frame.payload).unwrap();
+        assert!(body.contains("banana@example.com"));
+        assert!(!body.contains("[email:"));
     }
 
     async fn spawn_echo_upstream() -> String {
@@ -4547,10 +4691,43 @@ data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"splonk.
     }
 
     #[tokio::test]
-    async fn tokenizes_raw_sensitive_inbound_response_without_references() {
+    async fn passes_raw_sensitive_inbound_response_without_explicit_inbound_protection() {
         let upstream_seen = Arc::new(Mutex::new(None::<String>));
         let upstream = spawn_raw_sensitive_response_upstream(upstream_seen.clone()).await;
         let config = proxy_config(upstream);
+        let log_path = config.log.sqlite_path.clone();
+        let proxy = spawn_app(build_app(config).unwrap()).await;
+
+        let response = reqwest::Client::new()
+            .post(format!("{proxy}/v1/chat/completions"))
+            .body(r#"{"messages":[{"content":"hello"}]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("leak@example.com"));
+        assert!(!body.contains("[email:"));
+
+        assert_eq!(
+            upstream_seen.lock().unwrap().as_deref(),
+            Some(r#"{"messages":[{"content":"hello"}]}"#)
+        );
+
+        let logs = dam_log::LogStore::open(log_path).unwrap().list().unwrap();
+        assert!(!logs.iter().any(|entry| {
+            entry.event_type == "proxy_forward"
+                && entry.action.as_deref() == Some("inbound_protection")
+        }));
+    }
+
+    #[tokio::test]
+    async fn tokenizes_raw_sensitive_inbound_response_when_route_opts_in() {
+        let upstream_seen = Arc::new(Mutex::new(None::<String>));
+        let upstream = spawn_raw_sensitive_response_upstream(upstream_seen.clone()).await;
+        let mut config = proxy_config(upstream);
+        set_test_target_inbound_policy(&mut config, true, true);
         let log_path = config.log.sqlite_path.clone();
         let proxy = spawn_app(build_app(config).unwrap()).await;
 
@@ -4585,7 +4762,8 @@ data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"splonk.
     async fn tokenizes_raw_email_domain_in_inbound_response_from_request_context() {
         let upstream_seen = Arc::new(Mutex::new(None::<String>));
         let upstream = spawn_raw_domain_response_upstream(upstream_seen.clone()).await;
-        let config = proxy_config(upstream);
+        let mut config = proxy_config(upstream);
+        set_test_target_inbound_policy(&mut config, true, true);
         let log_path = config.log.sqlite_path.clone();
         let proxy = spawn_app(build_app(config).unwrap()).await;
 

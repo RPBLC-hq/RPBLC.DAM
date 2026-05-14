@@ -100,11 +100,17 @@ Private enterprise gateways and provider-compatible endpoints are traffic profil
         {"id": "detect", "kind": "detect_sensitive_data", "direction": "outbound"},
         {"id": "tokenize", "kind": "replace_sensitive_data", "direction": "outbound"},
         {"id": "resolve", "kind": "resolve_references", "direction": "inbound"}
-      ]
+      ],
+      "inbound": {
+        "resolve_references": false,
+        "protect_sensitive_data": true
+      }
     }
   ]
 }
 ```
+
+`inbound.resolve_references` controls whether existing DAM references are restored in HTTP responses. `inbound.protect_sensitive_data` is separate and defaults to `false`; it must be set for routes that should redetect/tokenize raw inbound HTTP response text. Stateful or browser-like routes should leave HTTP inbound protection off unless their response envelopes are known safe to rewrite.
 
 `network.ai_routes` has been removed. Config files that still contain `[[network.ai_routes]]` fail validation with a migration message instead of silently dropping private endpoint protection.
 

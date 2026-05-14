@@ -52,7 +52,7 @@ OpenAI-compatible forwarding lives in `dam-provider-openai`, Anthropic forwardin
 ## Current Consumers
 
 - `dam-proxy` uses `dam-pipeline` for outbound request body protection and default inbound reference resolution. Streaming/SSE bodies are passed to this pipeline by provider adapters after either raw tail-buffering or provider-aware text-delta reassembly, depending on the response shape.
-- When inbound reference resolution finds no resolvable DAM references, `dam-proxy` reuses the outbound protection pipeline on inbound HTTP response text so raw provider-returned sensitive values are tokenized before local agent history records them. Resolved DAM references are still restored for the local client.
+- When a route explicitly enables raw inbound protection, `dam-proxy` reuses the outbound protection pipeline on inbound HTTP response text after reference resolution has no output, so raw provider-returned sensitive values are tokenized before local agent history records them. Resolved DAM references are still restored for the local client when inbound reference resolution is enabled.
 
 `dam-filter` still owns its CLI-specific pipeline wiring because it also owns report emission, exit codes, and file/stdin handling.
 

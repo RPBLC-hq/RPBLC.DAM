@@ -30,12 +30,12 @@ client or harness
   -> dam-pipeline when proxy.resolve_inbound is enabled
   -> dam-core resolve plan for existing DAM references
   -> dam-vault through VaultReader
-  -> dam-pipeline redetect/tokenize when no reference resolves
+  -> dam-pipeline redetect/tokenize when no reference resolves and the route opted in
   -> dam-log
   -> client or harness
 ```
 
-Outbound requests always run through detection, policy, tokenization, and redaction before provider egress. The bundled agent traffic apps keep inbound DAM references tokenized in the local transcript instead of restoring raw values back into Claude/Codex history. Codex subscription traffic is mediated by the `chatgpt-codex` WebSocket adapter for `chatgpt.com` and `ab.chatgpt.com`; Codex API-key mode is mediated by the OpenAI-compatible HTTP adapter for `api.openai.com`. Inbound HTTP response text is still inspected: raw provider-returned sensitive values are redetected and tokenized before returning to the client. The proxy carries email-derived domains from the protected outbound request into that inbound redetection pass, including `text/event-stream` text deltas, so provider answers containing only a derived domain are still protected. Explicit reveal/consent flows are separate from agent transcript protection.
+Outbound requests always run through detection, policy, tokenization, and redaction before provider egress. The bundled agent traffic apps keep inbound DAM references tokenized in the local transcript instead of restoring raw values back into Claude/Codex history. Codex subscription traffic is mediated by the `chatgpt-codex` WebSocket adapter for `chatgpt.com` and `ab.chatgpt.com`; Codex API-key mode is mediated by the OpenAI-compatible HTTP adapter for `api.openai.com`. Inbound HTTP response redetection is explicit per route through traffic profile `inbound.protect_sensitive_data`; routes that do not opt in pass raw inbound response text through after optional reference resolution. The proxy carries email-derived domains from the protected outbound request into opted-in inbound redetection passes, including `text/event-stream` text deltas, so provider answers containing only a derived domain can stay protected without rewriting generic browser/bootstrap responses. Explicit reveal/consent flows are separate from agent transcript protection.
 
 JSON-shaped provider responses are transformed as JSON string values when inbound reference resolution is enabled, so references inside provider-escaped message fields can resolve without corrupting JSON. The provider adapters try whole-body JSON first, then newline-delimited JSON, regardless of the exact response media type. Provider responses with `Content-Type: text/event-stream` are transformed when inbound reference resolution is enabled so provider-native SSE framing stays intact. The provider adapters use bounded provider-aware SSE text-delta parsing for OpenAI-compatible and Anthropic streams, which lets known DAM references resolve even when a provider splits one reference across adjacent JSON text-delta events without buffering the whole response to EOF. The SSE parser also falls back to JSON string-value event transforms for unrecognized event shapes. With `--no-resolve-inbound`, event-stream responses pass through without local restoration. Preserving exact token-by-token latency for every provider-specific event shape remains future work.
 
@@ -47,7 +47,7 @@ The current implementation keeps HTTP serving, backend opening, and DAM-owned st
 
 Transparent system-proxy traffic reaches DAM as HTTP `CONNECT`. The standalone app-layer `dam-proxy` path still fails closed for `CONNECT`. When `dam-daemon` starts `dam-proxy` in transparent mode, `dam-proxy` uses a raw TCP CONNECT loop instead of the Axum app-layer server. That loop must bind to loopback and activates only when `dam-net` routing readiness, `dam-trust` local CA readiness, explicit consent, and `dam-intercept` adapter readiness are all `ready`.
 
-The first transparent runtime slice is intentionally narrow: HTTP/1.1 requests over CONNECT, active `inspect` apps from the effective traffic profile, configured OpenAI-compatible and Anthropic targets only, no chunked request bodies, no HTTP/2, and request bodies capped at 32 MiB before buffering. After the TLS handshake, `dam-proxy` binds the decrypted HTTP/WebSocket request back to the active AI route using the request authority/`Host` header before falling back to provider path/header hints. This keeps ChatGPT backend HTTP endpoints such as `/backend-api/codex/responses/compact` on the `chatgpt-codex` target instead of the first configured provider target. Intercepted JSON and `text/event-stream` responses are transformed for inbound protection; app-level inbound reference restoration controls only whether known DAM references are restored, not whether raw inbound values are inspected. WebSocket upgrade traffic is supported for the Codex ChatGPT-login path: extension negotiation is stripped, unfragmented client and server text frames are protected, and fragmented/binary frames pass through with a warning event. Unsupported or not-ready traffic fails closed rather than becoming an opaque tunnel.
+The first transparent runtime slice is intentionally narrow: HTTP/1.1 requests over CONNECT, active `inspect` apps from the effective traffic profile, configured OpenAI-compatible and Anthropic targets only, no chunked request bodies, no HTTP/2, and request bodies capped at 32 MiB before buffering. After the TLS handshake, `dam-proxy` binds the decrypted HTTP/WebSocket request back to the active AI route using the request authority/`Host` header before falling back to provider path/header hints. This keeps ChatGPT backend HTTP endpoints such as `/backend-api/codex/responses/compact` on the `chatgpt-codex` target instead of the first configured provider target. Intercepted JSON and `text/event-stream` responses are transformed only when inbound reference restoration or explicit raw inbound protection is enabled for the matched route. WebSocket upgrade traffic is supported for the Codex ChatGPT-login path: extension negotiation is stripped, the protection enabled/disabled state is frozen for the lifetime of each WebSocket connection, unfragmented client and server text frames are protected for protected connections, and fragmented/binary frames pass through with a warning event. Unsupported or not-ready traffic fails closed rather than becoming an opaque tunnel.
 
 Supported provider IDs are:
 
@@ -114,7 +114,7 @@ Bypass is not silent when logging is enabled. The persisted event type is `proxy
 
 When logging is enabled, the proxy also records non-sensitive diagnostic checkpoints for mediated requests:
 
-- `route_decision`: selected target/provider, protection state, inbound-resolution state, and request byte count.
+- `route_decision`: selected target/provider, protection state, inbound-resolution state, raw inbound-protection state, and request byte count.
 - `request_protection`: detection/replacement counts and whether replacements were tokenized or blocked.
 - `provider_forward_start`: provider adapter handoff and streaming-resolution intent.
 - `provider_response`: provider status, content type, content encoding, and streaming classification.
@@ -184,13 +184,14 @@ Private OpenAI-compatible endpoint profile example:
         {"id": "detect", "kind": "detect_sensitive_data", "direction": "outbound"},
         {"id": "tokenize", "kind": "replace_sensitive_data", "direction": "outbound"},
         {"id": "resolve", "kind": "resolve_references", "direction": "inbound"}
-      ]
+      ],
+      "inbound": {"resolve_references": false, "protect_sensitive_data": true}
     }
   ]
 }
 ```
 
-The traffic profile controls transparent host recognition, adapter intent, and per-app inbound reference restoration. Active forwarding targets are configured separately through `[[proxy.targets]]`; the daemon also adds active profile routes as non-secret proxy targets for transparent matching. The local proxy can host multiple targets in one process and selects the OpenAI-compatible or Anthropic route from request path/header shape or from the transparent route match. Transparent route matching wins for decrypted requests whose authority maps to an active profile host, including ChatGPT backend HTTP paths that do not look like provider API paths.
+The traffic profile controls transparent host recognition, adapter intent, per-app inbound reference restoration, and explicit raw inbound protection. Active forwarding targets are configured separately through `[[proxy.targets]]`; the daemon also adds active profile routes as non-secret proxy targets for transparent matching. The local proxy can host multiple targets in one process and selects the OpenAI-compatible or Anthropic route from request path/header shape or from the transparent route match. Transparent route matching wins for decrypted requests whose authority maps to an active profile host, including ChatGPT backend HTTP paths that do not look like provider API paths.
 
 The profile creator/import/export workflow that will produce generic website/service profiles is parked. Until that returns, `generic-http` is only a low-level target value and the visible catalog is limited to Claude Code and Codex app profiles.
 
@@ -204,8 +205,8 @@ Covered cases:
 
 - redacted request forwarding to fake upstream;
 - inbound response resolution for DAM references in non-streaming responses, including JSON and JSON-lines string-value restoration;
-- inbound redetection/tokenization for raw sensitive response text when no DAM reference resolves;
-- inbound redetection/tokenization for email-derived domains carried from the outbound request context;
+- opt-in inbound redetection/tokenization for raw sensitive response text when no DAM reference resolves;
+- opt-in inbound redetection/tokenization for email-derived domains carried from the outbound request context;
 - outbound expansion of previously tokenized references when the referenced value has active consent;
 - `text/event-stream` response transformation with inbound reference resolution enabled, including references split across adjacent chunks and across Anthropic text-delta events without EOF buffering;
 - disabled inbound response resolution leaving DAM references intact;

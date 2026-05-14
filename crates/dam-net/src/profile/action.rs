@@ -50,6 +50,8 @@ pub struct TrafficInboundPolicy {
     #[serde(default = "default_resolve_references")]
     pub resolve_references: bool,
     #[serde(default)]
+    pub protect_sensitive_data: bool,
+    #[serde(default)]
     pub filter: TrafficFilterPolicy,
 }
 
@@ -57,6 +59,7 @@ impl Default for TrafficInboundPolicy {
     fn default() -> Self {
         Self {
             resolve_references: true,
+            protect_sensitive_data: false,
             filter: TrafficFilterPolicy::default(),
         }
     }
